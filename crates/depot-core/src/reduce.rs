@@ -339,7 +339,14 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                     });
                 }
             }
-            if !attached && next.tasks.contains_key(task) {
+            if !attached
+                && next.tasks.get(task).is_some_and(|task| {
+                    !task
+                        .attempts
+                        .iter()
+                        .any(|attempt| attempt.worktree.as_ref() == Some(lease))
+                })
+            {
                 actions.push(Action::ReleaseWorktree {
                     task: task.clone(),
                     lease: lease.clone(),

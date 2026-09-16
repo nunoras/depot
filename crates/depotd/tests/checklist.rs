@@ -227,6 +227,90 @@ fn putting_a_task_refreshes_the_on_disk_checklist() {
 }
 
 #[test]
+fn a_broken_project_config_refuses_put_task_without_writing() {
+    let fixture = support::fixture();
+    let directory = support::project_directory(&fixture, "broken");
+    let added = support::register(&fixture, "broken");
+    let checklist = fixture
+        .home
+        .project_home(&added.project.slug)
+        .checklist_path();
+    let before = std::fs::read_to_string(&checklist).expect("empty checklist");
+    std::fs::write(
+        directory.join(depotd::PROJECT_CONFIG_FILE_NAME),
+        "base_branch = \"main\"\n\n[profiles]\nbuild = \"\"\n",
+    )
+    .expect("broken project config");
+
+    let store = Store::open(&fixture.home).expect("store");
+    let error = store
+        .put_task(&support::simple_task(
+            &added.project.id,
+            "t-1",
+            TaskState::Running,
+            1_700_000_000_000,
+        ))
+        .expect_err("a broken project config must refuse the write");
+
+    assert!(
+        error.to_string().contains("empty profile"),
+        "the refusal should name the config problem, got {error}"
+    );
+    assert!(
+        store
+            .task(&added.project.id, &TaskId::new("t-1"))
+            .expect("read")
+            .is_none(),
+        "a failed put_task must not leave a durable task row"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&checklist).expect("checklist"),
+        before,
+        "a failed put_task must leave the checklist untouched"
+    );
+}
+
+#[test]
+fn a_missing_project_directory_refuses_put_task_without_writing() {
+    let fixture = support::fixture();
+    let directory = support::project_directory(&fixture, "gone");
+    let added = support::register(&fixture, "gone");
+    let checklist = fixture
+        .home
+        .project_home(&added.project.slug)
+        .checklist_path();
+    let before = std::fs::read_to_string(&checklist).expect("empty checklist");
+    std::fs::remove_dir_all(&directory).expect("delete the project path");
+
+    let store = Store::open(&fixture.home).expect("store");
+    let error = store
+        .put_task(&support::simple_task(
+            &added.project.id,
+            "t-1",
+            TaskState::Running,
+            1_700_000_000_000,
+        ))
+        .expect_err("a missing project path must refuse the write");
+
+    assert!(
+        error.to_string().contains("does not exist"),
+        "the refusal should name the missing path, got {error}"
+    );
+    assert!(
+        store
+            .task(&added.project.id, &TaskId::new("t-1"))
+            .expect("read")
+            .is_none(),
+        "a failed put_task must not leave a durable task row"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&checklist).expect("checklist"),
+        before,
+        "a failed put_task must leave the checklist untouched"
+    );
+}
+
+#[test]
 fn a_timestamp_renders_as_utc_and_never_reads_the_clock() {
     assert_eq!(
         format_timestamp(Timestamp::from_millis(0)),

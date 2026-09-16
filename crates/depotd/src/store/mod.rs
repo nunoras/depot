@@ -41,6 +41,10 @@ impl Store {
         &self.connection
     }
 
+    pub(crate) fn home(&self) -> &DepotHome {
+        &self.home
+    }
+
     pub fn schema_version(&self) -> Result<i64> {
         Ok(self
             .connection
@@ -155,16 +159,6 @@ impl Store {
         project_home.ensure()?;
         write_checklist(&project_home, &self.project_state(project)?)?;
         Ok(())
-    }
-
-    fn refresh_checklist(&self, project_id: &ProjectId) -> Result<()> {
-        let project = self.project(project_id)?.ok_or_else(|| {
-            Error::NotFound(format!(
-                "no project `{}` is registered",
-                project_id.as_str()
-            ))
-        })?;
-        self.write_checklist(&project)
     }
 
     pub fn events(&self, project: &ProjectId) -> Result<Vec<RecordedEvent>> {

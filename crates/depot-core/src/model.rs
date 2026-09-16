@@ -180,6 +180,13 @@ pub struct Question {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoordinatorSession {
+    pub session: SessionId,
+    pub started_at: Timestamp,
+    pub context_tokens: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidationRecord {
     pub command: String,
     pub commit: CommitId,
@@ -239,6 +246,7 @@ pub struct Limits {
     pub max_concurrent_tasks: usize,
     pub max_attempts: u32,
     pub retry_backoff: Duration,
+    pub coordinator_context_tokens: u64,
 }
 
 impl Default for Limits {
@@ -247,6 +255,7 @@ impl Default for Limits {
             max_concurrent_tasks: 4,
             max_attempts: 3,
             retry_backoff: Duration::from_secs(30),
+            coordinator_context_tokens: 120_000,
         }
     }
 }
@@ -255,6 +264,7 @@ impl Default for Limits {
 pub struct ProjectState {
     pub project: ProjectId,
     pub tasks: BTreeMap<TaskId, Task>,
+    pub coordinator: Option<CoordinatorSession>,
     pub profiles: BTreeMap<Role, ProfileId>,
     pub fallback_profiles: Vec<ProfileId>,
     pub limits: Limits,

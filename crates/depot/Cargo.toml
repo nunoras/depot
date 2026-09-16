@@ -5,3 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 repository.workspace = true
 description = "The depot command line"
+
+[dependencies]
+depotd = { version = "0.1.0", path = "../depotd" }
+
+[dev-dependencies]
+depot-core = { path = "../depot-core" }
+tempfile = "3.27.0"

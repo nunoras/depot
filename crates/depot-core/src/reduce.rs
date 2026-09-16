@@ -757,11 +757,11 @@ fn publication_blocked(state: &ProjectState, task: &TaskId) -> bool {
     state.tasks.get(task).is_some_and(|task| {
         task.dependencies
             .iter()
-            .any(|dependency| !edge_satisfied(state, dependency))
+            .any(|dependency| !dependency_satisfied(state, dependency))
     })
 }
 
-fn edge_satisfied(state: &ProjectState, dependency: &Dependency) -> bool {
+pub fn dependency_satisfied(state: &ProjectState, dependency: &Dependency) -> bool {
     state
         .tasks
         .get(&dependency.task)

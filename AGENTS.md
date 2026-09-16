@@ -7,6 +7,8 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - `depot-core` is the one testing seam for the lifecycle rules, and it takes facts in and returns state plus intended actions out. It must stay free of filesystem, network, processes and wall clock, so anything time-shaped arrives as a fact field. It declares no dependencies; `crates/depot-core/tests/purity.rs` guards that and `README.md` states it.
 - `crates/depot-core/tests/lifecycle.rs` holds one table per lifecycle rule.
 - Every state transition is driven by a fact, never by model prose. `docs/adr/0001-local-daemon-and-deterministic-facts.md` records why, and `CONTEXT.md` is the glossary for the domain language.
+- Persistence and configuration live in `crates/depotd`: `Store` is the sqlite record of projects, tasks, dependency edges, attempts, questions, validations, forge state and the event journal, `ProjectConfig` is the committed `.depot.toml` holding project knowledge, and `Settings` is the machine-local `<depot home>/config.toml`. The two halves of that split never mix; `crates/depotd/tests/config_split.rs` guards it and `README.md` documents the layout.
+- `render_checklist` is a pure function of a `ProjectState` and `Store` is its only writer. Same state, same bytes; `crates/depotd/tests/checklist.rs` asserts it, so nothing time-shaped or order-shaped may enter the render.
 - No comments in code, no docstrings, no TODOs. Rationale belongs in the commit message, the ticket, or an ADR.
 
 ## Maintaining this file

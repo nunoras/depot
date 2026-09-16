@@ -5,3 +5,12 @@ edition.workspace = true
 rust-version.workspace = true
 repository.workspace = true
 description = "The depot daemon"
+
+[dependencies]
+depot-core = { version = "0.1.0", path = "../depot-core" }
+rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"] }
+serde = { version = "1.0.229", features = ["derive"] }
+toml = "1.1.6"
+
+[dev-dependencies]
+tempfile = "3.27.0"

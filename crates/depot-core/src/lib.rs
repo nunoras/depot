@@ -10,4 +10,4 @@ pub use model::{
     Dependency, Limits, Link, ProfileId, ProjectId, ProjectState, Question, Retry, Role, SessionId,
     Task, TaskId, TaskState, Timestamp, ValidationRecord, WorktreeLease,
 };
-pub use reduce::reduce;
+pub use reduce::{dependency_satisfied, reduce};

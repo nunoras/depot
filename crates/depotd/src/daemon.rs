@@ -4,7 +4,8 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use depot_core::{
-    Action, Baseline, CommitId, Fact, FactKind, SessionId, Task, TaskId, WorktreeLease,
+    Action, Baseline, CommitId, Fact, FactKind, Liveness, SessionId, Task, TaskId, TaskState,
+    WorktreeLease,
 };
 
 use crate::adapters::forge::{Forge, NewPullRequest, RepoSlug};
@@ -119,7 +120,18 @@ impl<F: Forge> Delivery for ForgeDelivery<F> {
                 worktree.display()
             )));
         }
-        git_output(worktree, &["push", "origin", "HEAD"])?;
+        let branch = git_output(worktree, &["branch", "--show-current"])?;
+        let branch = branch.trim();
+        if branch.is_empty() {
+            return Err(Error::Project(format!(
+                "worktree {} has no branch for delivery",
+                worktree.display()
+            )));
+        }
+        git_output(
+            worktree,
+            &["push", "origin", &format!("HEAD:refs/heads/{branch}")],
+        )?;
         Ok(())
     }
 
@@ -133,16 +145,24 @@ impl<F: Forge> Delivery for ForgeDelivery<F> {
         let remote = git_output(worktree, &["remote", "get-url", "origin"])?;
         let repo = repo_slug(remote.trim())?;
         let head = git_output(worktree, &["branch", "--show-current"])?;
-        let opened = self
+        let head = head.trim().to_owned();
+        let opened = match self
             .forge
-            .open_pull_request(&NewPullRequest {
-                repo,
-                title: task.title.clone(),
-                body: body.to_owned(),
-                head: head.trim().to_owned(),
-                base: self.base.clone(),
-            })
-            .map_err(|error| Error::Project(error.to_string()))?;
+            .find_open_pull_request(&repo, &head)
+            .map_err(|error| Error::Project(error.to_string()))?
+        {
+            Some(opened) => opened,
+            None => self
+                .forge
+                .open_pull_request(&NewPullRequest {
+                    repo,
+                    title: task.title.clone(),
+                    body: body.to_owned(),
+                    head,
+                    base: self.base.clone(),
+                })
+                .map_err(|error| Error::Project(error.to_string()))?,
+        };
         Ok((opened.number, opened.url))
     }
 }
@@ -260,21 +280,32 @@ where
     }
 
     pub fn recover(&self) -> Result<()> {
-        let fact = Fact {
-            at: now(),
-            kind: FactKind::DaemonRestarted,
-        };
-        self.record("daemon_restarted", fact)
+        let at = now();
+        self.record(
+            &event_key(&[
+                "daemon_restarted",
+                &std::process::id().to_string(),
+                &at.millis().to_string(),
+            ]),
+            Fact {
+                at,
+                kind: FactKind::DaemonRestarted,
+            },
+        )?;
+        self.reconcile_sessions()
     }
 
     pub fn tick(&self) -> Result<()> {
+        let at = now();
         self.record(
-            &event_key(&["polled", &now().millis().to_string()]),
+            &event_key(&["polled", &at.millis().to_string()]),
             Fact {
-                at: now(),
+                at,
                 kind: FactKind::Polled,
             },
-        )
+        )?;
+        self.reconcile_sessions()?;
+        self.reconcile_delivery()
     }
 
     pub fn worker_submitted(&self, task: TaskId, commit: CommitId) -> Result<()> {
@@ -288,10 +319,16 @@ where
     }
 
     pub fn worker_liveness(&self, task: TaskId, liveness: depot_core::Liveness) -> Result<()> {
+        let at = now();
         self.record(
-            &event_key(&["worker_liveness", task.as_str(), &format!("{liveness:?}")]),
+            &event_key(&[
+                "worker_liveness",
+                task.as_str(),
+                &format!("{liveness:?}"),
+                &at.millis().to_string(),
+            ]),
             Fact {
-                at: now(),
+                at,
                 kind: FactKind::WorkerLivenessChanged { task, liveness },
             },
         )
@@ -382,7 +419,10 @@ where
                     effort: spec.effort,
                 },
                 kind: Some("worker".to_string()),
-                prompt: task_record.intent,
+                prompt: self
+                    .store
+                    .coordinator_context(&self.project)?
+                    .brief(&task_record)?,
             })
             .map_err(|error| Error::Project(error.to_string()))?;
         self.record(
@@ -482,9 +522,43 @@ where
     }
 
     fn notify(&self, task: TaskId) -> Result<()> {
-        let task = self.task(&task)?;
-        eprintln!("depot: task {} is waiting on a question", task.id);
-        self.notifier.notify(&task)
+        self.notifier.notify(&self.task(&task)?)
+    }
+
+    fn reconcile_sessions(&self) -> Result<()> {
+        for task in self.store.tasks(&self.project.id)?.into_values() {
+            if !task.state.in_flight() {
+                continue;
+            }
+            let Some(session) = task
+                .attempts
+                .last()
+                .and_then(|attempt| attempt.session.clone())
+            else {
+                continue;
+            };
+            let liveness = match self.sessions.status(&session) {
+                Ok(crate::adapters::sessions::SessionState::Running) => Liveness::Live,
+                Ok(_) => Liveness::Gone,
+                Err(error) => return Err(Error::Project(error.to_string())),
+            };
+            self.worker_liveness(task.id, liveness)?;
+        }
+        Ok(())
+    }
+
+    fn reconcile_delivery(&self) -> Result<()> {
+        for task in self.store.tasks(&self.project.id)?.into_values() {
+            if task.state != TaskState::Validated || task.pull_request().is_some() {
+                continue;
+            }
+            let Some(commit) = task.validated_commit().cloned() else {
+                continue;
+            };
+            self.push(task.id.clone(), commit.clone())?;
+            self.open_pull_request(task.id, commit)?;
+        }
+        Ok(())
     }
 
     fn task(&self, id: &TaskId) -> Result<Task> {

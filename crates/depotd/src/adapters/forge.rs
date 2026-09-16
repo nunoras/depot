@@ -69,6 +69,11 @@ pub struct OpenedPullRequest {
 
 pub trait Forge {
     fn pull_request(&self, repo: &RepoSlug, number: u64) -> Result<PullRequest, ForgeError>;
+    fn find_open_pull_request(
+        &self,
+        repo: &RepoSlug,
+        head: &str,
+    ) -> Result<Option<OpenedPullRequest>, ForgeError>;
     fn open_pull_request(&self, request: &NewPullRequest) -> Result<OpenedPullRequest, ForgeError>;
 }
 
@@ -349,6 +354,38 @@ impl Forge for GitHub {
             checks,
             head: CommitId::new(head),
         })
+    }
+
+    fn find_open_pull_request(
+        &self,
+        repo: &RepoSlug,
+        head: &str,
+    ) -> Result<Option<OpenedPullRequest>, ForgeError> {
+        let url = self.url(&format!(
+            "/repos/{}/pulls?state=open&head={}%3A{}",
+            repo.path(),
+            repo.owner,
+            head
+        ));
+        let body = self.read(&url)?;
+        let value: Value = serde_json::from_str(&body).map_err(|error| ForgeError::Malformed {
+            url: url.clone(),
+            detail: error.to_string(),
+        })?;
+        let Some(pull_request) = value.as_array().and_then(|items| items.first()) else {
+            return Ok(None);
+        };
+        let number = pull_request
+            .get("number")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| ForgeError::Malformed {
+                url: url.clone(),
+                detail: format!("no pull request number in {}", truncated(&body)),
+            })?;
+        Ok(Some(OpenedPullRequest {
+            number,
+            url: string(&url, pull_request, "html_url", &body)?,
+        }))
     }
 
     fn open_pull_request(&self, request: &NewPullRequest) -> Result<OpenedPullRequest, ForgeError> {

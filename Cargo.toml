@@ -1,0 +1,12 @@
+[workspace]
+resolver = "3"
+members = ["crates/depot", "crates/depot-core", "crates/depotd"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+repository = "https://github.com/nunoras/depot"
+
+[profile.release]
+strip = true

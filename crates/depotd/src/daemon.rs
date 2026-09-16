@@ -115,6 +115,36 @@ where
         self.record("daemon_restarted", fact)
     }
 
+    pub fn tick(&self) -> Result<()> {
+        self.record(
+            &event_key(&["polled", &now().millis().to_string()]),
+            Fact {
+                at: now(),
+                kind: FactKind::Polled,
+            },
+        )
+    }
+
+    pub fn worker_submitted(&self, task: TaskId, commit: CommitId) -> Result<()> {
+        self.record(
+            &event_key(&["worker_submitted", task.as_str(), commit.as_str()]),
+            Fact {
+                at: now(),
+                kind: FactKind::WorkerSubmitted { task, commit },
+            },
+        )
+    }
+
+    pub fn worker_liveness(&self, task: TaskId, liveness: depot_core::Liveness) -> Result<()> {
+        self.record(
+            &event_key(&["worker_liveness", task.as_str(), &format!("{liveness:?}")]),
+            Fact {
+                at: now(),
+                kind: FactKind::WorkerLivenessChanged { task, liveness },
+            },
+        )
+    }
+
     pub fn record(&self, key: &str, fact: Fact) -> Result<()> {
         log("fact", key);
         let applied = self.store.apply_fact(&self.project, key, &fact)?;

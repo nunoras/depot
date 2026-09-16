@@ -6,6 +6,7 @@ use crate::fact::{Fact, FactKind, Liveness};
 use crate::model::{
     Answer, Attempt, AttemptOutcome, Checks, CommitId, Dependency, Limits, Link, ProfileId,
     ProjectState, Question, Retry, Task, TaskId, TaskState, Timestamp, ValidationRecord,
+    WorktreeLease,
 };
 
 pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) {
@@ -204,6 +205,10 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                 .get(task)
                 .is_some_and(|task| task.state == TaskState::Validating);
             if accepting {
+                let already_open = next
+                    .tasks
+                    .get(task)
+                    .is_some_and(|task| task.pull_request().is_some());
                 if let Some(task) = next.tasks.get_mut(task) {
                     task.validations.push(ValidationRecord {
                         command: command.clone(),
@@ -214,7 +219,11 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                     });
                     task.updated_at = fact.at;
                     if *exit_code == 0 {
-                        task.state = TaskState::Validated;
+                        task.state = if already_open {
+                            TaskState::PrOpen
+                        } else {
+                            TaskState::Validated
+                        };
                         task.retry = None;
                     } else {
                         task.state = TaskState::Failed;
@@ -230,10 +239,12 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                             task: task.clone(),
                             commit: commit.clone(),
                         });
-                        actions.push(Action::OpenPullRequest {
-                            task: task.clone(),
-                            commit: commit.clone(),
-                        });
+                        if !already_open {
+                            actions.push(Action::OpenPullRequest {
+                                task: task.clone(),
+                                commit: commit.clone(),
+                            });
+                        }
                     }
                 } else {
                     actions.push(Action::HoldForUser { task: task.clone() });
@@ -251,13 +262,21 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                     .last()
                     .is_some_and(|attempt| is_open(attempt.outcome))
             });
-            let rework_candidate = next.tasks.get(task).is_some_and(|task| {
-                task.state == TaskState::Validated
-                    && task
-                        .attempts
-                        .last()
-                        .is_some_and(|attempt| !is_open(attempt.outcome))
-                    && next.active_task_count() < next.limits.max_concurrent_tasks
+            let rework_candidate = next.tasks.get(task).is_some_and(|candidate| {
+                let closed = candidate
+                    .attempts
+                    .last()
+                    .is_some_and(|attempt| !is_open(attempt.outcome));
+                let under_cap =
+                    next.active_task_count() < next.limits.max_concurrent_tasks;
+                if !closed || !under_cap {
+                    return false;
+                }
+                match candidate.state {
+                    TaskState::Validated => true,
+                    TaskState::PrOpen => publication_blocked(&next, task),
+                    _ => false,
+                }
             });
             if live {
                 repin_acquired_task(&mut next, task, baseline);
@@ -275,6 +294,12 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                 } else if let Some(task) = next.tasks.get_mut(task)
                     && let Some(profile) = task.attempts.last().map(|a| a.profile.clone())
                 {
+                    if let Some(prior) = take_last_worktree(task) {
+                        actions.push(Action::ReleaseWorktree {
+                            task: task.id.clone(),
+                            lease: prior,
+                        });
+                    }
                     task.attempts.push(Attempt {
                         session: None,
                         profile: profile.clone(),
@@ -336,22 +361,18 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                         task: task.clone(),
                     });
                 }
-            } else {
-                if let Some(task) = next.tasks.get_mut(task) {
+            } else if let Some(task) = next.tasks.get_mut(task) {
+                if task.state != TaskState::Landed {
                     task.state = TaskState::Landed;
                     task.updated_at = fact.at;
                     changed = true;
                 }
-                if let Some(lease) = next
-                    .tasks
-                    .get(task)
-                    .and_then(|task| task.attempts.last())
-                    .and_then(|attempt| attempt.worktree.clone())
-                {
+                if let Some(lease) = take_last_worktree(task) {
                     actions.push(Action::ReleaseWorktree {
-                        task: task.clone(),
+                        task: task.id.clone(),
                         lease,
                     });
+                    changed = true;
                 }
             }
         }
@@ -400,49 +421,51 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
         }
 
         FactKind::ProviderRateLimited { task, profile } => {
-            let limits = next.limits.clone();
-            let fallback = fallback_profile(&next, profile);
-            if let Some(task) = next.tasks.get_mut(task) {
-                let attempts = task.attempts.len() as u32;
-                let stopped = close_attempt(task, AttemptOutcome::Failed, fact.at);
-                let lease = task
-                    .attempts
-                    .last()
-                    .and_then(|attempt| attempt.worktree.clone());
-                task.updated_at = fact.at;
-                if stopped {
-                    actions.push(Action::StopSession {
-                        task: task.id.clone(),
-                    });
-                }
-                if attempts >= limits.max_attempts {
-                    task.state = TaskState::Failed;
-                    task.retry = None;
-                    changed = true;
-                    actions.push(Action::HoldForUser {
-                        task: task.id.clone(),
-                    });
-                } else {
-                    if let Some(lease) = lease {
-                        if let Some(attempt) = task.attempts.last_mut() {
-                            attempt.worktree = None;
-                        }
-                        actions.push(Action::ReleaseWorktree {
+            let accepting = next.tasks.get(task).is_some_and(|task| {
+                task.state.in_flight()
+                    && task
+                        .attempts
+                        .last()
+                        .is_some_and(|attempt| is_open(attempt.outcome))
+            });
+            if accepting {
+                let limits = next.limits.clone();
+                let fallback = fallback_profile(&next, profile);
+                if let Some(task) = next.tasks.get_mut(task) {
+                    let attempts = task.attempts.len() as u32;
+                    let stopped = close_attempt(task, AttemptOutcome::Failed, fact.at);
+                    task.updated_at = fact.at;
+                    if stopped {
+                        actions.push(Action::StopSession {
                             task: task.id.clone(),
-                            lease,
                         });
                     }
-                    let not_before = fact.at.plus(backoff_for(&limits, attempts));
-                    task.state = TaskState::Approved;
-                    task.retry = Some(Retry {
-                        profile: fallback,
-                        not_before,
-                    });
-                    changed = true;
-                    actions.push(Action::Queue {
-                        task: task.id.clone(),
-                        not_before: Some(not_before),
-                    });
+                    if attempts >= limits.max_attempts {
+                        task.state = TaskState::Failed;
+                        task.retry = None;
+                        changed = true;
+                        actions.push(Action::HoldForUser {
+                            task: task.id.clone(),
+                        });
+                    } else {
+                        if let Some(lease) = take_last_worktree(task) {
+                            actions.push(Action::ReleaseWorktree {
+                                task: task.id.clone(),
+                                lease,
+                            });
+                        }
+                        let not_before = fact.at.plus(backoff_for(&limits, attempts));
+                        task.state = TaskState::Approved;
+                        task.retry = Some(Retry {
+                            profile: fallback,
+                            not_before,
+                        });
+                        changed = true;
+                        actions.push(Action::Queue {
+                            task: task.id.clone(),
+                            not_before: Some(not_before),
+                        });
+                    }
                 }
             }
         }
@@ -501,6 +524,12 @@ fn close_attempt(task: &mut Task, outcome: AttemptOutcome, at: Timestamp) -> boo
     attempt.outcome = outcome;
     attempt.finished_at = Some(at);
     attempt.session.is_some()
+}
+
+fn take_last_worktree(task: &mut Task) -> Option<WorktreeLease> {
+    task.attempts
+        .last_mut()
+        .and_then(|attempt| attempt.worktree.take())
 }
 
 fn start_ready_tasks(

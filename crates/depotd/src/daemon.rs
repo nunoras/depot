@@ -1,5 +1,7 @@
-use std::fs::OpenOptions;
-use std::path::{Path, PathBuf};
+use std::fs::{File, OpenOptions};
+
+use fs2::FileExt;
+use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
@@ -21,30 +23,21 @@ use crate::store::{EventOutcome, Store, event_key};
 pub const DAEMON_LOCK_FILE_NAME: &str = "depotd.lock";
 
 pub struct InstanceLock {
-    path: PathBuf,
+    _file: File,
 }
 
 impl InstanceLock {
     pub fn acquire(home: &DepotHome) -> Result<Self> {
         home.ensure()?;
         let path = home.root().join(DAEMON_LOCK_FILE_NAME);
-        OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-            .map_err(|error| {
-                Error::Home(format!(
-                    "another depot daemon already holds {}: {error}",
-                    path.display()
-                ))
-            })?;
-        Ok(Self { path })
-    }
-}
-
-impl Drop for InstanceLock {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
+        let file = OpenOptions::new().write(true).create(true).open(&path)?;
+        file.try_lock_exclusive().map_err(|error| {
+            Error::Home(format!(
+                "another depot daemon already holds {}: {error}",
+                path.display()
+            ))
+        })?;
+        Ok(Self { _file: file })
     }
 }
 
@@ -305,6 +298,7 @@ where
             },
         )?;
         self.reconcile_sessions()?;
+        self.reconcile_validation()?;
         self.reconcile_delivery()
     }
 
@@ -547,16 +541,51 @@ where
         Ok(())
     }
 
-    fn reconcile_delivery(&self) -> Result<()> {
+    fn reconcile_validation(&self) -> Result<()> {
         for task in self.store.tasks(&self.project.id)?.into_values() {
-            if task.state != TaskState::Validated || task.pull_request().is_some() {
+            if task.state != TaskState::Validating {
+                continue;
+            }
+            let commit = self.submitted_commit(&task.id)?;
+            self.validate(task.id, commit)?;
+        }
+        Ok(())
+    }
+
+    fn submitted_commit(&self, task: &TaskId) -> Result<CommitId> {
+        let event = self
+            .store
+            .events(&self.project.id)?
+            .into_iter()
+            .rev()
+            .find(|event| event.task.as_ref() == Some(task) && event.kind == "worker_submitted")
+            .ok_or_else(|| Error::Project(format!("task `{task}` has no submitted commit")))?;
+        let payload: serde_json::Value = serde_json::from_str(&event.payload)
+            .map_err(|error| Error::Schema(error.to_string()))?;
+        let commit = payload
+            .get("commit")
+            .and_then(serde_json::Value::as_str)
+            .filter(|commit| !commit.is_empty())
+            .ok_or_else(|| {
+                Error::Schema(format!("worker submission for task `{task}` has no commit"))
+            })?;
+        Ok(CommitId::new(commit))
+    }
+
+    fn reconcile_delivery(&self) -> Result<()> {
+        let state = self.store.project_state(&self.project)?;
+        for task in state.tasks.values() {
+            if task.state != TaskState::Validated
+                || task.pull_request().is_some()
+                || depot_core::publication_blocked(&state, &task.id)
+            {
                 continue;
             }
             let Some(commit) = task.validated_commit().cloned() else {
                 continue;
             };
             self.push(task.id.clone(), commit.clone())?;
-            self.open_pull_request(task.id, commit)?;
+            self.open_pull_request(task.id.clone(), commit)?;
         }
         Ok(())
     }

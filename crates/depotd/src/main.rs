@@ -9,7 +9,7 @@ use depotd::{
     select_project,
 };
 
-const USAGE: &str = "depotd --project <project> [--once]\n";
+const USAGE: &str = "depotd --project <project>\n";
 
 fn main() {
     match run() {
@@ -22,7 +22,7 @@ fn main() {
 }
 
 fn run() -> depotd::Result<()> {
-    let (project_name, once) = arguments()?;
+    let project_name = arguments()?;
     let home = DepotHome::resolve()?;
     let _lock = InstanceLock::acquire(&home)?;
     let store = Store::open(&home)?;
@@ -49,21 +49,16 @@ fn run() -> depotd::Result<()> {
     daemon.recover()?;
     loop {
         daemon.tick()?;
-        if once {
-            return Ok(());
-        }
         thread::sleep(home.load_settings()?.poll_interval());
     }
 }
 
-fn arguments() -> depotd::Result<(String, bool)> {
+fn arguments() -> depotd::Result<String> {
     let mut values = std::env::args().skip(1);
     let mut project = None;
-    let mut once = false;
     while let Some(argument) = values.next() {
         match argument.as_str() {
             "--project" => project = values.next(),
-            "--once" => once = true,
             "--help" | "-h" => return Err(depotd::Error::Project(USAGE.to_string())),
             other => {
                 return Err(depotd::Error::Project(format!(
@@ -72,7 +67,5 @@ fn arguments() -> depotd::Result<(String, bool)> {
             }
         }
     }
-    project
-        .ok_or_else(|| depotd::Error::Project(format!("--project is required\n{USAGE}")))
-        .map(|project| (project, once))
+    project.ok_or_else(|| depotd::Error::Project(format!("--project is required\n{USAGE}")))
 }

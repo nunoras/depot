@@ -103,12 +103,18 @@ pub fn ask_question(
             relay,
         },
     };
-    apply(
-        &store,
+    let applied = store.apply_fact(
         &project,
-        &["question_asked", id.as_str(), &at.millis().to_string()],
+        &event_key(&["question_asked", id.as_str(), &at.millis().to_string()]),
         &fact,
     )?;
+    if applied
+        .actions
+        .iter()
+        .any(|action| matches!(action, depot_core::Action::Notify { task } if task == &id))
+    {
+        eprintln!("depot: task {id} is waiting on a question");
+    }
     task(&store, &project, &id)
 }
 

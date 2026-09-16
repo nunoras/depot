@@ -434,6 +434,212 @@ fn a_task_added_through_the_command_surface_lands_held() {
 }
 
 #[test]
+fn answering_two_open_questions_records_two_facts() {
+    let fixture = support::fixture();
+    let added = support::register_with_config(&fixture, "example", BUILD_ONLY);
+    let store = Store::open(&fixture.home).expect("store");
+
+    depotd::add_task(
+        &fixture.home,
+        Some("example"),
+        &depotd::TaskRequest {
+            title: "Wire the store".to_string(),
+            intent: "Persist the records.".to_string(),
+            role: "build".to_string(),
+            dependencies: Vec::new(),
+            base_dependency: None,
+        },
+    )
+    .expect("added");
+    depotd::approve_tasks(&fixture.home, Some("example"), &["t-1".to_string()]).expect("approved");
+
+    for (index, text) in ["first open?", "second open?"].into_iter().enumerate() {
+        store
+            .apply_fact(
+                &added.project,
+                &format!("question_asked:t-1:{index}"),
+                &fact(
+                    1_000 + index as u64,
+                    FactKind::QuestionAsked {
+                        task: TaskId::new("t-1"),
+                        text: text.to_string(),
+                        relay: true,
+                    },
+                ),
+            )
+            .expect("asked");
+    }
+
+    let first = depotd::answer_question(
+        &fixture.home,
+        Some("example"),
+        "t-1",
+        "answer the later one",
+        "coordinator",
+    )
+    .expect("first answer");
+    assert_eq!(
+        first.questions[1].answer.as_ref().map(|answer| answer.text.as_str()),
+        Some("answer the later one")
+    );
+    assert!(first.questions[0].answer.is_none());
+
+    let second = depotd::answer_question(
+        &fixture.home,
+        Some("example"),
+        "t-1",
+        "answer the earlier one",
+        "user",
+    )
+    .expect("second answer");
+    assert!(second.questions.iter().all(|question| question.answer.is_some()));
+    assert_eq!(
+        second.questions[0].answer.as_ref().map(|answer| answer.text.as_str()),
+        Some("answer the earlier one")
+    );
+    assert_eq!(
+        second.questions[1].answer.as_ref().map(|answer| answer.text.as_str()),
+        Some("answer the later one")
+    );
+
+    let answered: Vec<_> = store
+        .events(&added.project.id)
+        .expect("events")
+        .into_iter()
+        .filter(|event| event.kind == "question_answered")
+        .map(|event| event.key)
+        .collect();
+    assert_eq!(
+        answered,
+        vec![
+            "question_answered:t-1:1".to_string(),
+            "question_answered:t-1:0".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn approving_a_cancelled_task_is_refused_without_writing() {
+    let fixture = support::fixture();
+    let added = support::register_with_config(&fixture, "example", BUILD_ONLY);
+    let store = Store::open(&fixture.home).expect("store");
+
+    depotd::add_task(
+        &fixture.home,
+        Some("example"),
+        &depotd::TaskRequest {
+            title: "Wire the store".to_string(),
+            intent: "Persist the records.".to_string(),
+            role: "build".to_string(),
+            dependencies: Vec::new(),
+            base_dependency: None,
+        },
+    )
+    .expect("added");
+    depotd::stop_task(&fixture.home, Some("example"), "t-1").expect("stopped");
+
+    let error = depotd::approve_tasks(&fixture.home, Some("example"), &["t-1".to_string()])
+        .expect_err("a cancelled task cannot be approved");
+    let message = error.to_string();
+    assert!(message.contains("t-1"), "got {message}");
+    assert!(message.contains("cancelled"), "got {message}");
+
+    let task = store
+        .task(&added.project.id, &TaskId::new("t-1"))
+        .expect("read")
+        .expect("present");
+    assert_eq!(task.state, depot_core::TaskState::Cancelled);
+    assert!(
+        store
+            .events(&added.project.id)
+            .expect("events")
+            .iter()
+            .all(|event| event.kind != "task_approved"),
+        "a refused approval leaves no approve journal entry"
+    );
+}
+
+#[test]
+fn approving_an_already_approved_task_is_a_successful_noop() {
+    let fixture = support::fixture();
+    let added = support::register_with_config(&fixture, "example", BUILD_ONLY);
+    let store = Store::open(&fixture.home).expect("store");
+
+    depotd::add_task(
+        &fixture.home,
+        Some("example"),
+        &depotd::TaskRequest {
+            title: "Wire the store".to_string(),
+            intent: "Persist the records.".to_string(),
+            role: "build".to_string(),
+            dependencies: Vec::new(),
+            base_dependency: None,
+        },
+    )
+    .expect("added");
+    let first = depotd::approve_tasks(&fixture.home, Some("example"), &["t-1".to_string()])
+        .expect("approved");
+    let second = depotd::approve_tasks(&fixture.home, Some("example"), &["t-1".to_string()])
+        .expect("already approved stays a success");
+
+    assert_eq!(first[0].state, second[0].state);
+    assert_eq!(
+        store
+            .events(&added.project.id)
+            .expect("events")
+            .iter()
+            .filter(|event| event.kind == "task_approved")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn a_refused_approval_leaves_the_whole_batch_unwritten() {
+    let fixture = support::fixture();
+    let added = support::register_with_config(&fixture, "example", BUILD_ONLY);
+    let store = Store::open(&fixture.home).expect("store");
+
+    for title in ["First", "Second"] {
+        depotd::add_task(
+            &fixture.home,
+            Some("example"),
+            &depotd::TaskRequest {
+                title: title.to_string(),
+                intent: format!("{title} intent."),
+                role: "build".to_string(),
+                dependencies: Vec::new(),
+                base_dependency: None,
+            },
+        )
+        .expect("added");
+    }
+    depotd::stop_task(&fixture.home, Some("example"), "t-2").expect("stopped");
+
+    let error = depotd::approve_tasks(
+        &fixture.home,
+        Some("example"),
+        &["t-1".to_string(), "t-2".to_string()],
+    )
+    .expect_err("one refused id refuses the batch");
+    assert!(error.to_string().contains("t-2"), "got {error}");
+
+    let first = store
+        .task(&added.project.id, &TaskId::new("t-1"))
+        .expect("read")
+        .expect("present");
+    assert_eq!(first.state, depot_core::TaskState::Proposed);
+    assert!(
+        store
+            .events(&added.project.id)
+            .expect("events")
+            .iter()
+            .all(|event| event.kind != "task_approved"),
+        "a refused batch leaves no approve journal entry"
+    );
+}
+
+#[test]
 fn approving_a_task_records_the_actions_the_daemon_will_take() {
     let fixture = support::fixture();
     let (_store, context) = context(&fixture, "example");

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use depot_core::{AnsweredBy, CommitId, Dependency, Fact, FactKind, Role, Task, TaskId};
+use depot_core::{AnsweredBy, CommitId, Dependency, Fact, FactKind, Role, Task, TaskId, TaskState};
 
 use crate::clock::now;
 use crate::config::PROJECT_CONFIG_FILE_NAME;
@@ -11,7 +11,7 @@ use crate::inbox::{inbox_entries, render_inbox};
 use crate::project::Project;
 use crate::projects::select_project;
 use crate::store::{Store, event_key};
-use crate::vocabulary::{ROLE_NAMES, answered_by_from_name, role_from_name, role_name};
+use crate::vocabulary::{ROLE_NAMES, answered_by_from_name, role_from_name, role_name, state_name};
 
 pub struct TaskRequest {
     pub title: String,
@@ -53,15 +53,36 @@ pub fn approve_tasks(
 ) -> Result<Vec<Task>> {
     let store = Store::open(home)?;
     let project = select_project(&store, selection)?;
-    let mut approved = Vec::new();
+    let mut ready = Vec::new();
     for id in ids {
         let id = TaskId::new(id);
-        task(&store, &project, &id)?;
-        let fact = Fact {
-            at: now(),
-            kind: FactKind::TaskApproved { task: id.clone() },
-        };
-        apply(&store, &project, &["task_approved", id.as_str()], &fact)?;
+        let current = task(&store, &project, &id)?;
+        match current.state {
+            TaskState::Cancelled | TaskState::Failed | TaskState::Landed => {
+                return Err(Error::Project(format!(
+                    "task `{id}` is {} and cannot be approved",
+                    state_name(current.state)
+                )));
+            }
+            TaskState::Proposed
+            | TaskState::Approved
+            | TaskState::Running
+            | TaskState::WaitingOnQuestion
+            | TaskState::Validating
+            | TaskState::Validated
+            | TaskState::PrOpen => ready.push(current),
+        }
+    }
+    let mut approved = Vec::new();
+    for current in ready {
+        let id = current.id.clone();
+        if current.state == TaskState::Proposed {
+            let fact = Fact {
+                at: now(),
+                kind: FactKind::TaskApproved { task: id.clone() },
+            };
+            apply(&store, &project, &["task_approved", id.as_str()], &fact)?;
+        }
         approved.push(task(&store, &project, &id)?);
     }
     Ok(approved)
@@ -78,13 +99,14 @@ pub fn answer_question(
     let project = select_project(&store, selection)?;
     let id = TaskId::new(id);
     let current = task(&store, &project, &id)?;
-    if !current.questions.iter().any(|q| q.answer.is_none()) {
-        return Err(Error::Project(format!(
-            "task `{id}` has no unanswered question"
-        )));
-    }
+    let position = current
+        .questions
+        .iter()
+        .rposition(|question| question.answer.is_none())
+        .ok_or_else(|| {
+            Error::Project(format!("task `{id}` has no unanswered question"))
+        })?;
     let by = parse_answered_by(by)?;
-    let position = current.questions.len();
     let fact = Fact {
         at: now(),
         kind: FactKind::QuestionAnswered {

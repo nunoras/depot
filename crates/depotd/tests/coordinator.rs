@@ -479,7 +479,10 @@ fn answering_two_open_questions_records_two_facts() {
     )
     .expect("first answer");
     assert_eq!(
-        first.questions[1].answer.as_ref().map(|answer| answer.text.as_str()),
+        first.questions[1]
+            .answer
+            .as_ref()
+            .map(|answer| answer.text.as_str()),
         Some("answer the later one")
     );
     assert!(first.questions[0].answer.is_none());
@@ -492,13 +495,24 @@ fn answering_two_open_questions_records_two_facts() {
         "user",
     )
     .expect("second answer");
-    assert!(second.questions.iter().all(|question| question.answer.is_some()));
+    assert!(
+        second
+            .questions
+            .iter()
+            .all(|question| question.answer.is_some())
+    );
     assert_eq!(
-        second.questions[0].answer.as_ref().map(|answer| answer.text.as_str()),
+        second.questions[0]
+            .answer
+            .as_ref()
+            .map(|answer| answer.text.as_str()),
         Some("answer the earlier one")
     );
     assert_eq!(
-        second.questions[1].answer.as_ref().map(|answer| answer.text.as_str()),
+        second.questions[1]
+            .answer
+            .as_ref()
+            .map(|answer| answer.text.as_str()),
         Some("answer the later one")
     );
 

@@ -24,7 +24,7 @@ A task may have several across retries, pauses and rework.
 _Avoid_: run, execution
 
 **Brief**:
-What one worker is told for one task, rendered from the task record: intent, role, output destination, done criteria, dependencies and the store.
+What one worker is told for one task, rendered from the task record: intent, role, output destination, done criteria, dependencies, validation, the store, and the two worker calls.
 It is handed to the worker when its session launches.
 _Avoid_: prompt, instructions
 

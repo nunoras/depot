@@ -102,7 +102,7 @@ The texts a coordinator is given are versioned artifacts in this repository, inc
 |---|---|
 | `assets/coordinator-policy.md` | what the coordinator owns: no project code, when to delegate, when to answer a worker and when to relay, the checklist against narrative documents, and that new scope waits for the user. |
 | `assets/coordinator-kickoff.md` | the first message of a session: the project, the store, the live checklist and the context document, then `depot inbox`. |
-| `assets/brief-template.md` | the brief a worker is handed: intent, role, output destination, done criteria, dependencies, the store, and the two worker calls. |
+| `assets/brief-template.md` | the brief a worker is handed: intent, role, output destination, done criteria, dependencies, validation, the store, and the two worker calls. |
 
 `depot inbox` prints the facts recorded since the coordinator's previous turn, joined to where each task stands now, split into what needs the user, what needs the coordinator, and what needs nothing.
 A poll that observed nothing is not reported at all, and the read position lives on the project's coordinator row, so a rotated session picks up where the last one stopped.

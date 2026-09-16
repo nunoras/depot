@@ -251,8 +251,7 @@ fn resolve_base_dependency(
 ) -> Result<Option<TaskId>> {
     match base {
         None if dependencies.len() > 1 => Err(Error::Config(
-            "multiple --depends-on need --base-dependency <task-id> naming one of them"
-                .to_string(),
+            "multiple --depends-on need --base-dependency <task-id> naming one of them".to_string(),
         )),
         None => Ok(None),
         Some(name) => {

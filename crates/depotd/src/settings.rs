@@ -5,7 +5,9 @@ use std::time::Duration;
 use depot_core::{Limits, ProfileId};
 use serde::{Deserialize, Serialize};
 
-use crate::error::Result;
+use crate::adapters::profiles::{ConfiguredProfiles, ProfileError, ProfileSpec, RoleEntry};
+use crate::config::ProjectConfig;
+use crate::error::{Error, Result};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -17,6 +19,16 @@ pub struct Settings {
     pub fallback_profiles: Vec<String>,
     pub coordinator_context_tokens: u64,
     pub credentials: BTreeMap<String, String>,
+    pub profiles: BTreeMap<String, ProfileSettings>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileSettings {
+    pub harness: String,
+    pub model: String,
+    pub effort: String,
+    pub account: String,
 }
 
 impl Default for Settings {
@@ -29,6 +41,7 @@ impl Default for Settings {
             fallback_profiles: Vec::new(),
             coordinator_context_tokens: 120_000,
             credentials: BTreeMap::new(),
+            profiles: BTreeMap::new(),
         }
     }
 }
@@ -61,4 +74,51 @@ impl Settings {
     pub fn profile_fallbacks(&self) -> Vec<ProfileId> {
         self.fallback_profiles.iter().map(ProfileId::new).collect()
     }
+
+    pub fn configured_profiles(&self, config: &ProjectConfig) -> Result<ConfiguredProfiles> {
+        let entries = config
+            .profiles()?
+            .into_iter()
+            .map(|(role, profile)| {
+                let mut names = vec![profile];
+                names.extend(self.profile_fallbacks());
+                let profiles = names
+                    .into_iter()
+                    .map(|name| self.profile_spec(name))
+                    .collect::<Result<Vec<_>>>()?;
+                Ok(RoleEntry { role, profiles })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        ConfiguredProfiles::from_entries(entries).map_err(profile_error)
+    }
+
+    fn profile_spec(&self, name: ProfileId) -> Result<ProfileSpec> {
+        let profile = self.profiles.get(name.as_str()).ok_or_else(|| {
+            Error::Config(format!(
+                "profile `{name}` is not defined in machine-local settings"
+            ))
+        })?;
+        let fields = [
+            ("harness", profile.harness.as_str()),
+            ("model", profile.model.as_str()),
+            ("effort", profile.effort.as_str()),
+            ("account", profile.account.as_str()),
+        ];
+        if let Some((field, _)) = fields.iter().find(|(_, value)| value.trim().is_empty()) {
+            return Err(Error::Config(format!(
+                "profile `{name}` in machine-local settings has no {field}"
+            )));
+        }
+        Ok(ProfileSpec {
+            profile: name,
+            harness: profile.harness.clone(),
+            model: profile.model.clone(),
+            effort: profile.effort.clone(),
+            account: profile.account.clone(),
+        })
+    }
+}
+
+fn profile_error(error: ProfileError) -> Error {
+    Error::Config(error.to_string())
 }

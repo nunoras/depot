@@ -7,6 +7,7 @@ repository.workspace = true
 description = "The depot daemon"
 
 [dependencies]
+fs2 = "0.4"
 depot-core = { version = "0.1.0", path = "../depot-core" }
 rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }

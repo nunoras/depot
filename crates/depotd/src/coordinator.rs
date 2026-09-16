@@ -15,10 +15,6 @@ pub const COORDINATOR_KICKOFF_TEMPLATE: &str =
     include_str!("../../../assets/coordinator-kickoff.md");
 pub const BRIEF_TEMPLATE: &str = include_str!("../../../assets/brief-template.md");
 
-pub const ASK_COMMAND: &str = "depot ask \"<question>\"";
-pub const SUBMIT_COMMAND: &str =
-    "depot submit --summary \"<what changed>\" --artifact <path-or-url>";
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Launch {
     pub policy: &'static str,
@@ -98,6 +94,14 @@ impl CoordinatorContext {
         let store = display(self.home.root());
         let checklist = display(&self.checklist_path());
         let scratch = display(&self.home.scratch_dir());
+        let ask = format!(
+            "depot ask --task {} --project {} --relay \"<question>\"",
+            task.id, self.project.id
+        );
+        let submit = format!(
+            "depot submit --task {} --project {}",
+            task.id, self.project.id
+        );
 
         render_template(
             BRIEF_TEMPLATE,
@@ -115,8 +119,8 @@ impl CoordinatorContext {
                 ("store", &store),
                 ("checklist", &checklist),
                 ("scratch", &scratch),
-                ("ask", ASK_COMMAND),
-                ("submit", SUBMIT_COMMAND),
+                ("ask", &ask),
+                ("submit", &submit),
             ],
         )
     }

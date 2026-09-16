@@ -786,7 +786,19 @@ fn worker_ask_records_a_relayed_question_from_explicit_context() {
     });
     store.put_task(&seeded).expect("seeded task");
 
-    let output = cli.run_worker(&["ask", "Which API?"], "t-1", "attempt-1");
+    let output = cli.run_worker(
+        &[
+            "ask",
+            "--task",
+            "t-1",
+            "--project",
+            "example",
+            "--relay",
+            "Which API?",
+        ],
+        "t-1",
+        "attempt-1",
+    );
 
     assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
     let recorded = store
@@ -927,15 +939,7 @@ fn worker_submit_records_its_summary_artifacts_and_starts_validation() {
     assert!(output.status.success());
 
     let output = cli.run_worker_from(
-        &[
-            "submit",
-            "--summary",
-            "Implemented the result.",
-            "--artifact",
-            "result.txt",
-            "--artifact",
-            "https://example.test/evidence",
-        ],
+        &["submit", "--task", "t-1", "--project", "example"],
         "t-1",
         "attempt-1",
         &worktree,
@@ -948,16 +952,6 @@ fn worker_submit_records_its_summary_artifacts_and_starts_validation() {
         .expect("task")
         .expect("present");
     assert_eq!(recorded.state, TaskState::Validating);
-    assert_eq!(
-        recorded.submission,
-        Some(depot_core::Submission {
-            summary: "Implemented the result.".to_string(),
-            artifacts: vec![
-                "result.txt".to_string(),
-                "https://example.test/evidence".to_string(),
-            ],
-        })
-    );
     assert!(
         store
             .events(&added.project.id)

@@ -167,6 +167,7 @@ impl Store {
         }
 
         transaction.commit()?;
+        self.refresh_checklist(&task.project)?;
         Ok(())
     }
 

@@ -69,7 +69,16 @@ impl ProjectConfig {
         let path = Self::path_in(project_dir);
         match std::fs::read_to_string(&path) {
             Ok(text) => Self::from_toml(&text),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                if project_dir.is_dir() {
+                    Ok(Self::default())
+                } else {
+                    Err(Error::Project(format!(
+                        "project path `{}` does not exist",
+                        project_dir.display()
+                    )))
+                }
+            }
             Err(error) => Err(error.into()),
         }
     }

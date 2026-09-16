@@ -57,7 +57,7 @@ pub fn render_checklist(state: &ProjectState) -> String {
     out
 }
 
-pub fn write_checklist(
+pub(crate) fn write_checklist(
     project_home: &ProjectHome,
     state: &ProjectState,
 ) -> Result<std::path::PathBuf> {

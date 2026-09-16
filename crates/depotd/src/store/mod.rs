@@ -7,6 +7,7 @@ use std::time::Duration;
 use depot_core::{Fact, ProjectId, ProjectState, Timestamp};
 use rusqlite::{Connection, params};
 
+use crate::checklist::write_checklist;
 use crate::config::ProjectConfig;
 use crate::error::{Error, Result};
 use crate::factcodec;
@@ -137,15 +138,33 @@ impl Store {
         }
     }
 
-    pub fn event(&self, key: &str) -> Result<Option<RecordedEvent>> {
-        let mut statement = self
-            .connection
-            .prepare("SELECT project_id, key, at, kind, payload FROM events WHERE key = ?1")?;
-        let mut rows = statement.query_map(params![key], RawEvent::read)?;
+    pub fn event(&self, project: &ProjectId, key: &str) -> Result<Option<RecordedEvent>> {
+        let mut statement = self.connection.prepare(
+            "SELECT project_id, key, at, kind, payload FROM events
+             WHERE project_id = ?1 AND key = ?2",
+        )?;
+        let mut rows = statement.query_map(params![project.as_str(), key], RawEvent::read)?;
         match rows.next() {
             Some(raw) => Ok(Some(raw?.into_event()?)),
             None => Ok(None),
         }
+    }
+
+    pub(crate) fn write_checklist(&self, project: &Project) -> Result<()> {
+        let project_home = self.home.project_home(&project.slug);
+        project_home.ensure()?;
+        write_checklist(&project_home, &self.project_state(project)?)?;
+        Ok(())
+    }
+
+    fn refresh_checklist(&self, project_id: &ProjectId) -> Result<()> {
+        let project = self.project(project_id)?.ok_or_else(|| {
+            Error::NotFound(format!(
+                "no project `{}` is registered",
+                project_id.as_str()
+            ))
+        })?;
+        self.write_checklist(&project)
     }
 
     pub fn events(&self, project: &ProjectId) -> Result<Vec<RecordedEvent>> {

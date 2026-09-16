@@ -7,7 +7,7 @@ use depot_core::{
     Checks, CommitId, Dependency, Limits, Link, ProfileId, ProjectId, ProjectState, Question, Role,
     TaskId, TaskState, Timestamp, ValidationRecord,
 };
-use depotd::{Store, format_timestamp, render_checklist};
+use depotd::{CHECKLIST_FILE_NAME, Store, format_timestamp, render_checklist};
 
 #[test]
 fn the_checklist_render_is_byte_identical_for_identical_state() {
@@ -184,6 +184,45 @@ fn an_empty_project_renders_a_checklist_with_no_tasks() {
         "# Checklist\n\nProject: example/project\n\n\
          Rendered from depot records. Hand edits are overwritten.\n\n\
          No tasks yet.\n"
+    );
+}
+
+#[test]
+fn putting_a_task_refreshes_the_on_disk_checklist() {
+    let fixture = support::fixture();
+    let added = support::register(&fixture, "example");
+    let checklist = fixture
+        .home
+        .project_home(&added.project.slug)
+        .checklist_path();
+    let before = std::fs::read_to_string(&checklist).expect("empty checklist");
+    assert!(
+        before.contains("No tasks yet."),
+        "registration should start from an empty checklist, got\n{before}"
+    );
+
+    let store = Store::open(&fixture.home).expect("store");
+    store
+        .put_task(&support::simple_task(
+            &added.project.id,
+            "t-1",
+            TaskState::Running,
+            1_700_000_000_000,
+        ))
+        .expect("stored");
+
+    let after = std::fs::read_to_string(&checklist).expect("refreshed checklist");
+    assert!(
+        after.contains("## Running (1)"),
+        "put_task must rewrite {CHECKLIST_FILE_NAME}, got\n{after}"
+    );
+    assert!(
+        after.contains("`t-1`"),
+        "the refreshed checklist must name the task, got\n{after}"
+    );
+    assert!(
+        !after.contains("No tasks yet."),
+        "the empty checklist must not linger after a task write, got\n{after}"
     );
 }
 

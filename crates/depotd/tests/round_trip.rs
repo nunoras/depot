@@ -98,16 +98,49 @@ fn a_project_state_round_trips_through_the_configuration_split() {
 #[test]
 fn a_project_with_no_committed_config_falls_back_to_defaults() {
     let fixture = support::fixture();
-    let added = support::register(&fixture, "example");
-    let config = ProjectConfig::load(fixture.home.root().join("elsewhere").as_path())
-        .expect("defaults for a missing file");
+    let directory = support::project_directory(&fixture, "bare");
+    let config = ProjectConfig::load(&directory).expect("defaults when the directory exists");
     assert_eq!(config, ProjectConfig::default());
 
+    let added = support::register(&fixture, "example");
     let store = Store::open(&fixture.home).expect("store");
     let state = store.project_state(&added.project).expect("state");
     assert!(state.profiles.is_empty());
     assert_eq!(state.limits.max_concurrent_tasks, 4);
     assert!(!state.always_relay_questions);
+}
+
+#[test]
+fn a_missing_project_directory_is_refused_rather_than_defaulted() {
+    let fixture = support::fixture();
+    let directory = support::project_directory(&fixture, "gone");
+    std::fs::write(
+        directory.join(PROJECT_CONFIG_FILE_NAME),
+        "base_branch = \"develop\"\n\n\
+         [profiles]\n\
+         build = \"glm-5.3\"\n\n\
+         [questions]\n\
+         always_relay = true\n",
+    )
+    .expect("project config");
+    let added =
+        add_project(&fixture.home, directory.to_str().expect("utf-8 path")).expect("registered");
+    std::fs::remove_dir_all(&directory).expect("delete the project path");
+
+    let store = Store::open(&fixture.home).expect("store");
+    let error = store
+        .project_state(&added.project)
+        .expect_err("a deleted project path must not read as healthy defaults");
+    let message = error.to_string();
+
+    assert!(
+        message.contains("does not exist"),
+        "the refusal should name the missing path, got {message}"
+    );
+    assert!(
+        message.contains(added.project.id.as_str()) || message.contains("gone"),
+        "the refusal should identify the project path, got {message}"
+    );
 }
 
 #[test]
@@ -138,4 +171,67 @@ fn the_event_journal_records_a_fact_once_and_replays_it_as_a_duplicate() {
     assert_eq!(events[0].key, key);
     assert_eq!(events[0].kind, "worker_submitted");
     assert!(events[0].payload.contains("\"commit\":\"aaa111\""));
+
+    let loaded = store
+        .event(&added.project.id, &key)
+        .expect("lookup")
+        .expect("present");
+    assert_eq!(loaded.project, added.project.id);
+    assert_eq!(loaded.key, key);
+}
+
+#[test]
+fn event_keys_are_isolated_per_project() {
+    let fixture = support::fixture();
+    let first = support::register(&fixture, "first");
+    let second = support::register(&fixture, "second");
+    let store = Store::open(&fixture.home).expect("store");
+    let key = event_key(&["t-1", "worker_submitted", "aaa111"]);
+    let first_fact = depot_core::Fact {
+        at: depot_core::Timestamp::from_millis(1_700_000_000_000),
+        kind: depot_core::FactKind::WorkerSubmitted {
+            task: TaskId::new("t-1"),
+            commit: depot_core::CommitId::new("aaa111"),
+        },
+    };
+    let second_fact = depot_core::Fact {
+        at: depot_core::Timestamp::from_millis(1_700_000_000_100),
+        kind: depot_core::FactKind::WorkerSubmitted {
+            task: TaskId::new("t-1"),
+            commit: depot_core::CommitId::new("aaa111"),
+        },
+    };
+
+    assert!(matches!(
+        store
+            .record_event(&first.project.id, &key, &first_fact)
+            .unwrap(),
+        depotd::EventOutcome::Recorded
+    ));
+    assert!(matches!(
+        store
+            .record_event(&second.project.id, &key, &second_fact)
+            .unwrap(),
+        depotd::EventOutcome::Recorded
+    ));
+
+    let first_events = store.events(&first.project.id).expect("first events");
+    let second_events = store.events(&second.project.id).expect("second events");
+    assert_eq!(first_events.len(), 1);
+    assert_eq!(second_events.len(), 1);
+    assert_eq!(first_events[0].project, first.project.id);
+    assert_eq!(second_events[0].project, second.project.id);
+
+    let first_lookup = store
+        .event(&first.project.id, &key)
+        .expect("first lookup")
+        .expect("first present");
+    let second_lookup = store
+        .event(&second.project.id, &key)
+        .expect("second lookup")
+        .expect("second present");
+    assert_eq!(first_lookup.project, first.project.id);
+    assert_eq!(second_lookup.project, second.project.id);
+    assert_eq!(first_lookup.at.millis(), 1_700_000_000_000);
+    assert_eq!(second_lookup.at.millis(), 1_700_000_000_100);
 }

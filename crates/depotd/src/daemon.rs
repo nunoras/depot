@@ -547,6 +547,9 @@ where
                 continue;
             }
             let commit = self.submitted_commit(&task.id)?;
+            if task.validations.iter().any(|v| v.commit == commit) {
+                continue;
+            }
             self.validate(task.id, commit)?;
         }
         Ok(())

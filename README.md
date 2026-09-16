@@ -114,7 +114,7 @@ The verbs a coordinator drives:
 
 | verb | what it does |
 |---|---|
-| `depot task add --title <title> --intent <intent> --role <role> [--depends-on <task>@<commit>]...` | records a task with its dependencies. It lands held, and that is the proposal. |
+| `depot task add --title <title> --intent <intent> --role <role> [--depends-on <task>@<commit>]... [--base-dependency <task-id>]` | records a task with its dependencies. Multiple dependencies need a base. It lands held, and that is the proposal. |
 | `depot task approve <task-id>...` | the user's go, for one task or several in one message. |
 | `depot task answer <task-id> --text <answer> [--by coordinator\|user]` | records an answer and resumes the worker. |
 | `depot task stop <task-id>` | stops a task. |

@@ -323,6 +323,7 @@ fn the_unmapped_role_refusal_names_the_role_the_project_and_the_file() {
             intent: "Judge the change.".to_string(),
             role: "review".to_string(),
             dependencies: Vec::new(),
+            base_dependency: None,
         },
     )
     .expect_err("an unmapped role is refused");
@@ -338,6 +339,56 @@ fn the_unmapped_role_refusal_names_the_role_the_project_and_the_file() {
 }
 
 #[test]
+fn a_multi_dependency_add_without_a_base_leaves_no_trace() {
+    let fixture = support::fixture();
+    let added = support::register_with_config(&fixture, "example", BUILD_ONLY);
+    let store = Store::open(&fixture.home).expect("store");
+
+    let error = depotd::add_task(
+        &fixture.home,
+        Some("example"),
+        &depotd::TaskRequest {
+            title: "Join two".to_string(),
+            intent: "Depend on both sides.".to_string(),
+            role: "build".to_string(),
+            dependencies: vec!["t-a@aaa".to_string(), "t-b@bbb".to_string()],
+            base_dependency: None,
+        },
+    )
+    .expect_err("multiple dependencies without a base are refused");
+
+    let message = error.to_string();
+    assert!(
+        message.contains("--base-dependency"),
+        "refusal names the missing flag, got {message}"
+    );
+    assert!(
+        store.tasks(&added.project.id).expect("tasks").is_empty(),
+        "a refused add leaves no task"
+    );
+    assert!(
+        store.events(&added.project.id).expect("events").is_empty(),
+        "a refused add leaves no journal entry"
+    );
+
+    let task = depotd::add_task(
+        &fixture.home,
+        Some("example"),
+        &depotd::TaskRequest {
+            title: "Wire the store".to_string(),
+            intent: "Persist the records.".to_string(),
+            role: "build".to_string(),
+            dependencies: Vec::new(),
+            base_dependency: None,
+        },
+    )
+    .expect("a corrected add still works");
+
+    assert_eq!(task.id.as_str(), "t-1");
+    assert_eq!(task.state, depot_core::TaskState::Proposed);
+}
+
+#[test]
 fn a_task_added_through_the_command_surface_lands_held() {
     let fixture = support::fixture();
     support::register_with_config(&fixture, "example", BUILD_ONLY);
@@ -350,6 +401,7 @@ fn a_task_added_through_the_command_surface_lands_held() {
             intent: "Persist the records.".to_string(),
             role: "build".to_string(),
             dependencies: Vec::new(),
+            base_dependency: None,
         },
     )
     .expect("added");
@@ -366,6 +418,7 @@ fn a_task_added_through_the_command_surface_lands_held() {
             intent: "Drive facts to actions.".to_string(),
             role: "build".to_string(),
             dependencies: vec!["t-1@abc123".to_string()],
+            base_dependency: None,
         },
     )
     .expect("added");
@@ -393,6 +446,7 @@ fn approving_a_task_records_the_actions_the_daemon_will_take() {
             intent: "Persist the records.".to_string(),
             role: "build".to_string(),
             dependencies: Vec::new(),
+            base_dependency: None,
         },
     )
     .expect("added");

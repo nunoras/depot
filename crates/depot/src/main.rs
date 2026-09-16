@@ -12,7 +12,8 @@ USAGE
   depot project add <path-or-url>
   depot status [--project <name>] [--all]
   depot task add --title <title> --intent <intent> --role <plan|build|review|fix>
-                 [--depends-on <task>@<commit>]... [--project <name>]
+                 [--depends-on <task>@<commit>]...
+                 [--base-dependency <task-id>] [--project <name>]
   depot task approve <task-id>... [--project <name>]
   depot task answer <task-id> --text <answer> [--by <coordinator|user>] [--project <name>]
   depot task stop <task-id> [--project <name>]
@@ -26,6 +27,7 @@ SELECTION
 NOTES
   A task lands held. Approving it is what lets it run.
   A role resolves to a profile through the project's committed .depot.toml; an unmapped role is refused.
+  Multiple --depends-on need --base-dependency naming one of those tasks as the baseline.
   `--content -` reads a document from standard input.
 ";
 
@@ -126,7 +128,14 @@ fn task_command(arguments: &[String]) -> Result<String, Failure> {
 
 fn task_add(arguments: &[String]) -> Result<String, Failure> {
     let flags = Flags::parse(arguments, &[])?;
-    flags.reject_unknown(&["title", "intent", "role", "depends-on", "project"])?;
+    flags.reject_unknown(&[
+        "title",
+        "intent",
+        "role",
+        "depends-on",
+        "base-dependency",
+        "project",
+    ])?;
     flags.reject_positionals()?;
 
     let request = TaskRequest {
@@ -134,6 +143,7 @@ fn task_add(arguments: &[String]) -> Result<String, Failure> {
         intent: flags.required("intent")?.to_string(),
         role: flags.required("role")?.to_string(),
         dependencies: flags.all("depends-on"),
+        base_dependency: flags.value("base-dependency").map(str::to_string),
     };
     let home = DepotHome::resolve()?;
     let task = add_task(&home, flags.value("project"), &request)?;

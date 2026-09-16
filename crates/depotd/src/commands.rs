@@ -18,6 +18,7 @@ pub struct TaskRequest {
     pub intent: String,
     pub role: String,
     pub dependencies: Vec<String>,
+    pub base_dependency: Option<String>,
 }
 
 pub fn add_task(home: &DepotHome, selection: Option<&str>, request: &TaskRequest) -> Result<Task> {
@@ -26,6 +27,8 @@ pub fn add_task(home: &DepotHome, selection: Option<&str>, request: &TaskRequest
     let role = parse_role(&request.role)?;
     ensure_role_is_mapped(&store, &project, role)?;
     let dependencies = parse_dependencies(&request.dependencies)?;
+    let base_dependency =
+        resolve_base_dependency(request.base_dependency.as_deref(), &dependencies)?;
     let id = store.next_task_id(&project.id)?;
 
     let fact = Fact {
@@ -36,7 +39,7 @@ pub fn add_task(home: &DepotHome, selection: Option<&str>, request: &TaskRequest
             intent: request.intent.clone(),
             role,
             dependencies,
-            base_dependency: None,
+            base_dependency,
         },
     };
     apply(&store, &project, &["task_proposed", id.as_str()], &fact)?;
@@ -192,4 +195,30 @@ fn parse_dependencies(items: &[String]) -> Result<Vec<Dependency>> {
             })
         })
         .collect()
+}
+
+fn resolve_base_dependency(
+    base: Option<&str>,
+    dependencies: &[Dependency],
+) -> Result<Option<TaskId>> {
+    match base {
+        None if dependencies.len() > 1 => Err(Error::Config(
+            "multiple --depends-on need --base-dependency <task-id> naming one of them"
+                .to_string(),
+        )),
+        None => Ok(None),
+        Some(name) => {
+            let base = TaskId::new(name);
+            if dependencies
+                .iter()
+                .any(|dependency| dependency.task == base)
+            {
+                Ok(Some(base))
+            } else {
+                Err(Error::Config(format!(
+                    "`--base-dependency {name}` must name one of the --depends-on tasks"
+                )))
+            }
+        }
+    }
 }

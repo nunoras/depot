@@ -45,6 +45,7 @@ dependencies = [
  "depot-core",
  "serde_json",
  "ureq",
+ "windows-sys",
 ]
 
 [[package]]

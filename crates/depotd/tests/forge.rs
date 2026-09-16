@@ -28,8 +28,16 @@ fn pull_request(number: u64, sha: &str, state: &str, merged: Option<bool>) -> St
     )
 }
 
-fn check_runs(runs: &str) -> String {
-    format!("{{\"total_count\":1,\"check_runs\":[{runs}]}}")
+fn check_runs(total: u64, runs: &str) -> String {
+    format!("{{\"total_count\":{total},\"check_runs\":[{runs}]}}")
+}
+
+fn success_run() -> &'static str {
+    "{\"status\":\"completed\",\"conclusion\":\"success\"}"
+}
+
+fn failure_run() -> &'static str {
+    "{\"status\":\"completed\",\"conclusion\":\"failure\"}"
 }
 
 #[test]
@@ -45,7 +53,7 @@ fn distinguishes_a_merged_pull_request_from_an_unmerged_one() {
         "GET",
         "/repos/acme/widget/commits/aaa111/check-runs",
         200,
-        &check_runs("{\"status\":\"completed\",\"conclusion\":\"success\"}"),
+        &check_runs(1, success_run()),
     );
     forge_endpoint.route(
         "GET",
@@ -57,7 +65,7 @@ fn distinguishes_a_merged_pull_request_from_an_unmerged_one() {
         "GET",
         "/repos/acme/widget/commits/bbb222/check-runs",
         200,
-        &check_runs("{\"status\":\"completed\",\"conclusion\":\"failure\"}"),
+        &check_runs(1, failure_run()),
     );
     forge_endpoint.route(
         "GET",
@@ -69,7 +77,7 @@ fn distinguishes_a_merged_pull_request_from_an_unmerged_one() {
         "GET",
         "/repos/acme/widget/commits/ccc333/check-runs",
         200,
-        &check_runs("{\"status\":\"in_progress\",\"conclusion\":null}"),
+        &check_runs(1, "{\"status\":\"in_progress\",\"conclusion\":null}"),
     );
 
     let github = GitHub::new(forge_endpoint.base_url(), "token-1");
@@ -98,8 +106,93 @@ fn distinguishes_a_merged_pull_request_from_an_unmerged_one() {
             .request_to("/repos/acme/widget/commits/ccc333/check-runs")
             .query
             .as_deref(),
-        Some("per_page=100")
+        Some("per_page=100&page=1")
     );
+}
+
+#[test]
+fn pages_check_runs_until_every_run_is_read() {
+    let forge_endpoint = FakeForge::start();
+    forge_endpoint.route(
+        "GET",
+        "/repos/acme/widget/pulls/11",
+        200,
+        &pull_request(11, "eee555", "open", None),
+    );
+
+    let page_one = (0..100)
+        .map(|_| success_run().to_owned())
+        .collect::<Vec<_>>()
+        .join(",");
+    forge_endpoint.route_query(
+        "GET",
+        "/repos/acme/widget/commits/eee555/check-runs",
+        Some("per_page=100&page=1"),
+        200,
+        &check_runs(101, &page_one),
+    );
+    forge_endpoint.route_query(
+        "GET",
+        "/repos/acme/widget/commits/eee555/check-runs",
+        Some("per_page=100&page=2"),
+        200,
+        &check_runs(101, failure_run()),
+    );
+
+    let github = GitHub::new(forge_endpoint.base_url(), "token-1");
+    let pull_request = github.pull_request(&repo(), 11).expect("the PR is read");
+    assert_eq!(pull_request.checks, Checks::Failing);
+
+    let queries: Vec<_> = forge_endpoint
+        .requests()
+        .into_iter()
+        .filter(|request| request.path.ends_with("/check-runs"))
+        .map(|request| request.query)
+        .collect();
+    assert_eq!(
+        queries,
+        vec![
+            Some("per_page=100&page=1".to_owned()),
+            Some("per_page=100&page=2".to_owned()),
+        ]
+    );
+}
+
+#[test]
+fn refuses_a_truncated_check_run_list() {
+    let forge_endpoint = FakeForge::start();
+    forge_endpoint.route(
+        "GET",
+        "/repos/acme/widget/pulls/12",
+        200,
+        &pull_request(12, "fff666", "open", None),
+    );
+    let page_one = (0..100)
+        .map(|_| success_run().to_owned())
+        .collect::<Vec<_>>()
+        .join(",");
+    forge_endpoint.route_query(
+        "GET",
+        "/repos/acme/widget/commits/fff666/check-runs",
+        Some("per_page=100&page=1"),
+        200,
+        &check_runs(101, &page_one),
+    );
+    forge_endpoint.route_query(
+        "GET",
+        "/repos/acme/widget/commits/fff666/check-runs",
+        Some("per_page=100&page=2"),
+        200,
+        &check_runs(101, ""),
+    );
+
+    let github = GitHub::new(forge_endpoint.base_url(), "token-1");
+    let error = github
+        .pull_request(&repo(), 12)
+        .expect_err("a truncated check-run list is refused");
+    let message = error.to_string();
+    assert!(message.contains("only returned 100"), "{message}");
+    assert!(message.contains("never treated as passing"), "{message}");
 }
 
 #[test]
@@ -177,7 +270,7 @@ fn refuses_an_answer_it_cannot_read() {
         "GET",
         "/repos/acme/widget/commits/ddd444/check-runs",
         200,
-        &check_runs("{\"status\":\"completed\",\"conclusion\":\"vibes\"}"),
+        &check_runs(1, "{\"status\":\"completed\",\"conclusion\":\"vibes\"}"),
     );
 
     let github = GitHub::new(forge_endpoint.base_url(), "token-1");
@@ -291,7 +384,7 @@ fn takes_the_credential_from_the_authenticated_gh_cli() {
         "GET",
         "/repos/acme/widget/commits/aaa111/check-runs",
         200,
-        &check_runs("{\"status\":\"completed\",\"conclusion\":\"success\"}"),
+        &check_runs(1, success_run()),
     );
     GitHub::new(forge_endpoint.base_url(), credentials.token)
         .pull_request(&repo(), 7)
@@ -367,6 +460,37 @@ fn refuses_a_token_file_others_can_read() {
     let message = error.to_string();
     assert!(message.contains("readable beyond its owner"), "{message}");
     assert!(message.contains("owner-only"), "{message}");
+    assert!(message.contains("authenticate `gh`"), "{message}");
+    assert!(message.contains("environment"), "{message}");
+}
+
+#[cfg(windows)]
+#[test]
+fn refuses_a_token_file_others_can_read() {
+    let dir = TempDir::new("forge-credential-loose-windows");
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(&home).expect("the depot home exists");
+    let token_path = home.join(TOKEN_FILE);
+    std::fs::write(&token_path, "file-token-3\n").expect("the token is written");
+    let granted = std::process::Command::new("icacls")
+        .arg(&token_path)
+        .args(["/grant", "Everyone:R"])
+        .output()
+        .expect("icacls runs");
+    assert!(
+        granted.status.success(),
+        "icacls failed: {}",
+        String::from_utf8_lossy(&granted.stderr)
+    );
+    let gh = FakeProgram::new(dir.path(), "gh");
+    gh.respond("auth", "", "gh: not logged in to any hosts\n", 1);
+
+    let error = resolve_credentials(&gh.program(), &home)
+        .expect_err("a world-readable token file is refused");
+    let message = error.to_string();
+    assert!(message.contains("readable beyond its owner"), "{message}");
+    assert!(message.contains("authenticate `gh`"), "{message}");
+    assert!(message.contains("environment"), "{message}");
 }
 
 #[cfg(unix)]
@@ -380,5 +504,32 @@ fn owner_only(path: &std::path::Path) {
     std::fs::set_permissions(path, permissions).expect("the token file is owner-only");
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn owner_only(path: &std::path::Path) {
+    let reset = std::process::Command::new("icacls")
+        .arg(path)
+        .args(["/inheritance:r"])
+        .output()
+        .expect("icacls runs");
+    assert!(
+        reset.status.success(),
+        "icacls inheritance reset failed: {}",
+        String::from_utf8_lossy(&reset.stderr)
+    );
+    let user = std::env::var("USERNAME").expect("USERNAME is set");
+    for account in ["SYSTEM", "Administrators", user.as_str()] {
+        let granted = std::process::Command::new("icacls")
+            .arg(path)
+            .args(["/grant", &format!("{account}:F")])
+            .output()
+            .expect("icacls runs");
+        assert!(
+            granted.status.success(),
+            "icacls grant {account} failed: {}",
+            String::from_utf8_lossy(&granted.stderr)
+        );
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
 fn owner_only(_path: &std::path::Path) {}

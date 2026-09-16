@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use depot_core::{Baseline, WorktreeLease};
 use serde_json::Value;
 
-use crate::adapters::process::{ProcessError, Program};
+use crate::adapters::process::{Output, ProcessError, Program};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Lease {
@@ -71,6 +71,16 @@ impl Treehouse {
         }
         let output = self.git_output(path, &args)?;
         Ok(non_empty_lines(&output))
+    }
+
+    fn return_lease(&self, lease: &Lease) -> Result<Output, ProcessError> {
+        let args = vec![
+            "return".to_owned(),
+            lease.path.display().to_string(),
+            "--if-lease-id".to_owned(),
+            lease.lease.as_str().to_owned(),
+        ];
+        self.program.run_ok(&args, None)
     }
 
     fn unlanded_work(&self, path: &Path) -> Result<Option<String>, WorktreeError> {
@@ -152,7 +162,10 @@ impl Worktrees for Treehouse {
 
         if let Baseline::PinnedCommit(commit) = &request.baseline {
             let args = self.git_args(&lease.path, &["checkout", "--detach", commit.as_str()]);
-            self.git.run_ok(&args, None)?;
+            if let Err(error) = self.git.run_ok(&args, None) {
+                let _ = self.return_lease(&lease);
+                return Err(error.into());
+            }
         }
 
         Ok(lease)
@@ -167,15 +180,7 @@ impl Worktrees for Treehouse {
             });
         }
 
-        let args = vec![
-            "return".to_owned(),
-            lease.path.display().to_string(),
-            "--if-lease-id".to_owned(),
-            lease.lease.as_str().to_owned(),
-        ];
-        self.program
-            .run_ok(&args, None)
-            .map_err(WorktreeError::Command)?;
+        self.return_lease(lease).map_err(WorktreeError::Command)?;
         Ok(())
     }
 

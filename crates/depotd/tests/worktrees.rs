@@ -5,15 +5,48 @@ mod git;
 #[path = "support/temp.rs"]
 mod temp;
 
+use std::path::Path;
+
 use depot_core::{Baseline, CommitId, WorktreeLease};
 use depotd::adapters::worktrees::{AcquireRequest, Lease, Treehouse, Worktrees};
 use fake_program::FakeProgram;
+use serde_json::json;
 use temp::TempDir;
 
-fn lease_json(path: &str, lease_id: &str, holder: &str) -> String {
-    format!(
-        "{{\"path\":\"{path}\",\"lease_id\":\"{lease_id}\",\"lease_holder\":\"{holder}\",\"leased_at\":\"2026-09-16T05:56:43Z\"}}"
-    )
+fn lease_json(path: &Path, lease_id: &str, holder: &str) -> String {
+    json!({
+        "path": path,
+        "lease_id": lease_id,
+        "lease_holder": holder,
+        "leased_at": "2026-09-16T05:56:43Z",
+    })
+    .to_string()
+}
+
+fn pool_status_json(leased_path: &Path) -> String {
+    json!([
+        {
+            "name": "1",
+            "path": leased_path,
+            "status": "leased",
+            "flavor": "git",
+            "lease_id": "7c1d0a5e",
+            "lease_holder": "task-7",
+            "leased_at": "2026-09-16T05:56:43Z",
+            "processes": []
+        },
+        {
+            "name": "2",
+            "path": "/pool/2/repo",
+            "status": "free",
+            "flavor": "git",
+            "lease_id": "",
+            "lease_holder": "",
+            "leased_at": "",
+            "processes": []
+        }
+    ])
+    .to_string()
 }
 
 fn request(repo: &std::path::Path, baseline: Baseline) -> AcquireRequest {
@@ -31,20 +64,12 @@ fn acquires_releases_and_reads_the_pool() {
     let fake = FakeProgram::new(dir.path(), "treehouse");
     fake.respond(
         "get",
-        &lease_json(&fixture.lease.display().to_string(), "7c1d0a5e", "task-7"),
+        &lease_json(&fixture.lease, "7c1d0a5e", "task-7"),
         "",
         0,
     );
     fake.respond("return", "", "", 0);
-    fake.respond(
-        "status",
-        &format!(
-            "[{{\"name\":\"1\",\"path\":\"{}\",\"status\":\"leased\",\"flavor\":\"git\",\"lease_id\":\"7c1d0a5e\",\"lease_holder\":\"task-7\",\"leased_at\":\"2026-09-16T05:56:43Z\",\"processes\":[]}},{{\"name\":\"2\",\"path\":\"/pool/2/repo\",\"status\":\"free\",\"flavor\":\"git\",\"lease_id\":\"\",\"lease_holder\":\"\",\"leased_at\":\"\",\"processes\":[]}}]",
-            fixture.lease.display()
-        ),
-        "",
-        0,
-    );
+    fake.respond("status", &pool_status_json(&fixture.lease), "", 0);
 
     let treehouse = Treehouse::new(fake.program());
     let lease = treehouse
@@ -88,7 +113,7 @@ fn refuses_to_release_a_lease_holding_uncommitted_work() {
     let fake = FakeProgram::new(dir.path(), "treehouse");
     fake.respond(
         "get",
-        &lease_json(&fixture.lease.display().to_string(), "7c1d0a5e", "task-7"),
+        &lease_json(&fixture.lease, "7c1d0a5e", "task-7"),
         "",
         0,
     );
@@ -123,7 +148,7 @@ fn refuses_a_lease_holding_unpushed_commits_until_they_are_pushed() {
     let fake = FakeProgram::new(dir.path(), "treehouse");
     fake.respond(
         "get",
-        &lease_json(&fixture.lease.display().to_string(), "7c1d0a5e", "task-7"),
+        &lease_json(&fixture.lease, "7c1d0a5e", "task-7"),
         "",
         0,
     );
@@ -174,7 +199,7 @@ fn pins_a_lease_to_the_dependency_commit_it_was_asked_for() {
     let fake = FakeProgram::new(dir.path(), "treehouse");
     fake.respond(
         "get",
-        &lease_json(&fixture.lease.display().to_string(), "7c1d0a5e", "task-7"),
+        &lease_json(&fixture.lease, "7c1d0a5e", "task-7"),
         "",
         0,
     );
@@ -188,6 +213,41 @@ fn pins_a_lease_to_the_dependency_commit_it_was_asked_for() {
         .expect("a worktree is leased");
     assert_eq!(lease.lease, WorktreeLease::new("7c1d0a5e"));
     assert_eq!(git::head(&fixture.lease), fixture.first_commit);
+}
+
+#[test]
+fn returns_the_lease_when_the_pinned_commit_is_missing() {
+    let dir = TempDir::new("worktrees-pin-miss");
+    let fixture = git::repo_with_remote(dir.path());
+    let fake = FakeProgram::new(dir.path(), "treehouse");
+    fake.respond(
+        "get",
+        &lease_json(&fixture.lease, "7c1d0a5e", "task-7"),
+        "",
+        0,
+    );
+    fake.respond("return", "", "", 0);
+
+    let missing = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let error = Treehouse::new(fake.program())
+        .acquire(&request(
+            &fixture.repo,
+            Baseline::PinnedCommit(CommitId::new(missing)),
+        ))
+        .expect_err("a missing pin is refused");
+    let message = error.to_string();
+    assert!(
+        message.contains(missing) || message.contains("checkout"),
+        "{message}"
+    );
+    assert_eq!(
+        fake.calls(),
+        vec![
+            "get --lease --json --lease-holder task-7".to_owned(),
+            format!("return {} --if-lease-id 7c1d0a5e", fixture.lease.display()),
+        ],
+        "a failed pin must give the lease back"
+    );
 }
 
 #[test]

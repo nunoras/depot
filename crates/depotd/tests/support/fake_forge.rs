@@ -25,6 +25,7 @@ impl Recorded {
 struct Route {
     method: String,
     path: String,
+    query: Option<String>,
     status: u16,
     body: String,
 }
@@ -59,12 +60,24 @@ impl FakeForge {
     }
 
     pub fn route(&self, method: &str, path: &str, status: u16, body: &str) {
+        self.route_query(method, path, None, status, body);
+    }
+
+    pub fn route_query(
+        &self,
+        method: &str,
+        path: &str,
+        query: Option<&str>,
+        status: u16,
+        body: &str,
+    ) {
         self.routes
             .lock()
             .expect("the routes are readable")
             .push(Route {
                 method: method.to_owned(),
                 path: path.to_owned(),
+                query: query.map(str::to_owned),
                 status,
                 body: body.to_owned(),
             });
@@ -95,12 +108,24 @@ fn serve(
             break;
         };
         let request = read_request(&mut stream);
-        let route = routes
-            .lock()
-            .expect("the routes are readable")
-            .iter()
-            .find(|route| route.method == request.method && route.path == request.path)
-            .cloned();
+        let route = {
+            let routes = routes.lock().expect("the routes are readable");
+            routes
+                .iter()
+                .find(|route| {
+                    route.method == request.method
+                        && route.path == request.path
+                        && route.query.as_ref() == request.query.as_ref()
+                })
+                .or_else(|| {
+                    routes.iter().find(|route| {
+                        route.method == request.method
+                            && route.path == request.path
+                            && route.query.is_none()
+                    })
+                })
+                .cloned()
+        };
         let (status, body) = match route {
             Some(route) => (route.status, route.body),
             None => (404, "{\"message\":\"Not Found\"}".to_owned()),

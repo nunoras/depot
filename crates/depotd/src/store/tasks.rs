@@ -7,6 +7,7 @@ use depot_core::{
 };
 use rusqlite::{Row, params};
 
+use crate::checklist::render_checklist;
 use crate::error::{Error, Result};
 use crate::store::Store;
 use crate::vocabulary::{
@@ -17,6 +18,19 @@ use crate::vocabulary::{
 
 impl Store {
     pub fn put_task(&self, task: &Task) -> Result<()> {
+        let project = self.project(&task.project)?.ok_or_else(|| {
+            Error::NotFound(format!(
+                "no project `{}` is registered",
+                task.project.as_str()
+            ))
+        })?;
+        let mut state = self.project_state(&project)?;
+        state.tasks.insert(task.id.clone(), task.clone());
+        let checklist = render_checklist(&state);
+        let project_home = self.home().project_home(&project.slug);
+        project_home.ensure()?;
+        let checklist_path = project_home.checklist_path();
+
         let transaction = self.connection().unchecked_transaction()?;
         transaction.execute(
             "DELETE FROM tasks WHERE project_id = ?1 AND id = ?2",
@@ -167,7 +181,7 @@ impl Store {
         }
 
         transaction.commit()?;
-        self.refresh_checklist(&task.project)?;
+        std::fs::write(&checklist_path, checklist)?;
         Ok(())
     }
 

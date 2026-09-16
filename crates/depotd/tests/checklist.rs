@@ -271,6 +271,47 @@ fn a_broken_project_config_refuses_put_task_without_writing() {
 }
 
 #[test]
+fn a_failed_checklist_write_rolls_back_put_task() {
+    let fixture = support::fixture();
+    let added = support::register(&fixture, "example");
+    let checklist = fixture
+        .home
+        .project_home(&added.project.slug)
+        .checklist_path();
+    let before = std::fs::read_to_string(&checklist).expect("empty checklist");
+    std::fs::remove_file(&checklist).expect("remove checklist file");
+    std::fs::create_dir(&checklist).expect("block checklist path with a directory");
+
+    let store = Store::open(&fixture.home).expect("store");
+    let error = store
+        .put_task(&support::simple_task(
+            &added.project.id,
+            "t-1",
+            TaskState::Running,
+            1_700_000_000_000,
+        ))
+        .expect_err("a blocked checklist path must refuse the write");
+
+    assert!(
+        !error.to_string().is_empty(),
+        "the refusal should carry an io error, got {error}"
+    );
+    assert!(
+        store
+            .task(&added.project.id, &TaskId::new("t-1"))
+            .expect("read")
+            .is_none(),
+        "a failed checklist write must roll back the task row"
+    );
+    assert!(
+        checklist.is_dir(),
+        "the blocked checklist path must remain a directory"
+    );
+    std::fs::remove_dir(&checklist).expect("unblock");
+    std::fs::write(&checklist, before).expect("restore");
+}
+
+#[test]
 fn a_missing_project_directory_refuses_put_task_without_writing() {
     let fixture = support::fixture();
     let directory = support::project_directory(&fixture, "gone");

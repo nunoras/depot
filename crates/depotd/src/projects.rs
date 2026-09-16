@@ -34,9 +34,13 @@ pub fn add_project(home: &DepotHome, target: &str) -> Result<Added> {
         },
     };
 
-    let created = store.put_project(&project)?;
+    let state = store.project_state(&project)?;
+    let checklist = render_checklist(&state);
     let project_home = home.project_home(&project.slug);
-    store.write_checklist(&project)?;
+
+    let created = store.put_project(&project)?;
+    project_home.ensure()?;
+    std::fs::write(project_home.checklist_path(), checklist)?;
 
     Ok(Added {
         project,

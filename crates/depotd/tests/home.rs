@@ -95,6 +95,35 @@ fn slugs_come_from_the_project_name() {
 }
 
 #[test]
+fn a_broken_project_config_refuses_add_without_registering() {
+    let fixture = support::fixture();
+    let directory = support::project_directory(&fixture, "broken");
+    std::fs::write(
+        directory.join(depotd::PROJECT_CONFIG_FILE_NAME),
+        "base_branch = \"main\"\n\n[profiles]\nbuild = \"\"\n",
+    )
+    .expect("broken project config");
+
+    let error = add_project(&fixture.home, directory.to_str().unwrap())
+        .expect_err("a broken project config must refuse registration");
+
+    assert!(
+        error.to_string().contains("empty profile"),
+        "the refusal should name the config problem, got {error}"
+    );
+
+    let store = Store::open(&fixture.home).expect("store");
+    assert!(
+        store.projects().expect("projects").is_empty(),
+        "a refused add must leave no durable project row"
+    );
+    assert!(
+        !fixture.home.project_home("broken").root().exists(),
+        "a refused add must leave no half-created project home"
+    );
+}
+
+#[test]
 fn two_projects_with_the_same_name_get_their_own_directories() {
     let fixture = support::fixture();
     let first = support::project_directory(&fixture, "one/depot");

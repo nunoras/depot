@@ -102,7 +102,7 @@ The texts a coordinator is given are versioned artifacts in this repository, inc
 |---|---|
 | `assets/coordinator-policy.md` | what the coordinator owns: no project code, when to delegate, when to answer a worker and when to relay, the checklist against narrative documents, and that new scope waits for the user. |
 | `assets/coordinator-kickoff.md` | the first message of a session: the project, the store, the live checklist and the context document, then `depot inbox`. |
-| `assets/brief-template.md` | the brief a worker is handed: intent, role, output destination, done criteria, dependencies, validation, the store, and the two worker calls. |
+| `assets/brief-template.md` | the brief a worker is handed: intent, role, output destination, done criteria, dependencies, validation, worker context environment variables, the store, and the two worker calls. |
 
 `depot inbox` prints the facts recorded since the coordinator's previous turn, joined to where each task stands now, split into what needs the user, what needs the coordinator, and what needs nothing.
 A poll that observed nothing is not reported at all, and the read position lives on the project's coordinator row, so a rotated session picks up where the last one stopped.
@@ -121,6 +121,17 @@ The verbs a coordinator drives:
 | `depot status [--project <name>] [--all]` | the live checklist. |
 | `depot doc write <name> --content <text\|->` | writes a narrative document under the project's `docs/`. |
 | `depot inbox [--project <name>]` | what happened since the last turn. |
+
+The two calls a worker uses to move state:
+
+| verb | what it does |
+|---|---|
+| `depot ask <question>` | records a relayed question, pauses the worker and waits for an answer from the coordinator or the user. |
+| `depot submit --summary <text> --artifact <path-or-url>...` | records the submission summary and artifacts, then triggers validation against HEAD. |
+
+A worker with `DEPOT_TASK_ID` and `DEPOT_ATTEMPT_ID` set can only use `ask` and `submit`.
+Every other command is refused to enforce the worker/coordinator boundary.
+A worker may write narrative documents or artifacts: those change no task state.
 
 A role with no entry in the project's `[profiles]` map is refused when the task is filed rather than defaulted to another profile.
 `docs/context.md` is the coordinator's context document: depot scaffolds it on registration and never renders it, so a fresh session reads it to catch up and the session that wrote it stops mattering.

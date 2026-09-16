@@ -1,3 +1,5 @@
+use std::fs::OpenOptions;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use depot_core::{
@@ -9,8 +11,39 @@ use crate::adapters::sessions::{LaunchRequest, SessionProfile, Sessions};
 use crate::adapters::worktrees::{AcquireRequest, Lease, Worktrees};
 use crate::clock::now;
 use crate::error::{Error, Result};
+use crate::home::DepotHome;
 use crate::project::{LocationKind, Project};
 use crate::store::{EventOutcome, Store, event_key};
+
+pub const DAEMON_LOCK_FILE_NAME: &str = "depotd.lock";
+
+pub struct InstanceLock {
+    path: PathBuf,
+}
+
+impl InstanceLock {
+    pub fn acquire(home: &DepotHome) -> Result<Self> {
+        home.ensure()?;
+        let path = home.root().join(DAEMON_LOCK_FILE_NAME);
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(|error| {
+                Error::Home(format!(
+                    "another depot daemon already holds {}: {error}",
+                    path.display()
+                ))
+            })?;
+        Ok(Self { path })
+    }
+}
+
+impl Drop for InstanceLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
 
 pub trait ValidationRunner {
     fn validate(&self, task: &Task, commit: &CommitId, command: &str) -> Result<ValidationResult>;

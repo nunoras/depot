@@ -142,7 +142,25 @@ CREATE TABLE coordinators (
 );
 ";
 
-const MIGRATIONS: &[&str] = &[SCHEMA_V1, INDEXES_V2, EVENTS_PROJECT_KEY_V3, EVENT_TASK_V4];
+pub const TASK_SUBMISSION_V5: &str = "
+ALTER TABLE tasks ADD COLUMN submission_summary TEXT;
+CREATE TABLE task_submission_artifacts (
+    project_id TEXT NOT NULL,
+    task_id    TEXT NOT NULL,
+    position   INTEGER NOT NULL,
+    path       TEXT NOT NULL,
+    PRIMARY KEY (project_id, task_id, position),
+    FOREIGN KEY (project_id, task_id) REFERENCES tasks(project_id, id) ON DELETE CASCADE
+);
+";
+
+const MIGRATIONS: &[&str] = &[
+    SCHEMA_V1,
+    INDEXES_V2,
+    EVENTS_PROJECT_KEY_V3,
+    EVENT_TASK_V4,
+    TASK_SUBMISSION_V5,
+];
 
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
 

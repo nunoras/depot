@@ -218,6 +218,8 @@ fn the_brief_renders_from_a_task_record_without_repeating_the_coordinator() {
         text(&scratch),
         "A document in the store".to_string(),
         "A verdict written to the store".to_string(),
+        "DEPOT_TASK_ID=t-1".to_string(),
+        "DEPOT_ATTEMPT_ID=lease-2".to_string(),
         "depot ask".to_string(),
         "depot submit".to_string(),
         "`root` **task root**".to_string(),
@@ -234,6 +236,26 @@ fn the_brief_renders_from_a_task_record_without_repeating_the_coordinator() {
         "the intent is stated once, not restated by the coordinator, got\n{brief}"
     );
     assert!(!brief.contains("{{"), "no placeholder may survive");
+}
+
+#[test]
+fn a_worker_launch_stores_the_brief_and_delivers_it_as_the_prompt() {
+    let fixture = support::fixture();
+    let added = support::register_with_config(&fixture, "example", BUILD_ONLY);
+    let store = Store::open(&fixture.home).expect("store");
+    let task = support::full_task(&added.project.id, "t-1");
+    let context = store.coordinator_context(&added.project).expect("context");
+
+    let launch = context.worker_launch(&task).expect("worker launch");
+
+    assert_eq!(
+        std::fs::read_to_string(&launch.brief_path).expect("stored brief"),
+        launch.prompt
+    );
+    assert_eq!(
+        launch.brief_path.parent(),
+        Some(context.home.documents_dir().as_path())
+    );
 }
 
 #[test]

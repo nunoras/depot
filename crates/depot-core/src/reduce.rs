@@ -5,7 +5,7 @@ use crate::action::{Action, Baseline};
 use crate::fact::{Fact, FactKind, Liveness};
 use crate::model::{
     Answer, Attempt, AttemptOutcome, Checks, CommitId, CoordinatorSession, Dependency, Limits,
-    Link, ProfileId, ProjectState, Question, Retry, Task, TaskId, TaskState, Timestamp,
+    Link, ProfileId, ProjectState, Question, Retry, Submission, Task, TaskId, TaskState, Timestamp,
     ValidationRecord, WorktreeLease,
 };
 
@@ -42,6 +42,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                         attempts: Vec::new(),
                         questions: Vec::new(),
                         validations: Vec::new(),
+                        submission: None,
                         artifacts: Vec::new(),
                         links: Vec::new(),
                         branch_head: None,
@@ -192,6 +193,23 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                     changed = true;
                 }
                 task.updated_at = fact.at;
+            }
+        }
+
+        FactKind::WorkerSubmissionRecorded {
+            task,
+            summary,
+            artifacts,
+        } => {
+            if let Some(task) = next.tasks.get_mut(task)
+                && task.state == TaskState::Running
+            {
+                task.submission = Some(Submission {
+                    summary: summary.clone(),
+                    artifacts: artifacts.clone(),
+                });
+                task.updated_at = fact.at;
+                changed = true;
             }
         }
 

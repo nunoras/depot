@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::process::Command;
 
 use depot_core::{AnsweredBy, CommitId, Dependency, Fact, FactKind, Role, Task, TaskId, TaskState};
 
@@ -75,6 +76,66 @@ pub fn approve_tasks(
     Ok(approved)
 }
 
+pub fn worker_ask(home: &DepotHome, text: &str) -> Result<Task> {
+    let store = Store::open(home)?;
+    let (project, current) = worker_task(&store)?;
+    if current.state != TaskState::Running {
+        return Err(transition_refused(&current, "asked"));
+    }
+    let fact = Fact {
+        at: now(),
+        kind: FactKind::QuestionAsked {
+            task: current.id.clone(),
+            text: text.to_owned(),
+            relay: true,
+        },
+    };
+    apply(
+        &store,
+        &project,
+        &["question_asked", current.id.as_str()],
+        &fact,
+    )?;
+    task(&store, &project, &current.id)
+}
+
+pub fn worker_submit(home: &DepotHome, summary: &str, artifacts: Vec<String>) -> Result<Task> {
+    let store = Store::open(home)?;
+    let (project, current) = worker_task(&store)?;
+    if current.state != TaskState::Running {
+        return Err(transition_refused(&current, "submitted"));
+    }
+    let commit = worker_commit()?;
+    let recorded = Fact {
+        at: now(),
+        kind: FactKind::WorkerSubmissionRecorded {
+            task: current.id.clone(),
+            summary: summary.to_owned(),
+            artifacts,
+        },
+    };
+    apply(
+        &store,
+        &project,
+        &["worker_submission_recorded", current.id.as_str()],
+        &recorded,
+    )?;
+    let submitted = Fact {
+        at: now(),
+        kind: FactKind::WorkerSubmitted {
+            task: current.id.clone(),
+            commit,
+        },
+    };
+    apply(
+        &store,
+        &project,
+        &["worker_submitted", current.id.as_str()],
+        &submitted,
+    )?;
+    task(&store, &project, &current.id)
+}
+
 pub fn answer_question(
     home: &DepotHome,
     selection: Option<&str>,
@@ -146,6 +207,60 @@ pub fn write_narrative(
 enum Prepared {
     Apply,
     AlreadyDone,
+}
+
+fn worker_task(store: &Store) -> Result<(Project, Task)> {
+    let task_id = std::env::var("DEPOT_TASK_ID")
+        .map_err(|_| Error::Project("worker context is missing DEPOT_TASK_ID".to_string()))?;
+    let attempt_id = std::env::var("DEPOT_ATTEMPT_ID")
+        .map_err(|_| Error::Project("worker context is missing DEPOT_ATTEMPT_ID".to_string()))?;
+    let id = TaskId::new(task_id);
+    let matches = store
+        .projects()?
+        .into_iter()
+        .filter_map(|project| {
+            store
+                .task(&project.id, &id)
+                .ok()
+                .flatten()
+                .and_then(|task| {
+                    task.attempts
+                        .iter()
+                        .any(|attempt| {
+                            attempt
+                                .worktree
+                                .as_ref()
+                                .is_some_and(|lease| lease.as_str() == attempt_id)
+                        })
+                        .then_some((project, task))
+                })
+        })
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [(project, task)] => Ok((project.clone(), task.clone())),
+        [] => Err(Error::NotFound(format!(
+            "worker context names unknown task `{id}` or attempt `{attempt_id}`"
+        ))),
+        _ => Err(Error::Project(format!(
+            "worker context for task `{id}` and attempt `{attempt_id}` is ambiguous"
+        ))),
+    }
+}
+
+fn worker_commit() -> Result<CommitId> {
+    let output = Command::new("git").args(["rev-parse", "HEAD"]).output()?;
+    if !output.status.success() {
+        return Err(Error::Project(
+            "worker submit needs a commit at HEAD".to_string(),
+        ));
+    }
+    let commit = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if commit.is_empty() {
+        return Err(Error::Project(
+            "worker submit needs a commit at HEAD".to_string(),
+        ));
+    }
+    Ok(CommitId::new(commit))
 }
 
 fn prepare_approve(task: &Task) -> Result<Prepared> {

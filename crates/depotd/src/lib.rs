@@ -18,14 +18,15 @@ mod vocabulary;
 
 pub use checklist::{format_timestamp, render_checklist};
 pub use commands::{
-    TaskRequest, add_task, answer_question, approve_tasks, read_inbox, stop_task, write_narrative,
+    TaskRequest, add_task, answer_question, approve_tasks, read_inbox, stop_task, worker_ask,
+    worker_submit, write_narrative,
 };
 pub use config::{
     PROJECT_CONFIG_FILE_NAME, ProjectConfig, PullRequestConfig, QuestionsConfig, ValidationConfig,
 };
 pub use coordinator::{
     BRIEF_TEMPLATE, COORDINATOR_KICKOFF_TEMPLATE, COORDINATOR_POLICY, CoordinatorContext, Launch,
-    render_template,
+    WorkerLaunch, render_template,
 };
 pub use documents::{document_path, write_document};
 pub use error::{Error, Result};

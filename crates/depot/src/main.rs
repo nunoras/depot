@@ -2,7 +2,8 @@ use std::io::Read;
 
 use depotd::{
     DepotHome, Error, StatusSelection, TaskRequest, add_project, add_task, answer_question,
-    approve_tasks, read_inbox, render_status, stop_task, write_narrative,
+    approve_tasks, read_inbox, render_status, stop_task, worker_ask, worker_submit,
+    write_narrative,
 };
 
 const USAGE: &str = "\
@@ -10,6 +11,8 @@ depot - coordinate a project's agent work
 
 USAGE
   depot project add <path-or-url>
+  depot ask <question>
+  depot submit --summary <text> --artifact <path-or-url>...
   depot status [--project <name>] [--all]
   depot task add --title <title> --intent <intent> --role <plan|build|review|fix>
                  [--depends-on <task>@<commit>]...
@@ -69,13 +72,59 @@ impl From<Error> for Failure {
 fn dispatch(arguments: &[String]) -> Result<String, Failure> {
     match arguments.first().map(String::as_str) {
         None | Some("help") | Some("--help") | Some("-h") => Ok(USAGE.to_string()),
-        Some("project") => project_command(&arguments[1..]),
-        Some("task") => task_command(&arguments[1..]),
+        Some("ask") => ask_command(&arguments[1..]),
+        Some("submit") => submit_command(&arguments[1..]),
+        Some("project") => {
+            require_coordinator()?;
+            project_command(&arguments[1..])
+        }
+        Some("task") => {
+            require_coordinator()?;
+            task_command(&arguments[1..])
+        }
         Some("doc") => doc_command(&arguments[1..]),
-        Some("inbox") => inbox_command(&arguments[1..]),
+        Some("inbox") => {
+            require_coordinator()?;
+            inbox_command(&arguments[1..])
+        }
         Some("status") => status_command(&arguments[1..]),
         Some(other) => Err(Failure::Usage(format!("unknown command `{other}`"))),
     }
+}
+
+fn require_coordinator() -> Result<(), Failure> {
+    if ["DEPOT_TASK_ID", "DEPOT_ATTEMPT_ID"]
+        .into_iter()
+        .any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()))
+    {
+        return Err(Error::Project(
+            "worker context may only use `depot ask` and `depot submit` to move state".to_string(),
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn ask_command(arguments: &[String]) -> Result<String, Failure> {
+    if arguments.len() != 1 {
+        return Err(Failure::Usage(
+            "`depot ask` needs exactly one question".to_string(),
+        ));
+    }
+    let task = worker_ask(&DepotHome::resolve()?, &arguments[0])?;
+    Ok(format!("asked {}\n", task.id))
+}
+
+fn submit_command(arguments: &[String]) -> Result<String, Failure> {
+    let flags = Flags::parse(arguments, &[])?;
+    flags.reject_unknown(&["summary", "artifact"])?;
+    flags.reject_positionals()?;
+    let task = worker_submit(
+        &DepotHome::resolve()?,
+        flags.required("summary")?,
+        flags.all("artifact"),
+    )?;
+    Ok(format!("submitted {}\n", task.id))
 }
 
 fn project_command(arguments: &[String]) -> Result<String, Failure> {

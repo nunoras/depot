@@ -1299,7 +1299,7 @@ fn worktree_acquired_rework_respects_state_and_cap() {
                 },
             )],
         )
-        .when("t1", TaskState::Validated, vec![])
+        .when("t1", TaskState::Validated, vec![release("t1", "w2")])
         .checking(|state| {
             subject(state, "t1").attempts.len() == 1
                 && subject(state, "t2").state == TaskState::Running
@@ -1323,7 +1323,7 @@ fn worktree_acquired_rework_respects_state_and_cap() {
                 },
             )],
         )
-        .when("t1", TaskState::Failed, vec![])
+        .when("t1", TaskState::Failed, vec![release("t1", "w2")])
         .checking(|state| subject(state, "t1").attempts.len() == 1),
         case(
             "a cancelled task is not restarted by worktree acquisition",
@@ -1344,7 +1344,7 @@ fn worktree_acquired_rework_respects_state_and_cap() {
                 },
             )],
         )
-        .when("t1", TaskState::Cancelled, vec![])
+        .when("t1", TaskState::Cancelled, vec![release("t1", "w2")])
         .checking(|state| subject(state, "t1").attempts.len() == 1),
     ]);
 }
@@ -1462,7 +1462,7 @@ fn rejected_rework_does_not_repin_a_validated_task() {
                 },
             )],
         )
-        .when("t1", TaskState::Validated, vec![])
+        .when("t1", TaskState::Validated, vec![release("t1", "w2")])
         .checking(|state| {
             subject(state, "t1").attempts.len() == 1
                 && subject(state, "t1")
@@ -1507,7 +1507,7 @@ fn rejected_rework_does_not_repin_a_validated_task() {
                 },
             )],
         )
-        .when("t1", TaskState::Validated, vec![])
+        .when("t1", TaskState::Validated, vec![release("t1", "w2")])
         .checking(|state| {
             let edges = &subject(state, "t1").dependencies;
             edges
@@ -1519,6 +1519,70 @@ fn rejected_rework_does_not_repin_a_validated_task() {
                 && subject(state, "t1").attempts.len() == 1
         }),
     ]);
+}
+
+#[test]
+fn unaccepted_worktree_acquired_releases_the_fact_lease() {
+    run(vec![case(
+        "a blocked multi-dep rework releases the unattached lease",
+        state(vec![
+            with_base(
+                depending_on(
+                    depending_on(
+                        with_attempt(
+                            validated("t1", "cb"),
+                            Attempt {
+                                outcome: AttemptOutcome::Submitted,
+                                worktree: Some(lease("w1")),
+                                finished_at: Some(at(0)),
+                                ..attempt(BUILD)
+                            },
+                        ),
+                        "a",
+                        "ca1",
+                    ),
+                    "b",
+                    "cb1",
+                ),
+                "a",
+            ),
+            validated("a", "ca2"),
+            validated("b", "cb2"),
+        ]),
+        vec![fact(
+            1_000,
+            FactKind::WorktreeAcquired {
+                task: task_id("t1"),
+                lease: lease("w2"),
+                baseline: Baseline::PinnedCommit(commit("ca2")),
+            },
+        )],
+    )
+    .when("t1", TaskState::Validated, vec![release("t1", "w2")])
+    .checking(|state| {
+        subject(state, "t1")
+            .attempts
+            .last()
+            .and_then(|attempt| attempt.worktree.clone())
+            == Some(lease("w1"))
+    })]);
+}
+
+#[test]
+fn duplicate_submit_does_not_requeue_validation() {
+    run(vec![case(
+        "a second submit while validating is ignored",
+        state(vec![running_with_session("t1", "s1", "w1")]),
+        vec![
+            fact(1_000, submitted("t1", "cb")),
+            fact(2_000, submitted("t1", "cb")),
+        ],
+    )
+    .when("t1", TaskState::Validating, vec![])
+    .checking(|state| {
+        subject(state, "t1").attempts.len() == 1
+            && holds(state, "t1", AttemptOutcome::Submitted)
+    })]);
 }
 
 #[test]

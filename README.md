@@ -13,10 +13,76 @@ The destination is the published spec at [nunoras/depot#30](https://github.com/n
 | crate | what it holds |
 |---|---|
 | `crates/depot-core` | The domain model and the whole task lifecycle as one pure reduce step. |
-| `crates/depotd` | The daemon: the four adapters depot talks to, and everything else with a side effect. |
+| `crates/depotd` | The daemon: everything with a side effect, including the four adapters depot talks to, the store, the depot home and configuration. |
 | `crates/depot` | The command line the coordinator and the user drive. |
 
-`depot` is a shell until its ticket lands, and the daemon loop is not wired to the adapters yet: [nunoras/depot#34](https://github.com/nunoras/depot/issues/34) does that.
+The daemon loop is not wired to the adapters yet: [nunoras/depot#34](https://github.com/nunoras/depot/issues/34) does that.
+
+## The depot home
+
+Everything depot owns lives outside your repositories, in one home: `$DEPOT_HOME`, or `~/.depot` when that variable is unset.
+
+```
+<depot home>
+  config.toml          machine-local settings
+  depot.db             one sqlite database: projects, tasks, dependency edges, attempts,
+                       questions, validation records, observed forge state, event journal
+  projects/<slug>/
+    checklist.md       rendered from the records, never edited by hand
+    archive/
+    docs/
+    scratch/
+    media/
+```
+
+`depot project add <path-or-url>` registers a project, writes its home directory, and scaffolds its committed config.
+Adding the same project twice is idempotent; a path that is not an existing directory is refused.
+`depot status [--project <name>] [--all]` prints the rendered checklist.
+
+The store applies its schema migrations on open and refuses a database written by a newer build rather than downgrading it.
+`Store` is the only writer of `checklist.md`, and `render_checklist` is a pure function of a `ProjectState`: the same state always produces the same bytes.
+`crates/depotd/tests/` asserts that rather than assuming it.
+
+## The configuration split
+
+Project knowledge is committed with the repository, so validation commands and profiles are reviewed like code.
+
+`.depot.toml`, in the project repository:
+
+```toml
+base_branch = "main"
+
+[profiles]
+build = "glm-5.3"
+
+[validation]
+command = "cargo test"
+
+[pull_request]
+base = "main"
+auto_merge = false
+
+[questions]
+always_relay = false
+```
+
+Machine-local settings stay in the depot home and never travel to another host.
+
+`$DEPOT_HOME/config.toml`:
+
+```toml
+concurrency = 4
+run_duration_minutes = 60
+poll_interval_seconds = 30
+pool_root = "/home/me/.treehouse"
+fallback_profiles = ["gpt-5.5"]
+
+[credentials]
+github = "gh-cli"
+```
+
+Neither file accepts a key from the other side of the split, and registering a project never writes a machine-local setting into the repository.
+`crates/depotd/tests/config_split.rs` is the guard.
 
 ## The pure core
 
@@ -56,6 +122,7 @@ cargo fmt --all --check
 
 `crates/depot-core/tests/lifecycle.rs` holds one table per lifecycle rule, each row a scenario asserting the resulting task state and the exact actions the daemon intends to take.
 The rules are numbered in the ticket that built this skeleton: [nunoras/depot#31](https://github.com/nunoras/depot/issues/31).
+`crates/depot-core/tests/purity.rs` keeps the core dependency-free, and `crates/depot/tests/cli.rs` drives the real binary.
 
 `crates/depotd/tests/` holds one contract test per adapter: `sessions.rs`, `worktrees.rs`, `forge.rs` and `profiles.rs`.
 Each drives the real implementation against a fake of the dependency, covering success, failure and malformed output, and each asserts the exact command depot issued.

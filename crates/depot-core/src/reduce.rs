@@ -168,10 +168,13 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
         }
 
         FactKind::WorkerSubmitted { task, commit } => {
-            let can_submit = next
-                .tasks
-                .get(task)
-                .is_some_and(|task| task.state.in_flight());
+            let can_submit = next.tasks.get(task).is_some_and(|task| {
+                task.state == TaskState::Running
+                    && task
+                        .attempts
+                        .last()
+                        .is_some_and(|attempt| is_open(attempt.outcome))
+            });
             if can_submit {
                 if let Some(task) = next.tasks.get_mut(task) {
                     close_attempt(task, AttemptOutcome::Submitted, fact.at);
@@ -278,6 +281,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                     _ => false,
                 }
             });
+            let mut attached = false;
             if live {
                 repin_acquired_task(&mut next, task, baseline);
                 if let Some(task) = next.tasks.get_mut(task) {
@@ -285,6 +289,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                         attempt.worktree = Some(lease.clone());
                     }
                     task.updated_at = fact.at;
+                    attached = true;
                 }
             } else if rework_candidate {
                 let previous_pins = dependency_pins(&next, task);
@@ -311,11 +316,18 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                     task.state = TaskState::Running;
                     task.updated_at = fact.at;
                     changed = true;
+                    attached = true;
                     actions.push(Action::LaunchSession {
                         task: task.id.clone(),
                         profile,
                     });
                 }
+            }
+            if !attached && next.tasks.contains_key(task) {
+                actions.push(Action::ReleaseWorktree {
+                    task: task.clone(),
+                    lease: lease.clone(),
+                });
             }
         }
 

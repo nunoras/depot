@@ -2,33 +2,10 @@ use std::fmt::Display;
 
 use depot_core::{Baseline, FactKind, Liveness};
 
-use crate::vocabulary::{answered_by_name, checks_name, role_name};
+use crate::vocabulary::{answered_by_name, checks_name, fact_tag, fact_tag_name, role_name};
 
 pub fn kind_name(kind: &FactKind) -> &'static str {
-    match kind {
-        FactKind::TaskProposed { .. } => "task_proposed",
-        FactKind::TaskApproved { .. } => "task_approved",
-        FactKind::TaskCancelled { .. } => "task_cancelled",
-        FactKind::QuestionAsked { .. } => "question_asked",
-        FactKind::QuestionAnswered { .. } => "question_answered",
-        FactKind::WorkerTurnStarted { .. } => "worker_turn_started",
-        FactKind::WorkerTurnEnded { .. } => "worker_turn_ended",
-        FactKind::WorkerLivenessChanged { .. } => "worker_liveness_changed",
-        FactKind::WorkerSubmitted { .. } => "worker_submitted",
-        FactKind::ValidationStarted { .. } => "validation_started",
-        FactKind::ValidationFinished { .. } => "validation_finished",
-        FactKind::WorktreeAcquired { .. } => "worktree_acquired",
-        FactKind::BranchPushed { .. } => "branch_pushed",
-        FactKind::PullRequestOpened { .. } => "pull_request_opened",
-        FactKind::PullRequestChecksChanged { .. } => "pull_request_checks_changed",
-        FactKind::PullRequestMerged { .. } => "pull_request_merged",
-        FactKind::PullRequestClosedUnmerged { .. } => "pull_request_closed_unmerged",
-        FactKind::RunDurationExceeded { .. } => "run_duration_exceeded",
-        FactKind::RetryExhausted { .. } => "retry_exhausted",
-        FactKind::ProviderRateLimited { .. } => "provider_rate_limited",
-        FactKind::DaemonRestarted => "daemon_restarted",
-        FactKind::Polled => "polled",
-    }
+    fact_tag_name(fact_tag(kind))
 }
 
 pub fn encode_payload(kind: &FactKind) -> String {
@@ -164,6 +141,12 @@ pub fn encode_payload(kind: &FactKind) -> String {
             ("task", quoted(task.as_str())),
             ("profile", quoted(profile.as_str())),
         ]),
+        FactKind::CoordinatorSessionStarted { session } => {
+            object(vec![("session", quoted(session.as_str()))])
+        }
+        FactKind::CoordinatorContextMeasured { tokens } => {
+            object(vec![("tokens", numeric(tokens))])
+        }
         FactKind::DaemonRestarted => object(Vec::new()),
         FactKind::Polled => object(Vec::new()),
     }

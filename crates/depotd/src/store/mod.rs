@@ -1,3 +1,5 @@
+mod apply;
+mod coordinators;
 mod migrations;
 mod tasks;
 
@@ -13,6 +15,7 @@ use crate::factcodec;
 use crate::home::DepotHome;
 use crate::project::{LocationKind, Project};
 
+pub use apply::Applied;
 pub use migrations::SCHEMA_VERSION;
 
 pub struct Store {
@@ -110,6 +113,7 @@ impl Store {
         Ok(ProjectState {
             project: project.id.clone(),
             tasks: self.tasks(&project.id)?,
+            coordinator: self.coordinator_session(&project.id)?,
             profiles: config.profiles()?,
             fallback_profiles: settings.profile_fallbacks(),
             limits: settings.limits(),
@@ -123,18 +127,7 @@ impl Store {
         key: &str,
         fact: &Fact,
     ) -> Result<EventOutcome> {
-        let inserted = self.connection.execute(
-            "INSERT OR IGNORE INTO events (project_id, key, at, kind, payload)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![
-                project.as_str(),
-                key,
-                fact.at.millis() as i64,
-                factcodec::kind_name(&fact.kind),
-                factcodec::encode_payload(&fact.kind),
-            ],
-        )?;
-        if inserted > 0 {
+        if write_event(self.connection(), project, key, fact)? > 0 {
             Ok(EventOutcome::Recorded)
         } else {
             Ok(EventOutcome::Duplicate)
@@ -143,7 +136,7 @@ impl Store {
 
     pub fn event(&self, project: &ProjectId, key: &str) -> Result<Option<RecordedEvent>> {
         let mut statement = self.connection.prepare(
-            "SELECT project_id, key, at, kind, payload FROM events
+            "SELECT id, project_id, key, at, kind, payload, task_id FROM events
              WHERE project_id = ?1 AND key = ?2",
         )?;
         let mut rows = statement.query_map(params![project.as_str(), key], RawEvent::read)?;
@@ -154,12 +147,16 @@ impl Store {
     }
 
     pub fn events(&self, project: &ProjectId) -> Result<Vec<RecordedEvent>> {
+        self.events_since(project, 0)
+    }
+
+    pub fn events_since(&self, project: &ProjectId, after: u64) -> Result<Vec<RecordedEvent>> {
         let mut statement = self.connection.prepare(
-            "SELECT project_id, key, at, kind, payload FROM events
-             WHERE project_id = ?1 ORDER BY id",
+            "SELECT id, project_id, key, at, kind, payload, task_id FROM events
+             WHERE project_id = ?1 AND id > ?2 ORDER BY id",
         )?;
         let raw = statement
-            .query_map(params![project.as_str()], RawEvent::read)?
+            .query_map(params![project.as_str(), after as i64], RawEvent::read)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         raw.into_iter().map(RawEvent::into_event).collect()
     }
@@ -186,15 +183,38 @@ pub enum EventOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordedEvent {
+    pub id: u64,
     pub project: ProjectId,
     pub key: String,
     pub at: Timestamp,
     pub kind: String,
     pub payload: String,
+    pub task: Option<depot_core::TaskId>,
 }
 
 pub fn event_key(parts: &[&str]) -> String {
     parts.join(":")
+}
+
+pub(crate) fn write_event(
+    connection: &Connection,
+    project: &ProjectId,
+    key: &str,
+    fact: &Fact,
+) -> Result<usize> {
+    let task = crate::vocabulary::fact_task(&fact.kind).map(|task| task.as_str().to_string());
+    Ok(connection.execute(
+        "INSERT OR IGNORE INTO events (project_id, key, at, kind, payload, task_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            project.as_str(),
+            key,
+            fact.at.millis() as i64,
+            factcodec::kind_name(&fact.kind),
+            factcodec::encode_payload(&fact.kind),
+            task,
+        ],
+    )?)
 }
 
 struct RawProject {
@@ -229,21 +249,25 @@ impl RawProject {
 }
 
 struct RawEvent {
+    id: i64,
     project_id: String,
     key: String,
     at: i64,
     kind: String,
     payload: String,
+    task_id: Option<String>,
 }
 
 impl RawEvent {
     fn read(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
         Ok(Self {
+            id: row.get("id")?,
             project_id: row.get("project_id")?,
             key: row.get("key")?,
             at: row.get("at")?,
             kind: row.get("kind")?,
             payload: row.get("payload")?,
+            task_id: row.get("task_id")?,
         })
     }
 
@@ -251,12 +275,16 @@ impl RawEvent {
         let at = u64::try_from(self.at)
             .map(Timestamp::from_millis)
             .map_err(|_| Error::Schema(format!("{} is not a millisecond count", self.at)))?;
+        let id = u64::try_from(self.id)
+            .map_err(|_| Error::Schema(format!("{} is not an event id", self.id)))?;
         Ok(RecordedEvent {
+            id,
             project: ProjectId::new(self.project_id),
             key: self.key,
             at,
             kind: self.kind,
             payload: self.payload,
+            task: self.task_id.map(depot_core::TaskId::new),
         })
     }
 }

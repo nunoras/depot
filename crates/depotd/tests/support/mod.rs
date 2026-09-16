@@ -48,6 +48,13 @@ pub fn register(fixture: &Fixture, name: &str) -> Added {
     add_project(&fixture.home, directory.to_str().expect("utf-8 path")).expect("registered project")
 }
 
+pub fn register_with_config(fixture: &Fixture, name: &str, config: &str) -> Added {
+    let directory = project_directory(fixture, name);
+    std::fs::write(directory.join(depotd::PROJECT_CONFIG_FILE_NAME), config)
+        .expect("project config");
+    add_project(&fixture.home, directory.to_str().expect("utf-8 path")).expect("registered project")
+}
+
 pub fn state(slug: &str) -> TaskState {
     match slug {
         "proposed" => TaskState::Proposed,
@@ -196,6 +203,7 @@ pub fn varied_state() -> ProjectState {
     ProjectState {
         project,
         tasks,
+        coordinator: None,
         profiles: BTreeMap::from([
             (Role::Plan, ProfileId::new("fable-5")),
             (Role::Build, ProfileId::new("glm-5.3")),

@@ -11,6 +11,7 @@ pub enum Error {
     Home(String),
     Project(String),
     Config(String),
+    Template(String),
     Schema(String),
     NotFound(String),
 }
@@ -29,6 +30,7 @@ impl fmt::Display for Error {
             Error::Home(message) | Error::Project(message) | Error::Config(message) => {
                 f.write_str(message)
             }
+            Error::Template(message) => write!(f, "template error: {message}"),
             Error::Schema(message) => write!(f, "store schema error: {message}"),
             Error::NotFound(message) => f.write_str(message),
         }
@@ -45,6 +47,7 @@ impl StdError for Error {
             Error::Home(_)
             | Error::Project(_)
             | Error::Config(_)
+            | Error::Template(_)
             | Error::Schema(_)
             | Error::NotFound(_) => None,
         }

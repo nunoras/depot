@@ -268,6 +268,349 @@ fn depot_with_no_arguments_prints_usage() {
     assert!(stdout(&output).contains("USAGE"));
 }
 
+const BUILD_ONLY: &str = "base_branch = \"main\"\n\n\
+                          [profiles]\n\
+                          build = \"glm-5.3\"\n\n\
+                          [validation]\n\
+                          command = \"cargo test\"\n";
+
+impl Cli {
+    fn registered_with(&self, config: &str) -> depotd::Added {
+        let directory = self.project_directory("example");
+        std::fs::write(directory.join(".depot.toml"), config).expect("committed project config");
+        add_project(&self.depot_home(), directory.to_str().unwrap()).expect("registered")
+    }
+}
+
+#[test]
+fn a_task_is_added_held_and_approved_from_the_command_line() {
+    let cli = Cli::new();
+    cli.registered_with(BUILD_ONLY);
+
+    let added = cli.run(&[
+        "task",
+        "add",
+        "--title",
+        "Wire the store",
+        "--intent",
+        "Persist the records.",
+        "--role",
+        "build",
+        "--project",
+        "example",
+    ]);
+
+    assert_eq!(added.status.code(), Some(0), "stderr: {}", stderr(&added));
+    assert_eq!(stdout(&added), "added t-1\n");
+
+    let held = cli.run(&["status", "--project", "example"]);
+    assert!(
+        stdout(&held).contains("Held - awaiting approval (1)"),
+        "a new task lands held, got\n{}",
+        stdout(&held)
+    );
+
+    let approved = cli.run(&["task", "approve", "t-1", "--project", "example"]);
+
+    assert_eq!(
+        approved.status.code(),
+        Some(0),
+        "stderr: {}",
+        stderr(&approved)
+    );
+    assert_eq!(stdout(&approved), "approved t-1\n");
+    let running = cli.run(&["status", "--project", "example"]);
+    assert!(
+        stdout(&running).contains("Running (1)"),
+        "an approved task starts, got\n{}",
+        stdout(&running)
+    );
+}
+
+#[test]
+fn an_unmapped_role_is_refused_rather_than_defaulted() {
+    let cli = Cli::new();
+    let added = cli.registered_with(BUILD_ONLY);
+
+    let output = cli.run(&[
+        "task",
+        "add",
+        "--title",
+        "Review it",
+        "--intent",
+        "Judge the change.",
+        "--role",
+        "review",
+        "--project",
+        "example",
+    ]);
+
+    assert_eq!(output.status.code(), Some(1), "stdout: {}", stdout(&output));
+    let message = stderr(&output);
+    assert!(message.contains("`review`"), "got {message}");
+    assert!(message.contains(".depot.toml"), "got {message}");
+    assert!(message.contains("[profiles]"), "got {message}");
+    assert!(
+        Store::open(&cli.depot_home())
+            .expect("store")
+            .tasks(&added.project.id)
+            .expect("tasks")
+            .is_empty(),
+        "a refused role leaves no task behind"
+    );
+}
+
+#[test]
+fn a_question_is_answered_and_a_task_is_stopped_from_the_command_line() {
+    let cli = Cli::new();
+    let added = cli.registered_with(BUILD_ONLY);
+    let store = Store::open(&cli.depot_home()).expect("store");
+    store
+        .apply_fact(
+            &added.project,
+            "task_proposed:t-1",
+            &depot_core::Fact {
+                at: depot_core::Timestamp::from_millis(1_000),
+                kind: depot_core::FactKind::TaskProposed {
+                    task: TaskId::new("t-1"),
+                    title: "Wire the store".to_string(),
+                    intent: "Persist the records.".to_string(),
+                    role: depot_core::Role::Build,
+                    dependencies: Vec::new(),
+                    base_dependency: None,
+                },
+            },
+        )
+        .expect("proposed");
+    store
+        .apply_fact(
+            &added.project,
+            "task_approved:t-1",
+            &depot_core::Fact {
+                at: depot_core::Timestamp::from_millis(2_000),
+                kind: depot_core::FactKind::TaskApproved {
+                    task: TaskId::new("t-1"),
+                },
+            },
+        )
+        .expect("approved");
+    store
+        .apply_fact(
+            &added.project,
+            "question_asked:t-1:0",
+            &depot_core::Fact {
+                at: depot_core::Timestamp::from_millis(3_000),
+                kind: depot_core::FactKind::QuestionAsked {
+                    task: TaskId::new("t-1"),
+                    text: "Per project or per task?".to_string(),
+                    relay: true,
+                },
+            },
+        )
+        .expect("asked");
+
+    let waiting = cli.run(&["status", "--project", "example"]);
+    assert!(
+        stdout(&waiting).contains("Waiting on a question (1)"),
+        "got\n{}",
+        stdout(&waiting)
+    );
+
+    let answered = cli.run(&[
+        "task",
+        "answer",
+        "t-1",
+        "--text",
+        "Per project.",
+        "--by",
+        "user",
+        "--project",
+        "example",
+    ]);
+    assert_eq!(
+        answered.status.code(),
+        Some(0),
+        "stderr: {}",
+        stderr(&answered)
+    );
+    assert_eq!(stdout(&answered), "answered t-1\n");
+
+    let task = store
+        .task(&added.project.id, &TaskId::new("t-1"))
+        .expect("read")
+        .expect("present");
+    assert_eq!(
+        task.questions
+            .last()
+            .expect("question")
+            .answer
+            .as_ref()
+            .map(|answer| answer.text.as_str()),
+        Some("Per project."),
+        "the answer joins the record"
+    );
+    assert_eq!(
+        task.questions.last().unwrap().answer.as_ref().unwrap().by,
+        depot_core::AnsweredBy::User,
+        "the record says who answered"
+    );
+
+    let stopped = cli.run(&["task", "stop", "t-1", "--project", "example"]);
+    assert_eq!(
+        stopped.status.code(),
+        Some(0),
+        "stderr: {}",
+        stderr(&stopped)
+    );
+    assert_eq!(stdout(&stopped), "stopped t-1\n");
+    let task = store
+        .task(&added.project.id, &TaskId::new("t-1"))
+        .expect("read")
+        .expect("present");
+    assert_eq!(task.state, TaskState::Cancelled);
+}
+
+#[test]
+fn the_inbox_prints_the_facts_since_the_last_turn_and_advances() {
+    let cli = Cli::new();
+    let added = cli.registered_with(BUILD_ONLY);
+    let output = cli.run(&[
+        "task",
+        "add",
+        "--title",
+        "Wire the store",
+        "--intent",
+        "Persist the records.",
+        "--role",
+        "build",
+        "--project",
+        "example",
+    ]);
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+
+    let first = cli.run(&["inbox", "--project", "example"]);
+
+    assert_eq!(first.status.code(), Some(0), "stderr: {}", stderr(&first));
+    let payload = stdout(&first);
+    assert!(payload.starts_with("# Inbox\n"), "got\n{payload}");
+    assert!(payload.contains("Wire the store"), "got\n{payload}");
+    assert!(payload.contains("holding for approval"), "got\n{payload}");
+
+    let second = cli.run(&["inbox", "--project", "example"]);
+
+    assert_eq!(second.status.code(), Some(0), "stderr: {}", stderr(&second));
+    assert_eq!(
+        stdout(&second),
+        "# Inbox\n\nNo facts since your last turn.\n",
+        "the same turn does not read the same facts twice"
+    );
+
+    let store = Store::open(&cli.depot_home()).expect("store");
+    let cursor = store.inbox_cursor(&added.project.id).expect("cursor");
+    assert_eq!(
+        cursor,
+        store
+            .events(&added.project.id)
+            .expect("events")
+            .last()
+            .expect("a fact")
+            .id
+    );
+}
+
+#[test]
+fn a_narrative_document_is_written_into_the_store_and_a_foreign_name_is_refused() {
+    let cli = Cli::new();
+    let added = cli.registered_with(BUILD_ONLY);
+
+    let written = cli.run(&[
+        "doc",
+        "write",
+        "plan.md",
+        "--content",
+        "Step one.",
+        "--project",
+        "example",
+    ]);
+
+    assert_eq!(
+        written.status.code(),
+        Some(0),
+        "stderr: {}",
+        stderr(&written)
+    );
+    let path = added.home.documents_dir().join("plan.md");
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("document"),
+        "Step one."
+    );
+    assert!(stdout(&written).contains("plan.md"));
+
+    let escaped = cli.run(&[
+        "doc",
+        "write",
+        "../escape.md",
+        "--content",
+        "no",
+        "--project",
+        "example",
+    ]);
+
+    assert_eq!(
+        escaped.status.code(),
+        Some(1),
+        "stdout: {}",
+        stdout(&escaped)
+    );
+    assert!(
+        !added.home.root().join("escape.md").exists(),
+        "a document stays inside the store"
+    );
+}
+
+#[test]
+fn a_command_run_from_the_project_store_reads_that_project() {
+    let cli = Cli::new();
+    let added = cli.registered_with(BUILD_ONLY);
+
+    let output = cli.run_from(&["status"], added.home.root());
+
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    assert!(
+        stdout(&output).contains(added.project.id.as_str()),
+        "the store is where a coordinator works, got\n{}",
+        stdout(&output)
+    );
+}
+
+#[test]
+fn the_new_commands_refuse_unknown_flags_and_missing_arguments() {
+    let cli = Cli::new();
+
+    for arguments in [
+        vec!["task"],
+        vec!["task", "frobnicate"],
+        vec!["task", "add", "--title", "only a title"],
+        vec!["task", "add", "--role", "build", "--nope"],
+        vec!["task", "approve"],
+        vec!["task", "answer", "t-1"],
+        vec!["task", "stop"],
+        vec!["doc"],
+        vec!["doc", "write"],
+        vec!["doc", "write", "plan.md"],
+        vec!["inbox", "extra"],
+        vec!["inbox", "--nope"],
+    ] {
+        let output = cli.run(&arguments);
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{arguments:?} should be a usage error, stderr: {}",
+            stderr(&output)
+        );
+    }
+}
+
 fn task(project: &str, id: &str, state: TaskState, offset: u64) -> depot_core::Task {
     let project = depot_core::ProjectId::new(project);
     let at = depot_core::Timestamp::from_millis(1_700_000_000_000 + offset);

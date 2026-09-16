@@ -134,6 +134,7 @@ fn the_checklist_states_what_each_task_waits_on() {
     let rendered = render_checklist(&ProjectState {
         project,
         tasks,
+        coordinator: None,
         profiles: BTreeMap::from([(Role::Build, ProfileId::new("glm-5.3"))]),
         fallback_profiles: Vec::new(),
         limits: Limits::default(),
@@ -173,6 +174,7 @@ fn an_empty_project_renders_a_checklist_with_no_tasks() {
     let rendered = render_checklist(&ProjectState {
         project: ProjectId::new("example/project"),
         tasks: BTreeMap::new(),
+        coordinator: None,
         profiles: BTreeMap::new(),
         fallback_profiles: Vec::new(),
         limits: Limits::default(),

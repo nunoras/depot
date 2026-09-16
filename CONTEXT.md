@@ -23,6 +23,11 @@ One worker session on a task.
 A task may have several across retries, pauses and rework.
 _Avoid_: run, execution
 
+**Brief**:
+What one worker is told for one task, rendered from the task record: intent, role, output destination, done criteria, dependencies and the store.
+It is handed to the worker when its session launches.
+_Avoid_: prompt, instructions
+
 **Dependency edge**:
 A task's requirement on another task, naming that prerequisite and the exact commit its validation was bound to.
 The pin is what a dependent started against, so it is also what can go stale.
@@ -75,6 +80,24 @@ _Avoid_: status board, dashboard
 **Coordinator**:
 The one session per project that the user talks to.
 It turns conversation into tasks, answers only the questions the brief already settles, and never edits project code.
+
+**Policy prompt**:
+The versioned statement of what the coordinator owns, shipped with every new coordinator session.
+_Avoid_: system prompt
+
+**Kickoff**:
+The first message of a coordinator session: the store, the live checklist and the context document, and the command that reads what changed since the previous turn.
+_Avoid_: greeting, bootstrap
+
+**Inbox**:
+The facts recorded since the coordinator's previous turn, joined to where each task stands now, split by who has to act on them.
+It is the first thing a coordinator reads every turn.
+_Avoid_: notification, feed
+
+**Context document**:
+The coordinator's durable narrative for a project, written into the store and never rendered by depot.
+It is what a rotated session reads to catch up.
+_Avoid_: memory, notes
 
 **Worker**:
 A headless session with a narrow contract: change code, ask a question, or submit.

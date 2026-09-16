@@ -14,6 +14,9 @@ pub const ARCHIVE_DIR_NAME: &str = "archive";
 pub const DOCUMENTS_DIR_NAME: &str = "docs";
 pub const SCRATCH_DIR_NAME: &str = "scratch";
 pub const MEDIA_DIR_NAME: &str = "media";
+pub const CONTEXT_DOCUMENT_FILE_NAME: &str = "context.md";
+
+const CONTEXT_DOCUMENT_STUB: &str = "# Context\n\nWhat this project's coordinator knows.\nThe coordinator writes it with `depot doc write`; depot never renders or overwrites it.\n";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DepotHome {
@@ -112,6 +115,10 @@ impl ProjectHome {
         self.root.join(DOCUMENTS_DIR_NAME)
     }
 
+    pub fn context_document_path(&self) -> PathBuf {
+        self.documents_dir().join(CONTEXT_DOCUMENT_FILE_NAME)
+    }
+
     pub fn scratch_dir(&self) -> PathBuf {
         self.root.join(SCRATCH_DIR_NAME)
     }
@@ -128,6 +135,10 @@ impl ProjectHome {
             self.media_dir(),
         ] {
             std::fs::create_dir_all(dir)?;
+        }
+        let context = self.context_document_path();
+        if !context.exists() {
+            std::fs::write(context, CONTEXT_DOCUMENT_STUB)?;
         }
         Ok(())
     }

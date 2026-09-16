@@ -68,6 +68,26 @@ pub enum StatusSelection {
     CurrentDirectory,
 }
 
+pub fn select_project(store: &Store, name: Option<&str>) -> Result<Project> {
+    match name {
+        Some(name) => match match_project(store, name)? {
+            Some(project) => Ok(project),
+            None => Err(Error::NotFound(format!(
+                "no project matches `{name}`: list them with `depot status --all`"
+            ))),
+        },
+        None => {
+            let cwd = std::env::current_dir()?;
+            match project_for_directory(store, &cwd)? {
+                Some(project) => Ok(project),
+                None => Err(Error::NotFound(unmatched_directory_message(
+                    &store.projects()?,
+                ))),
+            }
+        }
+    }
+}
+
 pub fn render_status(home: &DepotHome, selection: &StatusSelection) -> Result<String> {
     let store = Store::open(home)?;
     let projects = match selection {
@@ -212,6 +232,14 @@ fn project_for_directory(store: &Store, directory: &Path) -> Result<Option<Proje
     let directory = std::fs::canonicalize(directory).unwrap_or_else(|_| directory.to_path_buf());
     let projects = store.projects()?;
 
+    if let Some(project) = projects.iter().find(|project| {
+        let home = std::fs::canonicalize(store.home().project_root(&project.slug))
+            .unwrap_or_else(|_| store.home().project_root(&project.slug));
+        directory.starts_with(home)
+    }) {
+        return Ok(Some(project.clone()));
+    }
+
     let mut matching: Vec<&Project> = projects
         .iter()
         .filter(|project| {
@@ -234,7 +262,7 @@ fn unmatched_directory_message(projects: &[Project]) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     format!(
-        "no project matches this directory: registered projects are {names}; run inside a registered project, name one with `--project`, or pass `--all`"
+        "no project matches this directory: registered projects are {names}; run from the project repository or its store, name one with `--project`, or pass `--all`"
     )
 }
 

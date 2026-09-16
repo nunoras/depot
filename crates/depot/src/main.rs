@@ -1,4 +1,9 @@
-use depotd::{DepotHome, Error, StatusSelection, add_project, render_status};
+use std::io::Read;
+
+use depotd::{
+    DepotHome, Error, StatusSelection, TaskRequest, add_project, add_task, answer_question,
+    approve_tasks, read_inbox, render_status, stop_task, write_narrative,
+};
 
 const USAGE: &str = "\
 depot - coordinate a project's agent work
@@ -6,10 +11,22 @@ depot - coordinate a project's agent work
 USAGE
   depot project add <path-or-url>
   depot status [--project <name>] [--all]
+  depot task add --title <title> --intent <intent> --role <plan|build|review|fix>
+                 [--depends-on <task>@<commit>]... [--project <name>]
+  depot task approve <task-id>... [--project <name>]
+  depot task answer <task-id> --text <answer> [--by <coordinator|user>] [--project <name>]
+  depot task stop <task-id> [--project <name>]
+  depot inbox [--project <name>]
+  depot doc write <name> --content <text|-> [--project <name>]
 
-STATUS SELECTION
-  No flags reads the project this directory belongs to.
+SELECTION
+  No --project reads the project this directory belongs to: a project repository or its store.
   --all lists every registered project.
+
+NOTES
+  A task lands held. Approving it is what lets it run.
+  A role resolves to a profile through the project's committed .depot.toml; an unmapped role is refused.
+  `--content -` reads a document from standard input.
 ";
 
 fn main() {
@@ -51,6 +68,9 @@ fn dispatch(arguments: &[String]) -> Result<String, Failure> {
     match arguments.first().map(String::as_str) {
         None | Some("help") | Some("--help") | Some("-h") => Ok(USAGE.to_string()),
         Some("project") => project_command(&arguments[1..]),
+        Some("task") => task_command(&arguments[1..]),
+        Some("doc") => doc_command(&arguments[1..]),
+        Some("inbox") => inbox_command(&arguments[1..]),
         Some("status") => status_command(&arguments[1..]),
         Some(other) => Err(Failure::Usage(format!("unknown command `{other}`"))),
     }
@@ -91,45 +111,248 @@ fn project_add(arguments: &[String]) -> Result<String, Failure> {
     Ok(out)
 }
 
-fn status_command(arguments: &[String]) -> Result<String, Failure> {
-    let mut selection: Option<StatusSelection> = None;
-    let mut index = 0;
-    while index < arguments.len() {
-        let argument = arguments[index].as_str();
-        match argument {
-            "--all" => {
-                choose(&mut selection, StatusSelection::All)?;
-                index += 1;
-            }
-            "--project" => {
-                let name = arguments.get(index + 1).ok_or_else(|| {
-                    Failure::Usage("`--project` needs a project name".to_string())
-                })?;
-                choose(&mut selection, StatusSelection::Project(name.clone()))?;
-                index += 2;
-            }
-            _ if argument.starts_with("--project=") => {
-                let name = argument.trim_start_matches("--project=").to_string();
-                choose(&mut selection, StatusSelection::Project(name))?;
-                index += 1;
-            }
-            other => {
-                return Err(Failure::Usage(format!("unexpected argument `{other}`")));
-            }
-        }
+fn task_command(arguments: &[String]) -> Result<String, Failure> {
+    match arguments.first().map(String::as_str) {
+        Some("add") => task_add(&arguments[1..]),
+        Some("approve") => task_approve(&arguments[1..]),
+        Some("answer") => task_answer(&arguments[1..]),
+        Some("stop") => task_stop(&arguments[1..]),
+        Some(other) => Err(Failure::Usage(format!("unknown task command `{other}`"))),
+        None => Err(Failure::Usage(
+            "`depot task` needs a subcommand: add, approve, answer or stop".to_string(),
+        )),
+    }
+}
+
+fn task_add(arguments: &[String]) -> Result<String, Failure> {
+    let flags = Flags::parse(arguments, &[])?;
+    flags.reject_unknown(&["title", "intent", "role", "depends-on", "project"])?;
+    flags.reject_positionals()?;
+
+    let request = TaskRequest {
+        title: flags.required("title")?.to_string(),
+        intent: flags.required("intent")?.to_string(),
+        role: flags.required("role")?.to_string(),
+        dependencies: flags.all("depends-on"),
+    };
+    let home = DepotHome::resolve()?;
+    let task = add_task(&home, flags.value("project"), &request)?;
+    Ok(format!("added {}\n", task.id))
+}
+
+fn task_approve(arguments: &[String]) -> Result<String, Failure> {
+    let flags = Flags::parse(arguments, &[])?;
+    flags.reject_unknown(&["project"])?;
+    let ids = flags.positionals();
+    if ids.is_empty() {
+        return Err(Failure::Usage(
+            "`depot task approve` needs at least one task id".to_string(),
+        ));
     }
 
     let home = DepotHome::resolve()?;
-    let selection = selection.unwrap_or(StatusSelection::CurrentDirectory);
+    let approved = approve_tasks(&home, flags.value("project"), ids)?;
+    let mut out = String::new();
+    for task in approved {
+        out.push_str(&format!("approved {}\n", task.id));
+    }
+    Ok(out)
+}
+
+fn task_answer(arguments: &[String]) -> Result<String, Failure> {
+    let flags = Flags::parse(arguments, &[])?;
+    flags.reject_unknown(&["text", "by", "project"])?;
+    let ids = flags.positionals();
+    if ids.len() != 1 {
+        return Err(Failure::Usage(
+            "`depot task answer` needs exactly one task id".to_string(),
+        ));
+    }
+    let text = flags.required("text")?;
+    let by = flags.value("by").unwrap_or("coordinator");
+
+    let home = DepotHome::resolve()?;
+    let task = answer_question(&home, flags.value("project"), &ids[0], text, by)?;
+    Ok(format!("answered {}\n", task.id))
+}
+
+fn task_stop(arguments: &[String]) -> Result<String, Failure> {
+    let flags = Flags::parse(arguments, &[])?;
+    flags.reject_unknown(&["project"])?;
+    let ids = flags.positionals();
+    if ids.len() != 1 {
+        return Err(Failure::Usage(
+            "`depot task stop` needs exactly one task id".to_string(),
+        ));
+    }
+
+    let home = DepotHome::resolve()?;
+    let task = stop_task(&home, flags.value("project"), &ids[0])?;
+    Ok(format!("stopped {}\n", task.id))
+}
+
+fn doc_command(arguments: &[String]) -> Result<String, Failure> {
+    match arguments.first().map(String::as_str) {
+        Some("write") => doc_write(&arguments[1..]),
+        Some(other) => Err(Failure::Usage(format!("unknown doc command `{other}`"))),
+        None => Err(Failure::Usage(
+            "`depot doc` needs a subcommand: try `depot doc write <name> --content <text|->`"
+                .to_string(),
+        )),
+    }
+}
+
+fn doc_write(arguments: &[String]) -> Result<String, Failure> {
+    let flags = Flags::parse(arguments, &[])?;
+    flags.reject_unknown(&["content", "project"])?;
+    let names = flags.positionals();
+    if names.len() != 1 {
+        return Err(Failure::Usage(
+            "`depot doc write` needs exactly one document name".to_string(),
+        ));
+    }
+    let content = match flags.value("content") {
+        Some("-") => read_stdin()?,
+        Some(text) => text.to_string(),
+        None => {
+            return Err(Failure::Usage(
+                "`depot doc write` needs `--content <text|->`".to_string(),
+            ));
+        }
+    };
+
+    let home = DepotHome::resolve()?;
+    let path = write_narrative(&home, flags.value("project"), &names[0], &content)?;
+    Ok(format!("wrote {}\n", path.display()))
+}
+
+fn inbox_command(arguments: &[String]) -> Result<String, Failure> {
+    let flags = Flags::parse(arguments, &[])?;
+    flags.reject_unknown(&["project"])?;
+    flags.reject_positionals()?;
+
+    let home = DepotHome::resolve()?;
+    read_inbox(&home, flags.value("project")).map_err(Failure::from)
+}
+
+fn status_command(arguments: &[String]) -> Result<String, Failure> {
+    let flags = Flags::parse(arguments, &["all"])?;
+    flags.reject_unknown(&["all", "project"])?;
+    flags.reject_positionals()?;
+
+    let selection = match (flags.has("all"), flags.value("project")) {
+        (true, Some(_)) => {
+            return Err(Failure::Usage(
+                "choose one of `--project` or `--all`, not both".to_string(),
+            ));
+        }
+        (true, None) => StatusSelection::All,
+        (false, Some(name)) => StatusSelection::Project(name.to_string()),
+        (false, None) => StatusSelection::CurrentDirectory,
+    };
+
+    let home = DepotHome::resolve()?;
     Ok(render_status(&home, &selection)?)
 }
 
-fn choose(slot: &mut Option<StatusSelection>, value: StatusSelection) -> Result<(), Failure> {
-    if slot.is_some() {
-        return Err(Failure::Usage(
-            "choose one of `--project` or `--all`, not both".to_string(),
-        ));
+fn read_stdin() -> Result<String, Failure> {
+    let mut text = String::new();
+    std::io::stdin()
+        .read_to_string(&mut text)
+        .map_err(|error| Failure::Failed(Error::Io(error)))?;
+    Ok(text)
+}
+
+struct Flags {
+    values: Vec<(String, Option<String>)>,
+    rest: Vec<String>,
+}
+
+impl Flags {
+    fn parse(arguments: &[String], booleans: &[&str]) -> Result<Self, Failure> {
+        let mut values = Vec::new();
+        let mut rest = Vec::new();
+        let mut index = 0;
+
+        while index < arguments.len() {
+            let argument = arguments[index].as_str();
+            let Some(flag) = argument.strip_prefix("--") else {
+                rest.push(argument.to_string());
+                index += 1;
+                continue;
+            };
+            let (name, inline) = match flag.split_once('=') {
+                Some((name, value)) => (name, Some(value.to_string())),
+                None => (flag, None),
+            };
+            if booleans.contains(&name) {
+                if inline.is_some() {
+                    return Err(Failure::Usage(format!("`--{name}` takes no value")));
+                }
+                values.push((name.to_string(), None));
+                index += 1;
+                continue;
+            }
+            let value = match inline {
+                Some(value) => value,
+                None => {
+                    index += 1;
+                    arguments
+                        .get(index)
+                        .cloned()
+                        .ok_or_else(|| Failure::Usage(format!("`--{name}` needs a value")))?
+                }
+            };
+            values.push((name.to_string(), Some(value)));
+            index += 1;
+        }
+
+        Ok(Self { values, rest })
     }
-    *slot = Some(value);
-    Ok(())
+
+    fn value(&self, name: &str) -> Option<&str> {
+        self.values
+            .iter()
+            .find(|(candidate, _)| candidate == name)
+            .and_then(|(_, value)| value.as_deref())
+    }
+
+    fn required(&self, name: &str) -> Result<&str, Failure> {
+        self.value(name)
+            .ok_or_else(|| Failure::Usage(format!("`--{name}` is required")))
+    }
+
+    fn all(&self, name: &str) -> Vec<String> {
+        self.values
+            .iter()
+            .filter(|(candidate, _)| candidate == name)
+            .filter_map(|(_, value)| value.clone())
+            .collect()
+    }
+
+    fn has(&self, name: &str) -> bool {
+        self.values.iter().any(|(candidate, _)| candidate == name)
+    }
+
+    fn positionals(&self) -> &[String] {
+        &self.rest
+    }
+
+    fn reject_unknown(&self, known: &[&str]) -> Result<(), Failure> {
+        for (name, _) in &self.values {
+            if !known.contains(&name.as_str()) {
+                return Err(Failure::Usage(format!("unknown flag `--{name}`")));
+            }
+        }
+        Ok(())
+    }
+
+    fn reject_positionals(&self) -> Result<(), Failure> {
+        match self.rest.first() {
+            Some(unexpected) => Err(Failure::Usage(format!(
+                "unexpected argument `{unexpected}`"
+            ))),
+            None => Ok(()),
+        }
+    }
 }

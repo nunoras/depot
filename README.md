@@ -13,7 +13,7 @@ The destination is the published spec at [nunoras/depot#30](https://github.com/n
 | crate | what it holds |
 |---|---|
 | `crates/depot-core` | The domain model and the whole task lifecycle as one pure reduce step. |
-| `crates/depotd` | The daemon: everything with a side effect, including the four adapters depot talks to, the store, the depot home and configuration. |
+| `crates/depotd` | The daemon: everything with a side effect, including the four adapters depot talks to, the store, the depot home, configuration, and the coordinator's artifacts. |
 | `crates/depot` | The command line the coordinator and the user drive. |
 
 The daemon loop is not wired to the adapters yet: [nunoras/depot#34](https://github.com/nunoras/depot/issues/34) does that.
@@ -26,11 +26,12 @@ Everything depot owns lives outside your repositories, in one home: `$DEPOT_HOME
 <depot home>
   config.toml          machine-local settings
   depot.db             one sqlite database: projects, tasks, dependency edges, attempts,
-                       questions, validation records, observed forge state, event journal
+                       questions, validation records, observed forge state, the coordinator's
+                       session and inbox position, event journal
   projects/<slug>/
     checklist.md       rendered from the records, never edited by hand
     archive/
-    docs/
+    docs/              narrative documents, including context.md
     scratch/
     media/
 ```
@@ -41,7 +42,7 @@ Adding the same project twice is idempotent; a path that is not an existing dire
 
 `depot status` prints the rendered checklist for the project this directory belongs to.
 `--project <name>` names one registered project, and `--all` lists every project.
-A directory that matches none is an error that names the registered projects.
+A directory that matches none is an error that names the registered projects, and a directory inside a project's store belongs to that project.
 
 The store applies its schema migrations on open and refuses a database written by a newer build rather than downgrading it.
 `checklist.md` is rewritten from the records on registration and on every task write; hand edits do not stick.
@@ -81,6 +82,7 @@ run_duration_minutes = 60
 poll_interval_seconds = 30
 pool_root = "/home/me/.treehouse"
 fallback_profiles = ["gpt-5.5"]
+coordinator_context_tokens = 120000
 
 [credentials]
 github = "gh-cli"
@@ -88,6 +90,40 @@ github = "gh-cli"
 
 Neither file accepts a key from the other side of the split, and registering a project never writes a machine-local setting into the repository.
 `crates/depotd/tests/config_split.rs` is the guard.
+
+## The coordinator contract
+
+One coordinator session per project is where you talk about the work, and it is whatever boxr launches with the project's profile.
+Nothing depot ships hardcodes a harness or a model id, and `crates/depotd/tests/coordinator.rs` asserts that.
+
+The texts a coordinator is given are versioned artifacts in this repository, included in the binary:
+
+| artifact | what it holds |
+|---|---|
+| `assets/coordinator-policy.md` | what the coordinator owns: no project code, when to delegate, when to answer a worker and when to relay, the checklist against narrative documents, and that new scope waits for the user. |
+| `assets/coordinator-kickoff.md` | the first message of a session: the project, the store, the live checklist and the context document, then `depot inbox`. |
+| `assets/brief-template.md` | the brief a worker is handed: intent, role, output destination, done criteria, dependencies, the store, and the two worker calls. |
+
+`depot inbox` prints the facts recorded since the coordinator's previous turn, joined to where each task stands now, split into what needs the user, what needs the coordinator, and what needs nothing.
+A poll that observed nothing is not reported at all, and the read position lives on the project's coordinator row, so a rotated session picks up where the last one stopped.
+
+A session is rotated past `coordinator_context_tokens`, the context size reported for it.
+The rule lives in the pure core, the limit is machine-local configuration, and the session the daemon must stop comes from the state rather than from anyone's impression of how long the conversation feels.
+
+The verbs a coordinator drives:
+
+| verb | what it does |
+|---|---|
+| `depot task add --title <title> --intent <intent> --role <role> [--depends-on <task>@<commit>]...` | records a task with its dependencies. It lands held, and that is the proposal. |
+| `depot task approve <task-id>...` | the user's go, for one task or several in one message. |
+| `depot task answer <task-id> --text <answer> [--by coordinator\|user]` | records an answer and resumes the worker. |
+| `depot task stop <task-id>` | stops a task. |
+| `depot status [--project <name>] [--all]` | the live checklist. |
+| `depot doc write <name> --content <text\|->` | writes a narrative document under the project's `docs/`. |
+| `depot inbox [--project <name>]` | what happened since the last turn. |
+
+A role with no entry in the project's `[profiles]` map is refused when the task is filed rather than defaulted to another profile.
+`docs/context.md` is the coordinator's context document: depot scaffolds it on registration and never renders it, so a fresh session reads it to catch up and the session that wrote it stops mattering.
 
 ## The pure core
 
@@ -127,7 +163,7 @@ cargo fmt --all --check
 
 `crates/depot-core/tests/lifecycle.rs` holds one table per lifecycle rule, each row a scenario asserting the resulting task state and the exact actions the daemon intends to take.
 The rules are numbered in the ticket that built this skeleton: [nunoras/depot#31](https://github.com/nunoras/depot/issues/31).
-`crates/depot-core/tests/purity.rs` keeps the core dependency-free, `crates/depotd/tests/` covers the store, home, config split and checklist, and `crates/depot/tests/cli.rs` drives the real binary.
+`crates/depot-core/tests/purity.rs` keeps the core dependency-free, `crates/depotd/tests/` covers the store, home, config split and checklist, `crates/depotd/tests/coordinator.rs` covers the policy prompt, the kickoff, rotation and the brief, `crates/depotd/tests/inbox.rs` covers the payload from a seeded store, and `crates/depot/tests/cli.rs` drives the real binary.
 
 `crates/depotd/tests/` holds one contract test per adapter: `sessions.rs`, `worktrees.rs`, `forge.rs` and `profiles.rs`.
 Each drives the real implementation against a fake of the dependency, covering success, failure and malformed output, and each asserts the exact command depot issued.

@@ -130,7 +130,19 @@ ALTER TABLE events_v3 RENAME TO events;
 CREATE INDEX events_by_project ON events (project_id, id);
 ";
 
-const MIGRATIONS: &[&str] = &[SCHEMA_V1, INDEXES_V2, EVENTS_PROJECT_KEY_V3];
+pub const EVENT_TASK_V4: &str = "
+ALTER TABLE events ADD COLUMN task_id TEXT;
+
+CREATE TABLE coordinators (
+    project_id     TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+    session        TEXT,
+    started_at     INTEGER,
+    context_tokens INTEGER,
+    inbox_cursor   INTEGER NOT NULL DEFAULT 0
+);
+";
+
+const MIGRATIONS: &[&str] = &[SCHEMA_V1, INDEXES_V2, EVENTS_PROJECT_KEY_V3, EVENT_TASK_V4];
 
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
 

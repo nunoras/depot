@@ -15,6 +15,7 @@ pub struct Settings {
     pub poll_interval_seconds: u64,
     pub pool_root: Option<PathBuf>,
     pub fallback_profiles: Vec<String>,
+    pub coordinator_context_tokens: u64,
     pub credentials: BTreeMap<String, String>,
 }
 
@@ -26,6 +27,7 @@ impl Default for Settings {
             poll_interval_seconds: 30,
             pool_root: None,
             fallback_profiles: Vec::new(),
+            coordinator_context_tokens: 120_000,
             credentials: BTreeMap::new(),
         }
     }
@@ -51,6 +53,7 @@ impl Settings {
     pub fn limits(&self) -> Limits {
         Limits {
             max_concurrent_tasks: self.concurrency,
+            coordinator_context_tokens: self.coordinator_context_tokens,
             ..Limits::default()
         }
     }

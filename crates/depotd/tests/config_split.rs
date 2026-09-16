@@ -12,12 +12,13 @@ const PROJECT_KEYS: [&str; 5] = [
     "questions",
 ];
 
-const MACHINE_LOCAL_KEYS: [&str; 6] = [
+const MACHINE_LOCAL_KEYS: [&str; 7] = [
     "concurrency",
     "run_duration_minutes",
     "poll_interval_seconds",
     "pool_root",
     "fallback_profiles",
+    "coordinator_context_tokens",
     "credentials",
 ];
 
@@ -91,6 +92,7 @@ fn registering_a_project_never_writes_machine_local_settings_into_the_repository
             poll_interval_seconds: 5,
             pool_root: Some(fixture.temp.path().join("pool")),
             fallback_profiles: vec!["sonnet".to_string()],
+            coordinator_context_tokens: 60_000,
             credentials: BTreeMap::from([("github".to_string(), "gh-cli".to_string())]),
         })
         .expect("machine-local settings");

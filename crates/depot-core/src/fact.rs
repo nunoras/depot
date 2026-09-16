@@ -106,6 +106,12 @@ pub enum FactKind {
         task: TaskId,
         profile: ProfileId,
     },
+    CoordinatorSessionStarted {
+        session: SessionId,
+    },
+    CoordinatorContextMeasured {
+        tokens: u64,
+    },
     DaemonRestarted,
     Polled,
 }

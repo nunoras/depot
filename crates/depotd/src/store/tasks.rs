@@ -5,7 +5,7 @@ use depot_core::{
     Answer, Artifact, Attempt, Checks, CommitId, Dependency, Link, ProfileId, ProjectId, Question,
     Retry, SessionId, Task, TaskId, Timestamp, ValidationRecord, WorktreeLease,
 };
-use rusqlite::{Row, params};
+use rusqlite::{Row, Transaction, params};
 
 use crate::checklist::render_checklist;
 use crate::error::{Error, Result};
@@ -32,154 +32,7 @@ impl Store {
         let checklist_path = project_home.checklist_path();
 
         let transaction = self.connection().unchecked_transaction()?;
-        transaction.execute(
-            "DELETE FROM tasks WHERE project_id = ?1 AND id = ?2",
-            params![task.project.as_str(), task.id.as_str()],
-        )?;
-        transaction.execute(
-            "INSERT INTO tasks (
-                project_id, id, title, intent, role, state, base_dependency, branch_head,
-                retry_profile, retry_not_before, created_at, updated_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-            params![
-                task.project.as_str(),
-                task.id.as_str(),
-                task.title,
-                task.intent,
-                role_name(task.role),
-                state_name(task.state),
-                task.base_dependency.as_ref().map(TaskId::as_str),
-                task.branch_head.as_ref().map(CommitId::as_str),
-                task.retry.as_ref().map(|retry| retry.profile.as_str()),
-                task.retry
-                    .as_ref()
-                    .map(|retry| retry.not_before.millis() as i64),
-                task.created_at.millis() as i64,
-                task.updated_at.millis() as i64,
-            ],
-        )?;
-
-        for (position, dependency) in task.dependencies.iter().enumerate() {
-            transaction.execute(
-                "INSERT INTO task_dependencies (project_id, task_id, position, prerequisite, commit_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![
-                    task.project.as_str(),
-                    task.id.as_str(),
-                    position as i64,
-                    dependency.task.as_str(),
-                    dependency.commit.as_str(),
-                ],
-            )?;
-        }
-
-        for (position, attempt) in task.attempts.iter().enumerate() {
-            transaction.execute(
-                "INSERT INTO task_attempts (
-                    project_id, task_id, position, session, profile, worktree, started_at,
-                    finished_at, outcome
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                params![
-                    task.project.as_str(),
-                    task.id.as_str(),
-                    position as i64,
-                    attempt.session.as_ref().map(SessionId::as_str),
-                    attempt.profile.as_str(),
-                    attempt.worktree.as_ref().map(WorktreeLease::as_str),
-                    attempt.started_at.millis() as i64,
-                    attempt.finished_at.map(|at| at.millis() as i64),
-                    outcome_name(attempt.outcome),
-                ],
-            )?;
-        }
-
-        for (position, question) in task.questions.iter().enumerate() {
-            transaction.execute(
-                "INSERT INTO task_questions (
-                    project_id, task_id, position, text, asked_at, answer_text, answered_by,
-                    answered_at
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![
-                    task.project.as_str(),
-                    task.id.as_str(),
-                    position as i64,
-                    question.text,
-                    question.asked_at.millis() as i64,
-                    question.answer.as_ref().map(|answer| answer.text.as_str()),
-                    question
-                        .answer
-                        .as_ref()
-                        .map(|answer| answered_by_name(answer.by)),
-                    question
-                        .answer
-                        .as_ref()
-                        .map(|answer| answer.at.millis() as i64),
-                ],
-            )?;
-        }
-
-        for (position, record) in task.validations.iter().enumerate() {
-            transaction.execute(
-                "INSERT INTO task_validations (
-                    project_id, task_id, position, command, commit_id, exit_code,
-                    duration_millis, output_tail
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![
-                    task.project.as_str(),
-                    task.id.as_str(),
-                    position as i64,
-                    record.command,
-                    record.commit.as_str(),
-                    record.exit_code,
-                    record.duration.as_millis() as i64,
-                    record.output_tail,
-                ],
-            )?;
-        }
-
-        for (position, artifact) in task.artifacts.iter().enumerate() {
-            transaction.execute(
-                "INSERT INTO task_artifacts (project_id, task_id, position, kind, path)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![
-                    task.project.as_str(),
-                    task.id.as_str(),
-                    position as i64,
-                    artifact_kind_name(artifact.kind),
-                    artifact.path,
-                ],
-            )?;
-        }
-
-        for (position, link) in task.links.iter().enumerate() {
-            let (kind, number, url, checks) = match link {
-                Link::Issue { url } => ("issue", None, url.as_str(), None),
-                Link::PullRequest {
-                    number,
-                    url,
-                    checks,
-                } => (
-                    "pull_request",
-                    Some(*number as i64),
-                    url.as_str(),
-                    Some(checks_name(*checks)),
-                ),
-            };
-            transaction.execute(
-                "INSERT INTO task_links (project_id, task_id, position, kind, number, url, checks)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![
-                    task.project.as_str(),
-                    task.id.as_str(),
-                    position as i64,
-                    kind,
-                    number,
-                    url,
-                    checks,
-                ],
-            )?;
-        }
-
+        write_task(&transaction, task)?;
         std::fs::write(&checklist_path, checklist)?;
         transaction.commit()?;
         Ok(())
@@ -194,6 +47,18 @@ impl Store {
         match rows.next() {
             Some(raw) => Ok(Some(raw?.into_task(self)?)),
             None => Ok(None),
+        }
+    }
+
+    pub fn next_task_id(&self, project: &ProjectId) -> Result<TaskId> {
+        let taken = self.tasks(project)?;
+        let mut index = taken.len() + 1;
+        loop {
+            let candidate = TaskId::new(format!("t-{index}"));
+            if !taken.contains_key(&candidate) {
+                return Ok(candidate);
+            }
+            index += 1;
         }
     }
 
@@ -368,7 +233,8 @@ impl Store {
                 (None, None, None) => None,
                 (Some(text), Some(by), Some(at)) => Some(Answer {
                     text,
-                    by: answered_by_from_name(&by)?,
+                    by: answered_by_from_name(&by)
+                        .ok_or_else(|| Error::Schema(format!("unknown answerer `{by}`")))?,
                     at: millis(at)?,
                 }),
                 _ => {
@@ -510,4 +376,155 @@ fn millis(value: i64) -> Result<Timestamp> {
     u64::try_from(value)
         .map(Timestamp::from_millis)
         .map_err(|_| Error::Schema(format!("{value} is not a millisecond count")))
+}
+
+pub(super) fn write_task(transaction: &Transaction<'_>, task: &Task) -> Result<()> {
+    transaction.execute(
+        "DELETE FROM tasks WHERE project_id = ?1 AND id = ?2",
+        params![task.project.as_str(), task.id.as_str()],
+    )?;
+    transaction.execute(
+        "INSERT INTO tasks (
+                project_id, id, title, intent, role, state, base_dependency, branch_head,
+                retry_profile, retry_not_before, created_at, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        params![
+            task.project.as_str(),
+            task.id.as_str(),
+            task.title,
+            task.intent,
+            role_name(task.role),
+            state_name(task.state),
+            task.base_dependency.as_ref().map(TaskId::as_str),
+            task.branch_head.as_ref().map(CommitId::as_str),
+            task.retry.as_ref().map(|retry| retry.profile.as_str()),
+            task.retry
+                .as_ref()
+                .map(|retry| retry.not_before.millis() as i64),
+            task.created_at.millis() as i64,
+            task.updated_at.millis() as i64,
+        ],
+    )?;
+
+    for (position, dependency) in task.dependencies.iter().enumerate() {
+        transaction.execute(
+            "INSERT INTO task_dependencies (project_id, task_id, position, prerequisite, commit_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                task.project.as_str(),
+                task.id.as_str(),
+                position as i64,
+                dependency.task.as_str(),
+                dependency.commit.as_str(),
+            ],
+        )?;
+    }
+
+    for (position, attempt) in task.attempts.iter().enumerate() {
+        transaction.execute(
+            "INSERT INTO task_attempts (
+                    project_id, task_id, position, session, profile, worktree, started_at,
+                    finished_at, outcome
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                task.project.as_str(),
+                task.id.as_str(),
+                position as i64,
+                attempt.session.as_ref().map(SessionId::as_str),
+                attempt.profile.as_str(),
+                attempt.worktree.as_ref().map(WorktreeLease::as_str),
+                attempt.started_at.millis() as i64,
+                attempt.finished_at.map(|at| at.millis() as i64),
+                outcome_name(attempt.outcome),
+            ],
+        )?;
+    }
+
+    for (position, question) in task.questions.iter().enumerate() {
+        transaction.execute(
+            "INSERT INTO task_questions (
+                    project_id, task_id, position, text, asked_at, answer_text, answered_by,
+                    answered_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                task.project.as_str(),
+                task.id.as_str(),
+                position as i64,
+                question.text,
+                question.asked_at.millis() as i64,
+                question.answer.as_ref().map(|answer| answer.text.as_str()),
+                question
+                    .answer
+                    .as_ref()
+                    .map(|answer| answered_by_name(answer.by)),
+                question
+                    .answer
+                    .as_ref()
+                    .map(|answer| answer.at.millis() as i64),
+            ],
+        )?;
+    }
+
+    for (position, record) in task.validations.iter().enumerate() {
+        transaction.execute(
+            "INSERT INTO task_validations (
+                    project_id, task_id, position, command, commit_id, exit_code,
+                    duration_millis, output_tail
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                task.project.as_str(),
+                task.id.as_str(),
+                position as i64,
+                record.command,
+                record.commit.as_str(),
+                record.exit_code,
+                record.duration.as_millis() as i64,
+                record.output_tail,
+            ],
+        )?;
+    }
+
+    for (position, artifact) in task.artifacts.iter().enumerate() {
+        transaction.execute(
+            "INSERT INTO task_artifacts (project_id, task_id, position, kind, path)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                task.project.as_str(),
+                task.id.as_str(),
+                position as i64,
+                artifact_kind_name(artifact.kind),
+                artifact.path,
+            ],
+        )?;
+    }
+
+    for (position, link) in task.links.iter().enumerate() {
+        let (kind, number, url, checks) = match link {
+            Link::Issue { url } => ("issue", None, url.as_str(), None),
+            Link::PullRequest {
+                number,
+                url,
+                checks,
+            } => (
+                "pull_request",
+                Some(*number as i64),
+                url.as_str(),
+                Some(checks_name(*checks)),
+            ),
+        };
+        transaction.execute(
+            "INSERT INTO task_links (project_id, task_id, position, kind, number, url, checks)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                task.project.as_str(),
+                task.id.as_str(),
+                position as i64,
+                kind,
+                number,
+                url,
+                checks,
+            ],
+        )?;
+    }
+    Ok(())
 }

@@ -174,7 +174,7 @@ fn unanswered(task: &Task) -> Option<&Question> {
         .find(|question| question.answer.is_none())
 }
 
-fn one_line(text: &str) -> String {
+pub(crate) fn one_line(text: &str) -> String {
     text.chars()
         .map(|character| {
             if character.is_control() {

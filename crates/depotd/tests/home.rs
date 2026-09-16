@@ -3,9 +3,9 @@ mod support;
 use std::collections::BTreeSet;
 
 use depotd::{
-    ARCHIVE_DIR_NAME, CHECKLIST_FILE_NAME, DATABASE_FILE_NAME, DOCUMENTS_DIR_NAME, MEDIA_DIR_NAME,
-    PROJECTS_DIR_NAME, SCRATCH_DIR_NAME, SETTINGS_FILE_NAME, Settings, Store, add_project,
-    slug_for,
+    ARCHIVE_DIR_NAME, CHECKLIST_FILE_NAME, CONTEXT_DOCUMENT_FILE_NAME, DATABASE_FILE_NAME,
+    DOCUMENTS_DIR_NAME, MEDIA_DIR_NAME, PROJECTS_DIR_NAME, SCRATCH_DIR_NAME, SETTINGS_FILE_NAME,
+    Settings, Store, add_project, slug_for,
 };
 
 #[test]
@@ -52,6 +52,32 @@ fn a_registered_project_gets_the_checklist_the_archive_documents_scratch_and_med
             .expect("checklist")
             .contains("No tasks yet."),
         "a fresh project renders an empty checklist"
+    );
+}
+
+#[test]
+fn a_registered_project_gets_a_context_document_depot_never_renders() {
+    let fixture = support::fixture();
+    let added = support::register(&fixture, "example");
+
+    let context = added.home.context_document_path();
+    assert_eq!(
+        context.file_name().unwrap(),
+        CONTEXT_DOCUMENT_FILE_NAME,
+        "the kickoff names this file"
+    );
+    assert!(
+        context.is_file(),
+        "the coordinator's context document is there before the first session"
+    );
+
+    std::fs::write(&context, "# Context\n\nhand written by the coordinator\n").expect("written");
+    support::register(&fixture, "example");
+
+    assert_eq!(
+        std::fs::read_to_string(&context).expect("read"),
+        "# Context\n\nhand written by the coordinator\n",
+        "depot renders the checklist and never the narrative documents"
     );
 }
 

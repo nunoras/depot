@@ -77,6 +77,7 @@ fn a_project_state_round_trips_through_the_configuration_split() {
     let expected = ProjectState {
         project: added.project.id.clone(),
         tasks: BTreeMap::from([(TaskId::new("t-1"), first), (TaskId::new("t-2"), second)]),
+        coordinator: None,
         profiles: BTreeMap::from([
             (Role::Plan, ProfileId::new("fable-5")),
             (Role::Build, ProfileId::new("glm-5.3")),

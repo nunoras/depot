@@ -63,6 +63,7 @@ fn task(id: &str, state: TaskState) -> Task {
         attempts: Vec::new(),
         questions: Vec::new(),
         validations: Vec::new(),
+        submission: None,
         artifacts: Vec::new(),
         links: Vec::new(),
         branch_head: None,
@@ -2205,6 +2206,11 @@ fn live_worktree_acquired_releases_a_replaced_lease() {
                 .last()
                 .and_then(|attempt| attempt.worktree.clone())
                 == Some(lease("w2"))
+                && subject(state, "t1")
+                    .attempts
+                    .last()
+                    .and_then(|attempt| attempt.worktree.clone())
+                    == Some(lease("w2"))
         }),
     ]);
 }

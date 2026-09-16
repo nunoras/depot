@@ -106,6 +106,7 @@ pub enum FactTag {
     WorkerTurnStarted,
     WorkerTurnEnded,
     WorkerLivenessChanged,
+    WorkerSubmissionRecorded,
     WorkerSubmitted,
     ValidationStarted,
     ValidationFinished,
@@ -134,6 +135,7 @@ pub fn fact_tag(kind: &FactKind) -> FactTag {
         FactKind::WorkerTurnStarted { .. } => FactTag::WorkerTurnStarted,
         FactKind::WorkerTurnEnded { .. } => FactTag::WorkerTurnEnded,
         FactKind::WorkerLivenessChanged { .. } => FactTag::WorkerLivenessChanged,
+        FactKind::WorkerSubmissionRecorded { .. } => FactTag::WorkerSubmissionRecorded,
         FactKind::WorkerSubmitted { .. } => FactTag::WorkerSubmitted,
         FactKind::ValidationStarted { .. } => FactTag::ValidationStarted,
         FactKind::ValidationFinished { .. } => FactTag::ValidationFinished,
@@ -163,6 +165,7 @@ pub fn fact_tag_name(tag: FactTag) -> &'static str {
         FactTag::WorkerTurnStarted => "worker_turn_started",
         FactTag::WorkerTurnEnded => "worker_turn_ended",
         FactTag::WorkerLivenessChanged => "worker_liveness_changed",
+        FactTag::WorkerSubmissionRecorded => "worker_submission_recorded",
         FactTag::WorkerSubmitted => "worker_submitted",
         FactTag::ValidationStarted => "validation_started",
         FactTag::ValidationFinished => "validation_finished",
@@ -192,6 +195,7 @@ pub fn fact_tag_from_name(name: &str) -> Result<FactTag> {
         "worker_turn_started" => FactTag::WorkerTurnStarted,
         "worker_turn_ended" => FactTag::WorkerTurnEnded,
         "worker_liveness_changed" => FactTag::WorkerLivenessChanged,
+        "worker_submission_recorded" => FactTag::WorkerSubmissionRecorded,
         "worker_submitted" => FactTag::WorkerSubmitted,
         "validation_started" => FactTag::ValidationStarted,
         "validation_finished" => FactTag::ValidationFinished,
@@ -225,6 +229,7 @@ pub fn fact_task(kind: &FactKind) -> Option<TaskId> {
         | FactKind::WorkerTurnStarted { task, .. }
         | FactKind::WorkerTurnEnded { task }
         | FactKind::WorkerLivenessChanged { task, .. }
+        | FactKind::WorkerSubmissionRecorded { task, .. }
         | FactKind::WorkerSubmitted { task, .. }
         | FactKind::ValidationStarted { task, .. }
         | FactKind::ValidationFinished { task, .. }

@@ -54,6 +54,11 @@ pub enum FactKind {
         task: TaskId,
         liveness: Liveness,
     },
+    WorkerSubmissionRecorded {
+        task: TaskId,
+        summary: String,
+        artifacts: Vec<String>,
+    },
     WorkerSubmitted {
         task: TaskId,
         commit: CommitId,

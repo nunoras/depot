@@ -36,6 +36,27 @@ impl Cli {
             .expect("the depot binary runs")
     }
 
+    fn run_worker_from(
+        &self,
+        arguments: &[&str],
+        task: &str,
+        attempt: &str,
+        directory: &Path,
+    ) -> Output {
+        Command::new(BIN)
+            .args(arguments)
+            .env("DEPOT_HOME", &self.home)
+            .env("DEPOT_TASK_ID", task)
+            .env("DEPOT_ATTEMPT_ID", attempt)
+            .current_dir(directory)
+            .output()
+            .expect("the depot binary runs")
+    }
+
+    fn run_worker(&self, arguments: &[&str], task: &str, attempt: &str) -> Output {
+        self.run_worker_from(arguments, task, attempt, self.temp.path())
+    }
+
     fn project_directory(&self, name: &str) -> PathBuf {
         let directory = self.temp.path().join(name);
         std::fs::create_dir_all(&directory).expect("project directory");
@@ -749,6 +770,204 @@ fn the_new_commands_refuse_unknown_flags_and_missing_arguments() {
     }
 }
 
+#[test]
+fn worker_ask_records_a_relayed_question_from_explicit_context() {
+    let cli = Cli::new();
+    let added = cli.registered_with(BUILD_ONLY);
+    let store = Store::open(&cli.depot_home()).expect("store");
+    let mut seeded = task(added.project.id.as_str(), "t-1", TaskState::Running, 1);
+    seeded.attempts.push(depot_core::Attempt {
+        session: Some(depot_core::SessionId::new("session-1")),
+        profile: depot_core::ProfileId::new("build"),
+        worktree: Some(depot_core::WorktreeLease::new("attempt-1")),
+        started_at: depot_core::Timestamp::from_millis(1),
+        finished_at: None,
+        outcome: depot_core::AttemptOutcome::InFlight,
+    });
+    store.put_task(&seeded).expect("seeded task");
+
+    let output = cli.run_worker(&["ask", "Which API?"], "t-1", "attempt-1");
+
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    let recorded = store
+        .task(&added.project.id, &TaskId::new("t-1"))
+        .expect("task")
+        .expect("present");
+    assert_eq!(recorded.state, TaskState::WaitingOnQuestion);
+    assert_eq!(recorded.questions[0].text, "Which API?");
+}
+
+#[test]
+fn worker_commentary_does_not_change_task_state() {
+    let cli = Cli::new();
+    let added = cli.registered_with(BUILD_ONLY);
+    let store = Store::open(&cli.depot_home()).expect("store");
+    let mut seeded = task(added.project.id.as_str(), "t-1", TaskState::Running, 1);
+    seeded.attempts.push(depot_core::Attempt {
+        session: Some(depot_core::SessionId::new("session-1")),
+        profile: depot_core::ProfileId::new("build"),
+        worktree: Some(depot_core::WorktreeLease::new("attempt-1")),
+        started_at: depot_core::Timestamp::from_millis(1),
+        finished_at: None,
+        outcome: depot_core::AttemptOutcome::InFlight,
+    });
+    store.put_task(&seeded).expect("seeded task");
+
+    let output = cli.run_worker(
+        &[
+            "doc",
+            "write",
+            "notes.md",
+            "--content",
+            "Worker commentary.",
+            "--project",
+            "example",
+        ],
+        "t-1",
+        "attempt-1",
+    );
+
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    assert_eq!(
+        store
+            .task(&added.project.id, &TaskId::new("t-1"))
+            .expect("task")
+            .expect("present"),
+        seeded
+    );
+    assert_eq!(
+        std::fs::read_to_string(added.home.documents_dir().join("notes.md")).expect("commentary"),
+        "Worker commentary."
+    );
+}
+
+#[test]
+fn worker_context_refuses_coordinator_state_commands() {
+    let cli = Cli::new();
+    let added = cli.registered_with(BUILD_ONLY);
+    let store = Store::open(&cli.depot_home()).expect("store");
+    let mut seeded = task(added.project.id.as_str(), "t-1", TaskState::Running, 1);
+    seeded.attempts.push(depot_core::Attempt {
+        session: Some(depot_core::SessionId::new("session-1")),
+        profile: depot_core::ProfileId::new("build"),
+        worktree: Some(depot_core::WorktreeLease::new("attempt-1")),
+        started_at: depot_core::Timestamp::from_millis(1),
+        finished_at: None,
+        outcome: depot_core::AttemptOutcome::InFlight,
+    });
+    store.put_task(&seeded).expect("seeded task");
+
+    let output = cli.run_worker(
+        &["task", "stop", "t-1", "--project", "example"],
+        "t-1",
+        "attempt-1",
+    );
+
+    assert_eq!(output.status.code(), Some(1), "stdout: {}", stdout(&output));
+    assert!(
+        stderr(&output).contains("depot ask"),
+        "stderr: {}",
+        stderr(&output)
+    );
+    assert!(
+        stderr(&output).contains("depot submit"),
+        "stderr: {}",
+        stderr(&output)
+    );
+    assert_eq!(
+        store
+            .task(&added.project.id, &TaskId::new("t-1"))
+            .expect("task")
+            .expect("present"),
+        seeded
+    );
+}
+
+#[test]
+fn worker_submit_records_its_summary_artifacts_and_starts_validation() {
+    let cli = Cli::new();
+    let added = cli.registered_with(BUILD_ONLY);
+    let store = Store::open(&cli.depot_home()).expect("store");
+    let mut seeded = task(added.project.id.as_str(), "t-1", TaskState::Running, 1);
+    seeded.attempts.push(depot_core::Attempt {
+        session: Some(depot_core::SessionId::new("session-1")),
+        profile: depot_core::ProfileId::new("build"),
+        worktree: Some(depot_core::WorktreeLease::new("attempt-1")),
+        started_at: depot_core::Timestamp::from_millis(1),
+        finished_at: None,
+        outcome: depot_core::AttemptOutcome::InFlight,
+    });
+    store.put_task(&seeded).expect("seeded task");
+
+    let worktree = cli.project_directory("worktree");
+    for arguments in [
+        vec!["init"],
+        vec!["config", "user.email", "worker@example.test"],
+        vec!["config", "user.name", "Worker"],
+    ] {
+        let output = Command::new("git")
+            .args(arguments)
+            .current_dir(&worktree)
+            .output()
+            .expect("git runs");
+        assert!(output.status.success());
+    }
+    std::fs::write(worktree.join("result.txt"), "done\n").expect("work result");
+    let output = Command::new("git")
+        .args(["add", "result.txt"])
+        .current_dir(&worktree)
+        .output()
+        .expect("git runs");
+    assert!(output.status.success());
+    let output = Command::new("git")
+        .args(["commit", "-m", "finish task"])
+        .current_dir(&worktree)
+        .output()
+        .expect("git runs");
+    assert!(output.status.success());
+
+    let output = cli.run_worker_from(
+        &[
+            "submit",
+            "--summary",
+            "Implemented the result.",
+            "--artifact",
+            "result.txt",
+            "--artifact",
+            "https://example.test/evidence",
+        ],
+        "t-1",
+        "attempt-1",
+        &worktree,
+    );
+
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    assert_eq!(stdout(&output), "submitted t-1\n");
+    let recorded = store
+        .task(&added.project.id, &TaskId::new("t-1"))
+        .expect("task")
+        .expect("present");
+    assert_eq!(recorded.state, TaskState::Validating);
+    assert_eq!(
+        recorded.submission,
+        Some(depot_core::Submission {
+            summary: "Implemented the result.".to_string(),
+            artifacts: vec![
+                "result.txt".to_string(),
+                "https://example.test/evidence".to_string(),
+            ],
+        })
+    );
+    assert!(
+        store
+            .events(&added.project.id)
+            .expect("events")
+            .iter()
+            .any(|event| event.kind == "worker_submitted"),
+        "submission starts the validation path"
+    );
+}
+
 fn task(project: &str, id: &str, state: TaskState, offset: u64) -> depot_core::Task {
     let project = depot_core::ProjectId::new(project);
     let at = depot_core::Timestamp::from_millis(1_700_000_000_000 + offset);
@@ -764,6 +983,7 @@ fn task(project: &str, id: &str, state: TaskState, offset: u64) -> depot_core::T
         attempts: Vec::new(),
         questions: Vec::new(),
         validations: Vec::new(),
+        submission: None,
         artifacts: Vec::new(),
         links: Vec::new(),
         branch_head: None,

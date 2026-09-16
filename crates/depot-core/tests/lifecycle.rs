@@ -670,25 +670,55 @@ fn rule_05_the_concurrency_cap_queues_work_and_frees_it() {
                     },
                 ),
                 fact(3_000, approved("t2")),
-                fact(
-                    3_500,
-                    FactKind::PullRequestOpened {
-                        task: task_id("t1"),
-                        number: 1,
-                        url: "https://example.com/1".to_owned(),
-                    },
-                ),
-                fact(4_000, merged("t1")),
+                fact(4_000, submitted("t1", "c1")),
+                fact(5_000, passed("t1", "c1")),
             ],
         )
         .when(
             "t2",
             TaskState::Running,
-            vec![release("t1", "w1"), Action::RenderChecklist],
+            vec![
+                Action::Push {
+                    task: task_id("t1"),
+                    commit: commit("c1"),
+                },
+                Action::OpenPullRequest {
+                    task: task_id("t1"),
+                    commit: commit("c1"),
+                },
+                acquire("t2", Baseline::DefaultBranchHead),
+                launch("t2", BUILD),
+                Action::RenderChecklist,
+            ],
         )
         .checking(|state| {
-            subject(state, "t1").state == TaskState::Landed
+            subject(state, "t1").state == TaskState::Validated
                 && subject(state, "t2").attempts.len() == 1
+                && holds(state, "t1", AttemptOutcome::Submitted)
+        }),
+        case(
+            "opening a pr from a live running worker does not free the slot",
+            {
+                let mut state = state(vec![
+                    running_with_session("t1", "s1", "w1"),
+                    task("t2", TaskState::Approved),
+                ]);
+                state.limits.max_concurrent_tasks = 1;
+                state
+            },
+            vec![fact(
+                6_000,
+                FactKind::PullRequestOpened {
+                    task: task_id("t1"),
+                    number: 1,
+                    url: "https://example.com/1".to_owned(),
+                },
+            )],
+        )
+        .when("t2", TaskState::Approved, vec![])
+        .checking(|state| {
+            subject(state, "t1").state == TaskState::Running
+                && holds(state, "t1", AttemptOutcome::InFlight)
         }),
     ]);
 }
@@ -1130,6 +1160,31 @@ fn facts_about_unknown_tasks_change_nothing() {
     let (next, actions) = reduce(&state, &fact(1_000, approved("ghost")));
     assert_eq!(next, state);
     assert!(actions.is_empty());
+}
+
+#[test]
+fn unknown_task_worktree_acquired_releases_the_lease() {
+    let state = base();
+    let (next, actions) = reduce(
+        &state,
+        &fact(
+            1_000,
+            FactKind::WorktreeAcquired {
+                task: task_id("ghost"),
+                lease: lease("w-orphan"),
+                baseline: Baseline::DefaultBranchHead,
+                included: Vec::new(),
+            },
+        ),
+    );
+    assert_eq!(next, state);
+    assert_eq!(
+        actions,
+        vec![Action::ReleaseWorktree {
+            task: task_id("ghost"),
+            lease: lease("w-orphan"),
+        }]
+    );
 }
 
 #[test]
@@ -2286,4 +2341,203 @@ fn multi_dependency_tasks_require_a_declared_base() {
             Action::RenderChecklist,
         ],
     )]);
+}
+
+#[test]
+fn liveness_gone_does_not_demote_landed_tasks() {
+    run(vec![case(
+        "a gone signal after land is ignored",
+        state(vec![with_attempt(
+            task("t1", TaskState::Landed),
+            Attempt {
+                outcome: AttemptOutcome::InFlight,
+                session: Some(session("s1")),
+                finished_at: None,
+                ..attempt(BUILD)
+            },
+        )]),
+        vec![fact(
+            1_000,
+            FactKind::WorkerLivenessChanged {
+                task: task_id("t1"),
+                liveness: Liveness::Gone,
+            },
+        )],
+    )
+    .when("t1", TaskState::Landed, vec![])
+    .checking(|state| holds(state, "t1", AttemptOutcome::InFlight))]);
+}
+
+#[test]
+fn pull_request_opened_from_validated_closes_a_live_attempt() {
+    run(vec![case(
+        "opening a pr from validated stops a lingering open session",
+        state(vec![with_attempt(
+            validated("t1", "c1"),
+            Attempt {
+                outcome: AttemptOutcome::InFlight,
+                session: Some(session("s1")),
+                worktree: Some(lease("w1")),
+                ..attempt(BUILD)
+            },
+        )]),
+        vec![fact(
+            1_000,
+            FactKind::PullRequestOpened {
+                task: task_id("t1"),
+                number: 9,
+                url: "https://example.com/9".to_owned(),
+            },
+        )],
+    )
+    .when(
+        "t1",
+        TaskState::PrOpen,
+        vec![
+            Action::StopSession {
+                task: task_id("t1"),
+            },
+            Action::RenderChecklist,
+        ],
+    )
+    .checking(|state| {
+        holds(state, "t1", AttemptOutcome::Submitted)
+            && subject(state, "t1").pull_request().is_some()
+    })]);
+}
+
+#[test]
+fn pull_request_closed_unmerged_stops_a_live_session() {
+    run(vec![case(
+        "closing an open pr stops the session before cancelling",
+        state(vec![with_pull_request(
+            with_attempt(
+                task("t1", TaskState::PrOpen),
+                Attempt {
+                    outcome: AttemptOutcome::InFlight,
+                    session: Some(session("s1")),
+                    worktree: Some(lease("w1")),
+                    ..attempt(BUILD)
+                },
+            ),
+            42,
+            Checks::Failing,
+        )]),
+        vec![fact(
+            1_000,
+            FactKind::PullRequestClosedUnmerged {
+                task: task_id("t1"),
+            },
+        )],
+    )
+    .when(
+        "t1",
+        TaskState::Cancelled,
+        vec![
+            Action::StopSession {
+                task: task_id("t1"),
+            },
+            hold("t1"),
+            Action::RenderChecklist,
+        ],
+    )
+    .checking(|state| holds(state, "t1", AttemptOutcome::Stopped))]);
+}
+
+#[test]
+fn retry_exhausted_gates_and_stops_in_flight_work() {
+    run(vec![
+        case(
+            "an in-flight retry exhaustion stops the session",
+            state(vec![running_with_session("t1", "s1", "w1")]),
+            vec![fact(
+                1_000,
+                FactKind::RetryExhausted {
+                    task: task_id("t1"),
+                },
+            )],
+        )
+        .when(
+            "t1",
+            TaskState::Failed,
+            vec![
+                Action::StopSession {
+                    task: task_id("t1"),
+                },
+                hold("t1"),
+                Action::RenderChecklist,
+            ],
+        )
+        .checking(|state| holds(state, "t1", AttemptOutcome::Failed)),
+        case(
+            "a landed task ignores retry exhaustion",
+            state(vec![task("t1", TaskState::Landed)]),
+            vec![fact(
+                2_000,
+                FactKind::RetryExhausted {
+                    task: task_id("t1"),
+                },
+            )],
+        )
+        .when("t1", TaskState::Landed, vec![]),
+        case(
+            "an approved retrying task fails when retries are exhausted",
+            state(vec![with_retry(
+                task("t1", TaskState::Approved),
+                "fallback-profile",
+                at(31_000),
+            )]),
+            vec![fact(
+                3_000,
+                FactKind::RetryExhausted {
+                    task: task_id("t1"),
+                },
+            )],
+        )
+        .when(
+            "t1",
+            TaskState::Failed,
+            vec![hold("t1"), Action::RenderChecklist],
+        )
+        .checking(|state| subject(state, "t1").retry.is_none()),
+    ]);
+}
+
+#[test]
+fn merge_closes_an_open_attempt_before_landing() {
+    run(vec![case(
+        "landing stops a lingering open session on the pr",
+        state(vec![with_pull_request(
+            with_attempt(
+                task("t1", TaskState::PrOpen),
+                Attempt {
+                    outcome: AttemptOutcome::InFlight,
+                    session: Some(session("s1")),
+                    worktree: Some(lease("w1")),
+                    ..attempt(BUILD)
+                },
+            ),
+            42,
+            Checks::Passing,
+        )]),
+        vec![fact(1_000, merged("t1"))],
+    )
+    .when(
+        "t1",
+        TaskState::Landed,
+        vec![
+            Action::StopSession {
+                task: task_id("t1"),
+            },
+            release("t1", "w1"),
+            Action::RenderChecklist,
+        ],
+    )
+    .checking(|state| {
+        holds(state, "t1", AttemptOutcome::Submitted)
+            && subject(state, "t1")
+                .attempts
+                .last()
+                .is_some_and(|attempt| attempt.worktree.is_none())
+    })]);
 }

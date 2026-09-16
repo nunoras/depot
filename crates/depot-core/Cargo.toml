@@ -1,0 +1,9 @@
+[package]
+name = "depot-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Pure lifecycle rules for depot: facts in, next state and intended actions out"
+
+[dependencies]

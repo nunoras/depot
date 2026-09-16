@@ -2,7 +2,7 @@ use std::io::Read;
 
 use depotd::{
     DepotHome, Error, StatusSelection, TaskRequest, add_project, add_task, answer_question,
-    approve_tasks, read_inbox, render_status, stop_task, worker_ask, worker_submit,
+    approve_tasks, ask_question, read_inbox, render_status, stop_task, submit_task,
     write_narrative,
 };
 
@@ -11,8 +11,6 @@ depot - coordinate a project's agent work
 
 USAGE
   depot project add <path-or-url>
-  depot ask <question>
-  depot submit --summary <text> --artifact <path-or-url>...
   depot status [--project <name>] [--all]
   depot task add --title <title> --intent <intent> --role <plan|build|review|fix>
                  [--depends-on <task>@<commit>]...
@@ -20,6 +18,8 @@ USAGE
   depot task approve <task-id>... [--project <name>]
   depot task answer <task-id> --text <answer> [--by <coordinator|user>] [--project <name>]
   depot task stop <task-id> [--project <name>]
+  depot ask --task <task-id> --project <name> [--relay] <question>
+  depot submit --task <task-id> --project <name>
   depot inbox [--project <name>]
   depot doc write <name> --content <text|-> [--project <name>]
 
@@ -72,8 +72,6 @@ impl From<Error> for Failure {
 fn dispatch(arguments: &[String]) -> Result<String, Failure> {
     match arguments.first().map(String::as_str) {
         None | Some("help") | Some("--help") | Some("-h") => Ok(USAGE.to_string()),
-        Some("ask") => ask_command(&arguments[1..]),
-        Some("submit") => submit_command(&arguments[1..]),
         Some("project") => {
             require_coordinator()?;
             project_command(&arguments[1..])
@@ -82,6 +80,8 @@ fn dispatch(arguments: &[String]) -> Result<String, Failure> {
             require_coordinator()?;
             task_command(&arguments[1..])
         }
+        Some("ask") => ask_command(&arguments[1..]),
+        Some("submit") => submit_command(&arguments[1..]),
         Some("doc") => doc_command(&arguments[1..]),
         Some("inbox") => {
             require_coordinator()?;
@@ -103,28 +103,6 @@ fn require_coordinator() -> Result<(), Failure> {
         .into());
     }
     Ok(())
-}
-
-fn ask_command(arguments: &[String]) -> Result<String, Failure> {
-    if arguments.len() != 1 {
-        return Err(Failure::Usage(
-            "`depot ask` needs exactly one question".to_string(),
-        ));
-    }
-    let task = worker_ask(&DepotHome::resolve()?, &arguments[0])?;
-    Ok(format!("asked {}\n", task.id))
-}
-
-fn submit_command(arguments: &[String]) -> Result<String, Failure> {
-    let flags = Flags::parse(arguments, &[])?;
-    flags.reject_unknown(&["summary", "artifact"])?;
-    flags.reject_positionals()?;
-    let task = worker_submit(
-        &DepotHome::resolve()?,
-        flags.required("summary")?,
-        flags.all("artifact"),
-    )?;
-    Ok(format!("submitted {}\n", task.id))
 }
 
 fn project_command(arguments: &[String]) -> Result<String, Failure> {
@@ -248,6 +226,35 @@ fn task_stop(arguments: &[String]) -> Result<String, Failure> {
     let home = DepotHome::resolve()?;
     let task = stop_task(&home, flags.value("project"), &ids[0])?;
     Ok(format!("stopped {}\n", task.id))
+}
+
+fn ask_command(arguments: &[String]) -> Result<String, Failure> {
+    let flags = Flags::parse(arguments, &["relay"])?;
+    flags.reject_unknown(&["task", "project", "relay"])?;
+    let questions = flags.positionals();
+    if questions.len() != 1 {
+        return Err(Failure::Usage(
+            "`depot ask` needs exactly one question".to_string(),
+        ));
+    }
+    let home = DepotHome::resolve()?;
+    let task = ask_question(
+        &home,
+        flags.value("project"),
+        flags.required("task")?,
+        &questions[0],
+        flags.has("relay"),
+    )?;
+    Ok(format!("asked {}\n", task.id))
+}
+
+fn submit_command(arguments: &[String]) -> Result<String, Failure> {
+    let flags = Flags::parse(arguments, &[])?;
+    flags.reject_unknown(&["task", "project"])?;
+    flags.reject_positionals()?;
+    let home = DepotHome::resolve()?;
+    let task = submit_task(&home, flags.value("project"), flags.required("task")?)?;
+    Ok(format!("submitted {}\n", task.id))
 }
 
 fn doc_command(arguments: &[String]) -> Result<String, Failure> {

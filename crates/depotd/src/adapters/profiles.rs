@@ -9,6 +9,7 @@ pub struct ProfileSpec {
     pub harness: String,
     pub model: String,
     pub effort: String,
+    pub account: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,6 +93,9 @@ fn missing_field(spec: &ProfileSpec) -> Option<&'static str> {
     }
     if spec.effort.trim().is_empty() {
         return Some("effort");
+    }
+    if spec.account.trim().is_empty() {
+        return Some("account");
     }
     None
 }

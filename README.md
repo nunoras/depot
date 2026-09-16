@@ -16,7 +16,7 @@ The destination is the published spec at [nunoras/depot#30](https://github.com/n
 | `crates/depotd` | The daemon: everything with a side effect, including the four adapters depot talks to, the store, the depot home, configuration, and the coordinator's artifacts. |
 | `crates/depot` | The command line the coordinator and the user drive. |
 
-The daemon loop is not wired to the adapters yet: [nunoras/depot#34](https://github.com/nunoras/depot/issues/34) does that.
+
 
 ## The depot home
 
@@ -86,6 +86,18 @@ coordinator_context_tokens = 120000
 
 [credentials]
 github = "gh-cli"
+
+[profiles.glm-5-3]
+harness = "pi"
+model = "glm-5.3"
+effort = "high"
+account = "work"
+
+[profiles.gpt-5-5]
+harness = "pi"
+model = "gpt-5.5"
+effort = "high"
+account = "personal"
 ```
 
 Neither file accepts a key from the other side of the split, and registering a project never writes a machine-local setting into the repository.
@@ -126,8 +138,8 @@ The two calls a worker uses to move state:
 
 | verb | what it does |
 |---|---|
-| `depot ask <question>` | records a relayed question, pauses the worker and waits for an answer from the coordinator or the user. |
-| `depot submit --summary <text> --artifact <path-or-url>...` | records the submission summary and artifacts, then triggers validation against HEAD. |
+| `depot ask --task <task-id> --project <name> --relay <question>` | records a relayed question, pauses the worker and waits for an answer from the coordinator or the user. |
+| `depot submit --task <task-id> --project <name>` | records the submission, then triggers validation against HEAD. |
 
 A worker with `DEPOT_TASK_ID` and `DEPOT_ATTEMPT_ID` set can only use `ask` and `submit`.
 Every other command is refused to enforce the worker/coordinator boundary.
@@ -135,6 +147,19 @@ A worker may write narrative documents or artifacts: those change no task state.
 
 A role with no entry in the project's `[profiles]` map is refused when the task is filed rather than defaulted to another profile.
 `docs/context.md` is the coordinator's context document: depot scaffolds it on registration and never renders it, so a fresh session reads it to catch up and the session that wrote it stops mattering.
+
+## Running the daemon
+
+The daemon runs a continuous loop for one project, polling session status, launching workers, running validation, and delivering pull requests.
+
+```sh
+depotd --project <project>
+```
+
+The daemon acquires an exclusive lock on `$DEPOT_HOME/depotd.lock` to prevent multiple daemon instances.
+Polling interval is controlled by the `poll_interval_seconds` setting in the depot home's `config.toml`.
+
+On startup, the daemon performs recovery: tasks with an in-flight attempt are transitioned to `Unknown` state, allowing them to be restarted or reworked.
 
 ## The pure core
 

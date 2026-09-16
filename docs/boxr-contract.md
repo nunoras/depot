@@ -2,7 +2,7 @@
 
 Depot never launches a harness itself.
 boxr is the launcher and the ledger: it starts a headless session, and depot reads the session's state from boxr's own commands.
-This file records the exact commands and output keys depot reads, and the minimum boxr version it accepts, so boxr's build of detached sessions ([nunoras/boxr#6](https://github.com/nunoras/boxr/issues/6)) and resume ([nunoras/boxr#7](https://github.com/nunoras/boxr/issues/7)) and depot's wiring ticket ([nunoras/depot#34](https://github.com/nunoras/depot/issues/34)) meet at the same surface.
+This file records the exact commands and output keys depot reads, and the minimum boxr version it accepts, so boxr's build of detached sessions ([nunoras/boxr#6](https://github.com/nunoras/boxr/issues/6)) and resume ([nunoras/boxr#7](https://github.com/nunoras/boxr/issues/7)) meet the surface depot now calls.
 The reader is `crates/depotd/src/adapters/sessions.rs`; the contract test that drives it is `crates/depotd/tests/sessions.rs`.
 
 ## Minimum version

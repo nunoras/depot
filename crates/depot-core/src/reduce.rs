@@ -796,7 +796,7 @@ fn base_dependency_is_valid(dependencies: &[Dependency], base_dependency: &Optio
     }
 }
 
-fn publication_blocked(state: &ProjectState, task: &TaskId) -> bool {
+pub fn publication_blocked(state: &ProjectState, task: &TaskId) -> bool {
     state.tasks.get(task).is_some_and(|task| {
         task.dependencies
             .iter()

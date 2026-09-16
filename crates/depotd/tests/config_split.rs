@@ -12,7 +12,9 @@ const PROJECT_KEYS: [&str; 5] = [
     "questions",
 ];
 
-const MACHINE_LOCAL_KEYS: [&str; 7] = [
+const PROJECT_ONLY_KEYS: [&str; 4] = ["base_branch", "validation", "pull_request", "questions"];
+
+const MACHINE_LOCAL_ONLY_KEYS: [&str; 7] = [
     "concurrency",
     "run_duration_minutes",
     "poll_interval_seconds",
@@ -20,6 +22,17 @@ const MACHINE_LOCAL_KEYS: [&str; 7] = [
     "fallback_profiles",
     "coordinator_context_tokens",
     "credentials",
+];
+
+const MACHINE_LOCAL_KEYS: [&str; 8] = [
+    "concurrency",
+    "run_duration_minutes",
+    "poll_interval_seconds",
+    "pool_root",
+    "fallback_profiles",
+    "coordinator_context_tokens",
+    "credentials",
+    "profiles",
 ];
 
 #[test]
@@ -36,7 +49,7 @@ fn the_committed_project_file_holds_only_project_knowledge() {
 
     assert_eq!(top_level_keys(&text), names(PROJECT_KEYS));
     assert!(
-        keys_at_any_depth(&text).is_disjoint(&names(MACHINE_LOCAL_KEYS)),
+        keys_at_any_depth(&text).is_disjoint(&names(MACHINE_LOCAL_ONLY_KEYS)),
         "the committed project file must never carry a machine-local setting, got\n{text}"
     );
 }
@@ -54,7 +67,7 @@ fn the_machine_local_file_holds_only_machine_local_settings() {
 
     assert_eq!(top_level_keys(&text), names(MACHINE_LOCAL_KEYS));
     assert!(
-        keys_at_any_depth(&text).is_disjoint(&names(PROJECT_KEYS)),
+        keys_at_any_depth(&text).is_disjoint(&names(PROJECT_ONLY_KEYS)),
         "the machine-local file must never carry project knowledge, got\n{text}"
     );
 }
@@ -94,6 +107,7 @@ fn registering_a_project_never_writes_machine_local_settings_into_the_repository
             fallback_profiles: vec!["sonnet".to_string()],
             coordinator_context_tokens: 60_000,
             credentials: BTreeMap::from([("github".to_string(), "gh-cli".to_string())]),
+            profiles: BTreeMap::new(),
         })
         .expect("machine-local settings");
 
@@ -102,7 +116,7 @@ fn registering_a_project_never_writes_machine_local_settings_into_the_repository
     let after = std::fs::read_to_string(&path).expect("read");
     assert_eq!(after, before);
     assert!(
-        keys_at_any_depth(&after).is_disjoint(&names(MACHINE_LOCAL_KEYS)),
+        keys_at_any_depth(&after).is_disjoint(&names(MACHINE_LOCAL_ONLY_KEYS)),
         "the committed project file must never carry a machine-local setting, got\n{after}"
     );
 

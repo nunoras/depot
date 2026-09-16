@@ -213,6 +213,10 @@ fn pins_a_lease_to_the_dependency_commit_it_was_asked_for() {
         .expect("a worktree is leased");
     assert_eq!(lease.lease, WorktreeLease::new("7c1d0a5e"));
     assert_eq!(git::head(&fixture.lease), fixture.first_commit);
+    assert_eq!(
+        git::git(&fixture.lease, &["branch", "--show-current"]),
+        "task-7\n"
+    );
 }
 
 #[test]

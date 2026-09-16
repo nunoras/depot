@@ -7,6 +7,7 @@ fn spec(profile: &str, model: &str) -> ProfileSpec {
         harness: "claude".to_owned(),
         model: model.to_owned(),
         effort: "high".to_owned(),
+        account: "work".to_owned(),
     }
 }
 
@@ -91,6 +92,7 @@ fn refuses_an_incomplete_profile() {
             harness: "claude".to_owned(),
             model: String::new(),
             effort: "high".to_owned(),
+            account: "work".to_owned(),
         }],
     }])
     .expect_err("a profile without a model is refused");

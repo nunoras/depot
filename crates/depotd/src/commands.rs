@@ -1,5 +1,4 @@
 use std::path::PathBuf;
-use std::process::Command;
 
 use depot_core::{AnsweredBy, CommitId, Dependency, Fact, FactKind, Role, Task, TaskId, TaskState};
 

@@ -30,7 +30,11 @@ impl InstanceLock {
     pub fn acquire(home: &DepotHome) -> Result<Self> {
         home.ensure()?;
         let path = home.root().join(DAEMON_LOCK_FILE_NAME);
-        let file = OpenOptions::new().write(true).create(true).open(&path)?;
+        let file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)?;
         file.try_lock_exclusive().map_err(|error| {
             Error::Home(format!(
                 "another depot daemon already holds {}: {error}",
@@ -709,6 +713,7 @@ mod tests {
             attempts: Vec::new(),
             questions: Vec::new(),
             validations: Vec::new(),
+            submission: None,
             artifacts: Vec::new(),
             links: Vec::new(),
             branch_head: None,

@@ -74,8 +74,14 @@ impl From<Error> for Failure {
 fn dispatch(arguments: &[String]) -> Result<String, Failure> {
     match arguments.first().map(String::as_str) {
         None | Some("help") | Some("--help") | Some("-h") => Ok(USAGE.to_string()),
-        Some("project") => project_command(&arguments[1..]),
-        Some("task") => task_command(&arguments[1..]),
+        Some("project") => {
+            require_coordinator()?;
+            project_command(&arguments[1..])
+        }
+        Some("task") => {
+            require_coordinator()?;
+            task_command(&arguments[1..])
+        }
         Some("ask") => ask_command(&arguments[1..]),
         Some("submit") => submit_command(&arguments[1..]),
         Some("doc") => doc_command(&arguments[1..]),

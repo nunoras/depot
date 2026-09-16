@@ -16,7 +16,7 @@ The destination is the published spec at [nunoras/depot#30](https://github.com/n
 | `crates/depotd` | The daemon: everything with a side effect, including the four adapters depot talks to, the store, the depot home, configuration, and the coordinator's artifacts. |
 | `crates/depot` | The command line the coordinator and the user drive. |
 
-The daemon loop is not wired to the adapters yet: [nunoras/depot#34](https://github.com/nunoras/depot/issues/34) does that.
+
 
 ## The depot home
 
@@ -135,6 +135,19 @@ A worker may write narrative documents or artifacts: those change no task state.
 
 A role with no entry in the project's `[profiles]` map is refused when the task is filed rather than defaulted to another profile.
 `docs/context.md` is the coordinator's context document: depot scaffolds it on registration and never renders it, so a fresh session reads it to catch up and the session that wrote it stops mattering.
+
+## Running the daemon
+
+The daemon runs a continuous loop for one project, polling session status, launching workers, running validation, and delivering pull requests.
+
+```sh
+depotd --project <project>
+```
+
+The daemon acquires an exclusive lock on `$DEPOT_HOME/depotd.lock` to prevent multiple daemon instances.
+Polling interval is controlled by the `poll_interval_seconds` setting in the depot home's `config.toml`.
+
+On startup, the daemon performs recovery: tasks with an in-flight attempt are transitioned to `Unknown` state, allowing them to be restarted or reworked.
 
 ## The pure core
 

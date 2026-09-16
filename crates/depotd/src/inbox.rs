@@ -101,6 +101,7 @@ fn need_for(tag: FactTag, task: Option<&Task>) -> Need {
         | FactTag::QuestionAnswered
         | FactTag::WorkerTurnStarted
         | FactTag::WorkerTurnEnded
+        | FactTag::WorkerSubmissionRecorded
         | FactTag::WorkerSubmitted
         | FactTag::ValidationStarted
         | FactTag::WorktreeAcquired
@@ -144,6 +145,7 @@ fn headline(tag: FactTag, task: Option<&Task>) -> String {
             Some(TaskState::Failed) => "the worker is gone".to_string(),
             _ => "the worker is live".to_string(),
         },
+        FactTag::WorkerSubmissionRecorded => "recorded a submission".to_string(),
         FactTag::WorkerSubmitted => "submitted a change".to_string(),
         FactTag::ValidationStarted => "validation started".to_string(),
         FactTag::ValidationFinished => match task.and_then(|task| task.validations.last()) {

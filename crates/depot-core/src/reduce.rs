@@ -5,7 +5,7 @@ use crate::action::{Action, Baseline};
 use crate::fact::{Fact, FactKind, Liveness};
 use crate::model::{
     Answer, Attempt, AttemptOutcome, Checks, CommitId, CoordinatorSession, Dependency, Limits,
-    Link, ProfileId, ProjectState, Question, Retry, Task, TaskId, TaskState, Timestamp,
+    Link, ProfileId, ProjectState, Question, Retry, Submission, Task, TaskId, TaskState, Timestamp,
     ValidationRecord, WorktreeLease,
 };
 
@@ -42,6 +42,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                         attempts: Vec::new(),
                         questions: Vec::new(),
                         validations: Vec::new(),
+                        submission: None,
                         artifacts: Vec::new(),
                         links: Vec::new(),
                         branch_head: None,
@@ -195,6 +196,23 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             }
         }
 
+        FactKind::WorkerSubmissionRecorded {
+            task,
+            summary,
+            artifacts,
+        } => {
+            if let Some(task) = next.tasks.get_mut(task)
+                && task.state == TaskState::Running
+            {
+                task.submission = Some(Submission {
+                    summary: summary.clone(),
+                    artifacts: artifacts.clone(),
+                });
+                task.updated_at = fact.at;
+                changed = true;
+            }
+        }
+
         FactKind::WorkerSubmitted { task, commit } => {
             let can_submit = next.tasks.get(task).is_some_and(|task| {
                 task.state == TaskState::Running
@@ -288,6 +306,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
         FactKind::WorktreeAcquired {
             task,
             lease,
+            path,
             baseline,
             included,
         } => {
@@ -324,6 +343,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                             });
                         }
                         attempt.worktree = Some(lease.clone());
+                        attempt.worktree_path = Some(path.clone());
                     }
                     task.updated_at = fact.at;
                     attached = true;
@@ -349,6 +369,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                         session: None,
                         profile: profile.clone(),
                         worktree: Some(lease.clone()),
+                        worktree_path: Some(path.clone()),
                         started_at: fact.at,
                         finished_at: None,
                         outcome: AttemptOutcome::InFlight,
@@ -719,6 +740,7 @@ fn start_ready_tasks(
             session: None,
             profile: profile.clone(),
             worktree: None,
+            worktree_path: None,
             started_at: at,
             finished_at: None,
             outcome: AttemptOutcome::InFlight,

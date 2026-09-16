@@ -54,6 +54,11 @@ pub enum FactKind {
         task: TaskId,
         liveness: Liveness,
     },
+    WorkerSubmissionRecorded {
+        task: TaskId,
+        summary: String,
+        artifacts: Vec<String>,
+    },
     WorkerSubmitted {
         task: TaskId,
         commit: CommitId,
@@ -73,6 +78,7 @@ pub enum FactKind {
     WorktreeAcquired {
         task: TaskId,
         lease: WorktreeLease,
+        path: String,
         baseline: crate::action::Baseline,
         included: Vec<Dependency>,
     },

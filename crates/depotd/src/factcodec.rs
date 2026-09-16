@@ -62,6 +62,25 @@ pub fn encode_payload(kind: &FactKind) -> String {
             ("task", quoted(task.as_str())),
             ("liveness", quoted(liveness_name(*liveness))),
         ]),
+        FactKind::WorkerSubmissionRecorded {
+            task,
+            summary,
+            artifacts,
+        } => object(vec![
+            ("task", quoted(task.as_str())),
+            ("summary", quoted(summary)),
+            (
+                "artifacts",
+                format!(
+                    "[{}]",
+                    artifacts
+                        .iter()
+                        .map(|artifact| quoted(artifact))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                ),
+            ),
+        ]),
         FactKind::WorkerSubmitted { task, commit } => object(vec![
             ("task", quoted(task.as_str())),
             ("commit", quoted(commit.as_str())),
@@ -88,11 +107,13 @@ pub fn encode_payload(kind: &FactKind) -> String {
         FactKind::WorktreeAcquired {
             task,
             lease,
+            path,
             baseline,
             included,
         } => object(vec![
             ("task", quoted(task.as_str())),
             ("lease", quoted(lease.as_str())),
+            ("path", quoted(path)),
             (
                 "baseline",
                 match baseline {

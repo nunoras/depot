@@ -63,6 +63,7 @@ fn task(id: &str, state: TaskState) -> Task {
         attempts: Vec::new(),
         questions: Vec::new(),
         validations: Vec::new(),
+        submission: None,
         artifacts: Vec::new(),
         links: Vec::new(),
         branch_head: None,
@@ -77,6 +78,7 @@ fn attempt(profile: &str) -> Attempt {
         session: None,
         profile: ProfileId::from(profile),
         worktree: None,
+        worktree_path: None,
         started_at: at(0),
         finished_at: None,
         outcome: AttemptOutcome::InFlight,
@@ -539,6 +541,7 @@ fn rule_04_a_stale_dependency_blocks_publication_until_revalidated() {
                     FactKind::WorktreeAcquired {
                         task: task_id("t1"),
                         lease: lease("w2"),
+                        path: "/worktrees/lease".to_string(),
                         baseline: Baseline::PinnedCommit(commit("c2")),
                         included: Vec::new(),
                     },
@@ -590,6 +593,7 @@ fn rule_04_a_stale_dependency_blocks_publication_until_revalidated() {
                 FactKind::WorktreeAcquired {
                     task: task_id("t1"),
                     lease: lease("w2"),
+                    path: "/worktrees/lease".to_string(),
                     baseline: Baseline::PinnedCommit(commit("c2")),
                     included: Vec::new(),
                 },
@@ -666,6 +670,7 @@ fn rule_05_the_concurrency_cap_queues_work_and_frees_it() {
                     FactKind::WorktreeAcquired {
                         task: task_id("t1"),
                         lease: lease("w1"),
+                        path: "/worktrees/lease".to_string(),
                         baseline: Baseline::DefaultBranchHead,
                         included: Vec::new(),
                     },
@@ -1195,6 +1200,7 @@ fn unknown_task_worktree_acquired_releases_the_lease() {
             FactKind::WorktreeAcquired {
                 task: task_id("ghost"),
                 lease: lease("w-orphan"),
+                path: "/worktrees/lease".to_string(),
                 baseline: Baseline::DefaultBranchHead,
                 included: Vec::new(),
             },
@@ -1363,6 +1369,7 @@ fn worktree_acquired_rework_respects_state_and_cap() {
             Attempt {
                 outcome: AttemptOutcome::Submitted,
                 worktree: Some(lease("w1")),
+                worktree_path: Some("/worktrees/w1".to_string()),
                 profile: profile(BUILD),
                 started_at: at(0),
                 finished_at: Some(at(0)),
@@ -1384,6 +1391,7 @@ fn worktree_acquired_rework_respects_state_and_cap() {
                 FactKind::WorktreeAcquired {
                     task: task_id("t1"),
                     lease: lease("w2"),
+                    path: "/worktrees/lease".to_string(),
                     baseline: Baseline::DefaultBranchHead,
                     included: Vec::new(),
                 },
@@ -1409,6 +1417,7 @@ fn worktree_acquired_rework_respects_state_and_cap() {
                 FactKind::WorktreeAcquired {
                     task: task_id("t1"),
                     lease: lease("w2"),
+                    path: "/worktrees/lease".to_string(),
                     baseline: Baseline::DefaultBranchHead,
                     included: Vec::new(),
                 },
@@ -1431,6 +1440,7 @@ fn worktree_acquired_rework_respects_state_and_cap() {
                 FactKind::WorktreeAcquired {
                     task: task_id("t1"),
                     lease: lease("w2"),
+                    path: "/worktrees/lease".to_string(),
                     baseline: Baseline::DefaultBranchHead,
                     included: Vec::new(),
                 },
@@ -1554,6 +1564,7 @@ fn rejected_rework_does_not_repin_a_validated_task() {
                 FactKind::WorktreeAcquired {
                     task: task_id("t1"),
                     lease: lease("w2"),
+                    path: "/worktrees/lease".to_string(),
                     baseline: Baseline::PinnedCommit(commit("c2")),
                     included: Vec::new(),
                 },
@@ -1600,6 +1611,7 @@ fn rejected_rework_does_not_repin_a_validated_task() {
                 FactKind::WorktreeAcquired {
                     task: task_id("t1"),
                     lease: lease("w2"),
+                    path: "/worktrees/lease".to_string(),
                     baseline: Baseline::PinnedCommit(commit("ca2")),
                     included: vec![Dependency {
                         task: task_id("a"),
@@ -1650,6 +1662,7 @@ fn rejected_rework_does_not_repin_a_validated_task() {
                 FactKind::WorktreeAcquired {
                     task: task_id("t1"),
                     lease: lease("w2"),
+                    path: "/worktrees/lease".to_string(),
                     baseline: Baseline::PinnedCommit(commit("ca2")),
                     included: vec![
                         Dependency {
@@ -1720,6 +1733,7 @@ fn unaccepted_worktree_acquired_releases_the_fact_lease() {
                 FactKind::WorktreeAcquired {
                     task: task_id("t1"),
                     lease: lease("w2"),
+                    path: "/worktrees/lease".to_string(),
                     baseline: Baseline::PinnedCommit(commit("ca2")),
                     included: vec![Dependency {
                         task: task_id("a"),
@@ -1767,6 +1781,7 @@ fn unaccepted_worktree_acquired_releases_the_fact_lease() {
                 FactKind::WorktreeAcquired {
                     task: task_id("t1"),
                     lease: lease("w1"),
+                    path: "/worktrees/lease".to_string(),
                     baseline: Baseline::PinnedCommit(commit("ca2")),
                     included: vec![Dependency {
                         task: task_id("a"),
@@ -1806,6 +1821,7 @@ fn unaccepted_worktree_acquired_releases_the_fact_lease() {
                 FactKind::WorktreeAcquired {
                     task: task_id("t1"),
                     lease: lease("w1"),
+                    path: "/worktrees/lease".to_string(),
                     baseline: Baseline::DefaultBranchHead,
                     included: Vec::new(),
                 },
@@ -1962,6 +1978,7 @@ fn stale_pr_open_can_rework_revalidate_and_land() {
                     FactKind::WorktreeAcquired {
                         task: task_id("t1"),
                         lease: lease("w2"),
+                        path: "/worktrees/lease".to_string(),
                         baseline: Baseline::PinnedCommit(commit("c2")),
                         included: Vec::new(),
                     },
@@ -2072,6 +2089,7 @@ fn rework_releases_the_prior_attempt_lease() {
                 FactKind::WorktreeAcquired {
                     task: task_id("t1"),
                     lease: lease("w2"),
+                    path: "/worktrees/lease".to_string(),
                     baseline: Baseline::PinnedCommit(commit("c2")),
                     included: Vec::new(),
                 },
@@ -2157,6 +2175,7 @@ fn rework_reuses_the_same_lease_without_releasing_it() {
                 FactKind::WorktreeAcquired {
                     task: task_id("t1"),
                     lease: lease("w1"),
+                    path: "/worktrees/lease".to_string(),
                     baseline: Baseline::PinnedCommit(commit("c2")),
                     included: Vec::new(),
                 },
@@ -2193,6 +2212,7 @@ fn live_worktree_acquired_releases_a_replaced_lease() {
                 FactKind::WorktreeAcquired {
                     task: task_id("t1"),
                     lease: lease("w2"),
+                    path: "/worktrees/lease".to_string(),
                     baseline: Baseline::DefaultBranchHead,
                     included: Vec::new(),
                 },
@@ -2205,6 +2225,11 @@ fn live_worktree_acquired_releases_a_replaced_lease() {
                 .last()
                 .and_then(|attempt| attempt.worktree.clone())
                 == Some(lease("w2"))
+                && subject(state, "t1")
+                    .attempts
+                    .last()
+                    .and_then(|attempt| attempt.worktree_path.as_deref())
+                    == Some("/worktrees/lease")
         }),
     ]);
 }

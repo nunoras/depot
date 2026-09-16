@@ -160,6 +160,7 @@ pub struct Attempt {
     pub session: Option<SessionId>,
     pub profile: ProfileId,
     pub worktree: Option<WorktreeLease>,
+    pub worktree_path: Option<String>,
     pub started_at: Timestamp,
     pub finished_at: Option<Timestamp>,
     pub outcome: AttemptOutcome,
@@ -187,6 +188,12 @@ pub struct CoordinatorSession {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Submission {
+    pub summary: String,
+    pub artifacts: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidationRecord {
     pub command: String,
     pub commit: CommitId,
@@ -208,6 +215,7 @@ pub struct Task {
     pub attempts: Vec<Attempt>,
     pub questions: Vec<Question>,
     pub validations: Vec<ValidationRecord>,
+    pub submission: Option<Submission>,
     pub artifacts: Vec<Artifact>,
     pub links: Vec<Link>,
     pub branch_head: Option<CommitId>,

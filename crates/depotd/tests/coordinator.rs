@@ -251,6 +251,7 @@ fn a_brief_for_a_build_task_names_its_worktree_as_the_output_destination() {
         session: Some(SessionId::new("s1")),
         profile: depot_core::ProfileId::new("glm-5.3"),
         worktree: Some(depot_core::WorktreeLease::new("lease-7")),
+        worktree_path: None,
         started_at: at(1_000),
         finished_at: None,
         outcome: depot_core::AttemptOutcome::InFlight,

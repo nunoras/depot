@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use depot_core::{
     Answer, Artifact, Attempt, Checks, CommitId, Dependency, Link, ProfileId, ProjectId, Question,
-    Retry, SessionId, Task, TaskId, Timestamp, ValidationRecord, WorktreeLease,
+    Retry, SessionId, Submission, Task, TaskId, Timestamp, ValidationRecord, WorktreeLease,
 };
 use rusqlite::{Row, Transaction, params};
 
@@ -80,7 +80,7 @@ impl Store {
 }
 
 const TASK_COLUMNS: &str = "project_id, id, title, intent, role, state, base_dependency, \
-     branch_head, retry_profile, retry_not_before, created_at, updated_at";
+     branch_head, retry_profile, retry_not_before, submission_summary, created_at, updated_at";
 
 struct RawTask {
     project_id: String,
@@ -93,6 +93,7 @@ struct RawTask {
     branch_head: Option<String>,
     retry_profile: Option<String>,
     retry_not_before: Option<i64>,
+    submission_summary: Option<String>,
     created_at: i64,
     updated_at: i64,
 }
@@ -110,6 +111,7 @@ impl RawTask {
             branch_head: row.get("branch_head")?,
             retry_profile: row.get("retry_profile")?,
             retry_not_before: row.get("retry_not_before")?,
+            submission_summary: row.get("submission_summary")?,
             created_at: row.get("created_at")?,
             updated_at: row.get("updated_at")?,
         })
@@ -149,6 +151,14 @@ impl RawTask {
             attempts: store.attempts(&project, &self.id)?,
             questions: store.questions(&project, &self.id)?,
             validations: store.validations(&project, &self.id)?,
+            submission: self
+                .submission_summary
+                .map(|summary| {
+                    store
+                        .submission_artifacts(&project, &self.id)
+                        .map(|artifacts| Submission { summary, artifacts })
+                })
+                .transpose()?,
             artifacts: store.artifacts(&project, &self.id)?,
             links: store.links(&project, &self.id)?,
             branch_head: self.branch_head.map(CommitId::new),
@@ -184,7 +194,7 @@ impl Store {
 
     fn attempts(&self, project: &ProjectId, task: &str) -> Result<Vec<Attempt>> {
         let mut statement = self.connection().prepare(
-            "SELECT session, profile, worktree, started_at, finished_at, outcome
+            "SELECT session, profile, worktree, worktree_path, started_at, finished_at, outcome
              FROM task_attempts WHERE project_id = ?1 AND task_id = ?2 ORDER BY position",
         )?;
         let rows = statement.query_map(params![project.as_str(), task], |row| {
@@ -192,6 +202,7 @@ impl Store {
                 session: row.get("session")?,
                 profile: row.get("profile")?,
                 worktree: row.get("worktree")?,
+                worktree_path: row.get("worktree_path")?,
                 started_at: row.get("started_at")?,
                 finished_at: row.get("finished_at")?,
                 outcome: row.get("outcome")?,
@@ -204,6 +215,7 @@ impl Store {
                 session: raw.session.map(SessionId::new),
                 profile: ProfileId::new(raw.profile),
                 worktree: raw.worktree.map(WorktreeLease::new),
+                worktree_path: raw.worktree_path,
                 started_at: millis(raw.started_at)?,
                 finished_at: raw.finished_at.map(millis).transpose()?,
                 outcome: outcome_from_name(&raw.outcome)?,
@@ -280,6 +292,17 @@ impl Store {
         Ok(validations)
     }
 
+    fn submission_artifacts(&self, project: &ProjectId, task: &str) -> Result<Vec<String>> {
+        let mut statement = self.connection().prepare(
+            "SELECT path FROM task_submission_artifacts
+             WHERE project_id = ?1 AND task_id = ?2 ORDER BY position",
+        )?;
+        statement
+            .query_map(params![project.as_str(), task], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
     fn artifacts(&self, project: &ProjectId, task: &str) -> Result<Vec<Artifact>> {
         let mut statement = self.connection().prepare(
             "SELECT kind, path FROM task_artifacts
@@ -344,6 +367,7 @@ struct RawAttempt {
     session: Option<String>,
     profile: String,
     worktree: Option<String>,
+    worktree_path: Option<String>,
     started_at: i64,
     finished_at: Option<i64>,
     outcome: String,
@@ -386,8 +410,8 @@ pub(super) fn write_task(transaction: &Transaction<'_>, task: &Task) -> Result<(
     transaction.execute(
         "INSERT INTO tasks (
                 project_id, id, title, intent, role, state, base_dependency, branch_head,
-                retry_profile, retry_not_before, created_at, updated_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                retry_profile, retry_not_before, submission_summary, created_at, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         params![
             task.project.as_str(),
             task.id.as_str(),
@@ -401,6 +425,9 @@ pub(super) fn write_task(transaction: &Transaction<'_>, task: &Task) -> Result<(
             task.retry
                 .as_ref()
                 .map(|retry| retry.not_before.millis() as i64),
+            task.submission
+                .as_ref()
+                .map(|submission| submission.summary.as_str()),
             task.created_at.millis() as i64,
             task.updated_at.millis() as i64,
         ],
@@ -423,9 +450,9 @@ pub(super) fn write_task(transaction: &Transaction<'_>, task: &Task) -> Result<(
     for (position, attempt) in task.attempts.iter().enumerate() {
         transaction.execute(
             "INSERT INTO task_attempts (
-                    project_id, task_id, position, session, profile, worktree, started_at,
-                    finished_at, outcome
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    project_id, task_id, position, session, profile, worktree, worktree_path,
+                    started_at, finished_at, outcome
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 task.project.as_str(),
                 task.id.as_str(),
@@ -433,6 +460,7 @@ pub(super) fn write_task(transaction: &Transaction<'_>, task: &Task) -> Result<(
                 attempt.session.as_ref().map(SessionId::as_str),
                 attempt.profile.as_str(),
                 attempt.worktree.as_ref().map(WorktreeLease::as_str),
+                attempt.worktree_path,
                 attempt.started_at.millis() as i64,
                 attempt.finished_at.map(|at| at.millis() as i64),
                 outcome_name(attempt.outcome),
@@ -482,6 +510,21 @@ pub(super) fn write_task(transaction: &Transaction<'_>, task: &Task) -> Result<(
                 record.output_tail,
             ],
         )?;
+    }
+
+    if let Some(submission) = &task.submission {
+        for (position, path) in submission.artifacts.iter().enumerate() {
+            transaction.execute(
+                "INSERT INTO task_submission_artifacts (project_id, task_id, position, path)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    task.project.as_str(),
+                    task.id.as_str(),
+                    position as i64,
+                    path,
+                ],
+            )?;
+        }
     }
 
     for (position, artifact) in task.artifacts.iter().enumerate() {

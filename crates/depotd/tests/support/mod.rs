@@ -84,6 +84,7 @@ pub fn simple_task(project: &ProjectId, id: &str, state: TaskState, created_at: 
         attempts: Vec::new(),
         questions: Vec::new(),
         validations: Vec::new(),
+        submission: None,
         artifacts: Vec::new(),
         links: Vec::new(),
         branch_head: None,
@@ -117,6 +118,7 @@ pub fn full_task(project: &ProjectId, id: &str) -> Task {
                 session: Some(SessionId::new("session-1")),
                 profile: ProfileId::new("glm-5.3"),
                 worktree: Some(WorktreeLease::new("lease-1")),
+                worktree_path: Some("/worktrees/lease-1".to_string()),
                 started_at: Timestamp::from_millis(1_700_000_000_000),
                 finished_at: Some(Timestamp::from_millis(1_700_000_060_000)),
                 outcome: AttemptOutcome::Failed,
@@ -125,6 +127,7 @@ pub fn full_task(project: &ProjectId, id: &str) -> Task {
                 session: None,
                 profile: ProfileId::new("gpt-5.5"),
                 worktree: None,
+                worktree_path: None,
                 started_at: Timestamp::from_millis(1_700_000_120_000),
                 finished_at: None,
                 outcome: AttemptOutcome::Unknown,
@@ -153,6 +156,7 @@ pub fn full_task(project: &ProjectId, id: &str) -> Task {
             duration: Duration::from_millis(1234),
             output_tail: "boom".to_string(),
         }],
+        submission: None,
         artifacts: vec![
             Artifact {
                 kind: ArtifactKind::Brief,

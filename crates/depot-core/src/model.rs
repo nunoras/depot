@@ -197,6 +197,7 @@ pub struct Task {
     pub role: Role,
     pub state: TaskState,
     pub dependencies: Vec<Dependency>,
+    pub base_dependency: Option<TaskId>,
     pub attempts: Vec<Attempt>,
     pub questions: Vec<Question>,
     pub validations: Vec<ValidationRecord>,

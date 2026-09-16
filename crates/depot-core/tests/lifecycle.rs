@@ -595,10 +595,18 @@ fn rule_04_a_stale_dependency_blocks_publication_until_revalidated() {
         .when(
             "t1",
             TaskState::Running,
-            vec![launch("t1", BUILD), Action::RenderChecklist],
+            vec![
+                release("t1", "w1"),
+                launch("t1", BUILD),
+                Action::RenderChecklist,
+            ],
         )
         .checking(|state| {
             subject(state, "t1").attempts.len() == 2
+                && subject(state, "t1")
+                    .attempts
+                    .first()
+                    .is_some_and(|attempt| attempt.worktree.is_none())
                 && subject(state, "t1")
                     .attempts
                     .last()
@@ -756,7 +764,11 @@ fn rule_07_rate_limits_retry_with_bounded_backoff_then_pause() {
         }),
         case(
             "the backoff doubles on the next attempt",
-            state(vec![with_attempt(running("t1"), spent(BUILD))]),
+            state(vec![{
+                let mut task = with_attempt(task("t1", TaskState::Running), spent(BUILD));
+                task.attempts.push(attempt(BUILD));
+                task
+            }]),
             vec![fact(1_000, limited(BUILD))],
         )
         .when(
@@ -769,10 +781,11 @@ fn rule_07_rate_limits_retry_with_bounded_backoff_then_pause() {
         ),
         case(
             "retries stop at the bound",
-            state(vec![with_attempts(
-                with_attempt(task("t1", TaskState::Running), spent(BUILD)),
-                3,
-            )]),
+            state(vec![{
+                let mut task = with_attempts(task("t1", TaskState::Running), 2);
+                task.attempts.push(attempt(BUILD));
+                task
+            }]),
             vec![fact(1_000, limited(BUILD))],
         )
         .when(
@@ -1073,7 +1086,13 @@ fn rule_11_a_landed_task_releases_its_worktree_and_renders() {
             TaskState::Landed,
             vec![release("t1", "w1"), Action::RenderChecklist],
         )
-        .checking(|state| subject(state, "t1").attempts.len() == 1),
+        .checking(|state| {
+            subject(state, "t1").attempts.len() == 1
+                && subject(state, "t1")
+                    .attempts
+                    .last()
+                    .is_some_and(|attempt| attempt.worktree.is_none())
+        }),
         case(
             "a closed pull request holds the task instead of landing it",
             state(vec![with_pull_request(
@@ -1585,6 +1604,238 @@ fn publication_still_blocked(state: &ProjectState, id: &str) -> bool {
                 .and_then(|task| task.validated_commit())
                 != Some(&dependency.commit)
         })
+}
+
+#[test]
+fn stale_pr_open_can_rework_revalidate_and_land() {
+    run(vec![case(
+        "a held pr-open dependent reworks against the new pin and lands",
+        state(vec![
+            depending_on(
+                with_pull_request(
+                    with_attempt(
+                        task("t1", TaskState::PrOpen),
+                        Attempt {
+                            outcome: AttemptOutcome::Submitted,
+                            worktree: Some(lease("w1")),
+                            finished_at: Some(at(0)),
+                            ..attempt(BUILD)
+                        },
+                    ),
+                    7,
+                    Checks::Passing,
+                ),
+                "t0",
+                "c1",
+            ),
+            {
+                let mut prerequisite = validated("t0", "c1");
+                prerequisite.branch_head = Some(commit("c2"));
+                prerequisite.state = TaskState::Validating;
+                prerequisite
+            },
+        ]),
+        vec![
+            fact(1_000, passed("t0", "c2")),
+            fact(2_000, merged("t1")),
+            fact(
+                3_000,
+                FactKind::WorktreeAcquired {
+                    task: task_id("t1"),
+                    lease: lease("w2"),
+                    baseline: Baseline::PinnedCommit(commit("c2")),
+                },
+            ),
+            fact(4_000, submitted("t1", "cb2")),
+            fact(5_000, passed("t1", "cb2")),
+            fact(6_000, merged("t1")),
+        ],
+    )
+    .when(
+        "t1",
+        TaskState::Landed,
+        vec![release("t1", "w2"), Action::RenderChecklist],
+    )
+    .checking(|state| {
+        subject(state, "t1")
+            .dependencies
+            .first()
+            .is_some_and(|edge| edge.commit == commit("c2"))
+            && subject(state, "t1").links.len() == 1
+            && subject(state, "t1")
+                .attempts
+                .last()
+                .is_some_and(|attempt| attempt.worktree.is_none())
+            && subject(state, "t0").state == TaskState::Validated
+    })]);
+}
+
+#[test]
+fn rate_limit_ignores_tasks_that_are_not_in_flight() {
+    run(vec![
+        case(
+            "a validated task ignores a late rate limit",
+            state(vec![with_attempt(
+                validated("t1", "c1"),
+                Attempt {
+                    outcome: AttemptOutcome::Submitted,
+                    worktree: Some(lease("w1")),
+                    finished_at: Some(at(0)),
+                    ..attempt(BUILD)
+                },
+            )]),
+            vec![fact(
+                1_000,
+                FactKind::ProviderRateLimited {
+                    task: task_id("t1"),
+                    profile: profile(BUILD),
+                },
+            )],
+        )
+        .when("t1", TaskState::Validated, vec![])
+        .checking(|state| {
+            subject(state, "t1").retry.is_none()
+                && subject(state, "t1")
+                    .attempts
+                    .last()
+                    .and_then(|attempt| attempt.worktree.clone())
+                    == Some(lease("w1"))
+        }),
+        case(
+            "a failed task under the attempt bound stays failed",
+            state(vec![with_attempt(
+                task("t1", TaskState::Failed),
+                Attempt {
+                    outcome: AttemptOutcome::Failed,
+                    worktree: Some(lease("w1")),
+                    finished_at: Some(at(0)),
+                    ..attempt(BUILD)
+                },
+            )]),
+            vec![fact(
+                2_000,
+                FactKind::ProviderRateLimited {
+                    task: task_id("t1"),
+                    profile: profile(BUILD),
+                },
+            )],
+        )
+        .when("t1", TaskState::Failed, vec![])
+        .checking(|state| subject(state, "t1").state == TaskState::Failed),
+    ]);
+}
+
+#[test]
+fn rework_releases_the_prior_attempt_lease() {
+    run(vec![case(
+        "accepted rework clears and releases the previous lease before launching",
+        state(vec![
+            depending_on(
+                with_attempt(
+                    validated("t1", "cb"),
+                    Attempt {
+                        outcome: AttemptOutcome::Submitted,
+                        worktree: Some(lease("w1")),
+                        finished_at: Some(at(0)),
+                        ..attempt(BUILD)
+                    },
+                ),
+                "t0",
+                "c1",
+            ),
+            validated("t0", "c2"),
+        ]),
+        vec![fact(
+            1_000,
+            FactKind::WorktreeAcquired {
+                task: task_id("t1"),
+                lease: lease("w2"),
+                baseline: Baseline::PinnedCommit(commit("c2")),
+            },
+        )],
+    )
+    .when(
+        "t1",
+        TaskState::Running,
+        vec![
+            release("t1", "w1"),
+            launch("t1", BUILD),
+            Action::RenderChecklist,
+        ],
+    )
+    .checking(|state| {
+        subject(state, "t1").attempts.len() == 2
+            && subject(state, "t1")
+                .attempts
+                .first()
+                .is_some_and(|attempt| attempt.worktree.is_none())
+            && subject(state, "t1")
+                .attempts
+                .last()
+                .and_then(|attempt| attempt.worktree.clone())
+                == Some(lease("w2"))
+    })]);
+}
+
+#[test]
+fn landing_clears_the_attempt_lease_and_is_idempotent() {
+    run(vec![case(
+        "a second merge after landing does not release again",
+        state(vec![with_pull_request(
+            with_attempt(
+                task("t1", TaskState::PrOpen),
+                Attempt {
+                    outcome: AttemptOutcome::Submitted,
+                    worktree: Some(lease("w1")),
+                    finished_at: Some(at(0)),
+                    ..attempt(BUILD)
+                },
+            ),
+            42,
+            Checks::Passing,
+        )]),
+        vec![fact(1_000, merged("t1")), fact(2_000, merged("t1"))],
+    )
+    .when("t1", TaskState::Landed, vec![])
+    .checking(|state| {
+        subject(state, "t1")
+            .attempts
+            .last()
+            .is_some_and(|attempt| attempt.worktree.is_none())
+    })]);
+}
+
+#[test]
+fn revalidation_with_an_existing_pr_only_pushes() {
+    run(vec![case(
+        "a task that already has a pull request pushes the new head only",
+        state(vec![with_pull_request(
+            with_attempt(
+                task("t1", TaskState::Validating),
+                Attempt {
+                    outcome: AttemptOutcome::Submitted,
+                    worktree: Some(lease("w2")),
+                    finished_at: Some(at(0)),
+                    ..attempt(BUILD)
+                },
+            ),
+            7,
+            Checks::Passing,
+        )]),
+        vec![fact(1_000, passed("t1", "cb2"))],
+    )
+    .when(
+        "t1",
+        TaskState::PrOpen,
+        vec![
+            Action::Push {
+                task: task_id("t1"),
+                commit: commit("cb2"),
+            },
+            Action::RenderChecklist,
+        ],
+    )
+    .checking(|state| subject(state, "t1").links.len() == 1)]);
 }
 
 #[test]

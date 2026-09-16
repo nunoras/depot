@@ -1,11 +1,13 @@
 use std::fs::OpenOptions;
-use std::path::PathBuf;
-use std::time::Duration;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::{Duration, Instant};
 
 use depot_core::{
     Action, Baseline, CommitId, Fact, FactKind, SessionId, Task, TaskId, WorktreeLease,
 };
 
+use crate::adapters::forge::{Forge, NewPullRequest, RepoSlug};
 use crate::adapters::profiles::ProfileResolver;
 use crate::adapters::sessions::{LaunchRequest, SessionProfile, Sessions};
 use crate::adapters::worktrees::{AcquireRequest, Lease, Worktrees};
@@ -46,17 +48,167 @@ impl Drop for InstanceLock {
 }
 
 pub trait ValidationRunner {
-    fn validate(&self, task: &Task, commit: &CommitId, command: &str) -> Result<ValidationResult>;
+    fn validate(
+        &self,
+        task: &Task,
+        worktree: &Path,
+        commit: &CommitId,
+        command: &str,
+    ) -> Result<ValidationResult>;
 }
 
 pub trait Delivery {
-    fn push(&self, task: &Task, commit: &CommitId) -> Result<()>;
+    fn push(&self, task: &Task, worktree: &Path, commit: &CommitId) -> Result<()>;
     fn open_pull_request(
         &self,
         task: &Task,
+        worktree: &Path,
         commit: &CommitId,
         body: &str,
     ) -> Result<(u64, String)>;
+}
+
+pub struct ShellValidation;
+
+impl ValidationRunner for ShellValidation {
+    fn validate(
+        &self,
+        _task: &Task,
+        worktree: &Path,
+        commit: &CommitId,
+        command: &str,
+    ) -> Result<ValidationResult> {
+        let head = git_output(worktree, &["rev-parse", "HEAD"])?;
+        if head.trim() != commit.as_str() {
+            return Err(Error::Project(format!(
+                "worktree {} is at {} rather than submitted commit {commit}",
+                worktree.display(),
+                head.trim()
+            )));
+        }
+        let started = Instant::now();
+        let output = shell(command, worktree)?;
+        Ok(ValidationResult {
+            exit_code: output.status.code().unwrap_or(-1),
+            duration: started.elapsed(),
+            output_tail: output_tail(&output),
+        })
+    }
+}
+
+pub struct ForgeDelivery<F> {
+    forge: F,
+    base: String,
+}
+
+impl<F> ForgeDelivery<F> {
+    pub fn new(forge: F, base: impl Into<String>) -> Self {
+        Self {
+            forge,
+            base: base.into(),
+        }
+    }
+}
+
+impl<F: Forge> Delivery for ForgeDelivery<F> {
+    fn push(&self, _task: &Task, worktree: &Path, commit: &CommitId) -> Result<()> {
+        let head = git_output(worktree, &["rev-parse", "HEAD"])?;
+        if head.trim() != commit.as_str() {
+            return Err(Error::Project(format!(
+                "worktree {} is not at submitted commit {commit}",
+                worktree.display()
+            )));
+        }
+        git_output(worktree, &["push", "origin", "HEAD"])?;
+        Ok(())
+    }
+
+    fn open_pull_request(
+        &self,
+        task: &Task,
+        worktree: &Path,
+        _commit: &CommitId,
+        body: &str,
+    ) -> Result<(u64, String)> {
+        let remote = git_output(worktree, &["remote", "get-url", "origin"])?;
+        let repo = repo_slug(remote.trim())?;
+        let head = git_output(worktree, &["branch", "--show-current"])?;
+        let opened = self
+            .forge
+            .open_pull_request(&NewPullRequest {
+                repo,
+                title: task.title.clone(),
+                body: body.to_owned(),
+                head: head.trim().to_owned(),
+                base: self.base.clone(),
+            })
+            .map_err(|error| Error::Project(error.to_string()))?;
+        Ok((opened.number, opened.url))
+    }
+}
+
+pub struct StderrNotifier;
+
+impl Notifier for StderrNotifier {
+    fn notify(&self, task: &Task) -> Result<()> {
+        eprintln!("depot: task {} is waiting on a question", task.id);
+        Ok(())
+    }
+}
+
+fn shell(command: &str, worktree: &Path) -> Result<std::process::Output> {
+    #[cfg(windows)]
+    let mut process = {
+        let mut process = Command::new("cmd");
+        process.args(["/C", command]);
+        process
+    };
+    #[cfg(not(windows))]
+    let mut process = {
+        let mut process = Command::new("sh");
+        process.args(["-c", command]);
+        process
+    };
+    process.current_dir(worktree).output().map_err(Error::Io)
+}
+
+fn git_output(worktree: &Path, args: &[&str]) -> Result<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(worktree)
+        .args(args)
+        .output()
+        .map_err(Error::Io)?;
+    if output.status.success() {
+        return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
+    }
+    Err(Error::Project(
+        String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+    ))
+}
+
+fn output_tail(output: &std::process::Output) -> String {
+    let mut combined = String::from_utf8_lossy(&output.stdout).into_owned();
+    combined.push_str(&String::from_utf8_lossy(&output.stderr));
+    let tail = combined.chars().rev().take(4_096).collect::<String>();
+    tail.chars().rev().collect()
+}
+
+fn repo_slug(remote: &str) -> Result<RepoSlug> {
+    let remote = remote.trim_end_matches('/').trim_end_matches(".git");
+    let target = remote
+        .rsplit_once(':')
+        .map(|(_, path)| path)
+        .unwrap_or(remote);
+    let mut parts = target.rsplit('/');
+    let name = parts.next().filter(|part| !part.is_empty());
+    let owner = parts.next().filter(|part| !part.is_empty());
+    match (owner, name) {
+        (Some(owner), Some(name)) => Ok(RepoSlug::new(owner, name)),
+        _ => Err(Error::Project(format!(
+            "cannot read GitHub repository from {remote}"
+        ))),
+    }
 }
 
 pub trait Notifier {
@@ -258,8 +410,11 @@ where
 
     fn validate(&self, task: TaskId, commit: CommitId) -> Result<()> {
         let task_record = self.task(&task)?;
+        let worktree = self.lease_for(&task_record)?.path;
         let command = self.store.project_config(&self.project)?.validation.command;
-        let result = self.validation.validate(&task_record, &commit, &command)?;
+        let result = self
+            .validation
+            .validate(&task_record, &worktree, &commit, &command)?;
         self.record(
             &event_key(&["validation_finished", task.as_str(), commit.as_str()]),
             Fact {
@@ -277,7 +432,9 @@ where
     }
 
     fn push(&self, task: TaskId, commit: CommitId) -> Result<()> {
-        self.delivery.push(&self.task(&task)?, &commit)?;
+        let task_record = self.task(&task)?;
+        let worktree = self.lease_for(&task_record)?.path;
+        self.delivery.push(&task_record, &worktree, &commit)?;
         self.record(
             &event_key(&["branch_pushed", task.as_str(), commit.as_str()]),
             Fact {
@@ -289,10 +446,11 @@ where
 
     fn open_pull_request(&self, task: TaskId, commit: CommitId) -> Result<()> {
         let task_record = self.task(&task)?;
+        let worktree = self.lease_for(&task_record)?.path;
         let body = pull_request_body(&task_record, &commit);
-        let (number, url) = self
-            .delivery
-            .open_pull_request(&task_record, &commit, &body)?;
+        let (number, url) =
+            self.delivery
+                .open_pull_request(&task_record, &worktree, &commit, &body)?;
         self.record(
             &event_key(&["pull_request_opened", task.as_str(), &number.to_string()]),
             Fact {
@@ -399,4 +557,85 @@ pub fn pull_request_body(task: &Task, commit: &CommitId) -> String {
 
 fn log(kind: &str, value: &str) {
     eprintln!("{{\"kind\":\"{}\",\"value\":{:?}}}", kind, value);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ShellValidation, ValidationRunner, repo_slug};
+    use depot_core::CommitId;
+    use tempfile::TempDir;
+
+    fn git(path: &std::path::Path, args: &[&str]) -> String {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(args)
+            .output()
+            .expect("git runs");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    }
+
+    #[test]
+    fn validation_runs_at_the_submitted_commit_and_keeps_its_output() {
+        let temp = TempDir::new().expect("temporary directory");
+        let path = temp.path();
+        git(path, &["init"]);
+        git(path, &["config", "user.email", "depot@example.test"]);
+        git(path, &["config", "user.name", "Depot"]);
+        std::fs::write(path.join("answer"), "42").expect("fixture is written");
+        git(path, &["add", "."]);
+        git(path, &["commit", "-m", "fixture"]);
+        let commit = CommitId::new(git(path, &["rev-parse", "HEAD"]));
+        let task = depot_core::Task {
+            id: depot_core::TaskId::new("T1"),
+            project: depot_core::ProjectId::new("test"),
+            title: "test".to_owned(),
+            intent: "test validation".to_owned(),
+            role: depot_core::Role::Build,
+            state: depot_core::TaskState::Proposed,
+            dependencies: Vec::new(),
+            base_dependency: None,
+            attempts: Vec::new(),
+            questions: Vec::new(),
+            validations: Vec::new(),
+            artifacts: Vec::new(),
+            links: Vec::new(),
+            branch_head: None,
+            retry: None,
+            created_at: depot_core::Timestamp::from_millis(0),
+            updated_at: depot_core::Timestamp::from_millis(0),
+        };
+        let result = ShellValidation
+            .validate(&task, path, &commit, "printf validated; exit 7")
+            .expect("validation runs");
+        assert_eq!(result.exit_code, 7);
+        assert_eq!(result.output_tail, "validated");
+        let wrong = CommitId::new("0000000000000000000000000000000000000000");
+        assert!(
+            ShellValidation
+                .validate(&task, path, &wrong, "true")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn reads_https_and_ssh_github_remotes() {
+        assert_eq!(
+            repo_slug("https://github.com/nunoras/depot.git")
+                .expect("https remote")
+                .path(),
+            "nunoras/depot"
+        );
+        assert_eq!(
+            repo_slug("git@github.com:nunoras/depot.git")
+                .expect("ssh remote")
+                .path(),
+            "nunoras/depot"
+        );
+    }
 }

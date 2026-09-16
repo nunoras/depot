@@ -30,8 +30,8 @@ pub use coordinator::{
     WorkerLaunch, render_template,
 };
 pub use daemon::{
-    DAEMON_LOCK_FILE_NAME, Daemon, Delivery, InstanceLock, Notifier, ValidationResult,
-    ValidationRunner, pull_request_body,
+    DAEMON_LOCK_FILE_NAME, Daemon, Delivery, ForgeDelivery, InstanceLock, Notifier,
+    ShellValidation, StderrNotifier, ValidationResult, ValidationRunner, pull_request_body,
 };
 pub use documents::{document_path, write_document};
 pub use error::{Error, Result};

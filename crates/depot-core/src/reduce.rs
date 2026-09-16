@@ -129,8 +129,12 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
         }
 
         FactKind::WorkerTurnStarted { task, session } => {
-            if let Some(task) = next.tasks.get_mut(task) {
-                if let Some(attempt) = task.attempts.last_mut() {
+            if let Some(task) = next.tasks.get_mut(task)
+                && task.state.in_flight()
+            {
+                if let Some(attempt) = task.attempts.last_mut()
+                    && is_open(attempt.outcome)
+                {
                     attempt.session = Some(session.clone());
                 }
                 task.updated_at = fact.at;
@@ -138,18 +142,24 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
         }
 
         FactKind::WorkerTurnEnded { task } => {
-            if let Some(task) = next.tasks.get_mut(task) {
+            if let Some(task) = next.tasks.get_mut(task)
+                && task.state.in_flight()
+            {
                 task.updated_at = fact.at;
             }
         }
 
         FactKind::WorkerLivenessChanged { task, liveness } => {
+            let in_flight = next
+                .tasks
+                .get(task)
+                .is_some_and(|task| task.state.in_flight());
             let open = next.tasks.get(task).is_some_and(|task| {
                 task.attempts
                     .last()
                     .is_some_and(|attempt| is_open(attempt.outcome))
             });
-            if open && *liveness == Liveness::Gone {
+            if in_flight && open && *liveness == Liveness::Gone {
                 if let Some(task) = next.tasks.get_mut(task) {
                     if let Some(attempt) = task.attempts.last_mut() {
                         attempt.outcome = AttemptOutcome::Failed;
@@ -160,7 +170,8 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                 }
                 changed = true;
                 actions.push(Action::HoldForUser { task: task.clone() });
-            } else if *liveness == Liveness::Live
+            } else if in_flight
+                && *liveness == Liveness::Live
                 && let Some(task) = next.tasks.get_mut(task)
             {
                 if let Some(attempt) = task.attempts.last_mut()
@@ -195,7 +206,9 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
         }
 
         FactKind::ValidationStarted { task, .. } => {
-            if let Some(task) = next.tasks.get_mut(task) {
+            if let Some(task) = next.tasks.get_mut(task)
+                && task.state == TaskState::Validating
+            {
                 task.updated_at = fact.at;
             }
         }
@@ -339,43 +352,74 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                     });
                 }
             }
-            if !attached
-                && next.tasks.get(task).is_some_and(|task| {
-                    !task
-                        .attempts
+            if !attached {
+                let held = next.tasks.get(task).is_some_and(|task| {
+                    task.attempts
                         .iter()
                         .any(|attempt| attempt.worktree.as_ref() == Some(lease))
-                })
-            {
-                actions.push(Action::ReleaseWorktree {
-                    task: task.clone(),
-                    lease: lease.clone(),
                 });
+                if !held {
+                    actions.push(Action::ReleaseWorktree {
+                        task: task.clone(),
+                        lease: lease.clone(),
+                    });
+                }
             }
         }
 
         FactKind::BranchPushed { task, commit } => {
-            if let Some(task) = next.tasks.get_mut(task) {
+            if let Some(task) = next.tasks.get_mut(task)
+                && !matches!(task.state, TaskState::Landed | TaskState::Cancelled)
+            {
                 task.branch_head = Some(commit.clone());
                 task.updated_at = fact.at;
             }
         }
 
         FactKind::PullRequestOpened { task, number, url } => {
-            if let Some(task) = next.tasks.get_mut(task) {
-                task.links.push(Link::PullRequest {
-                    number: *number,
-                    url: url.clone(),
-                    checks: Checks::Unknown,
-                });
-                task.state = TaskState::PrOpen;
-                task.updated_at = fact.at;
-                changed = true;
+            let state = next.tasks.get(task).map(|task| task.state);
+            match state {
+                Some(TaskState::Validating | TaskState::Validated) => {
+                    if let Some(task) = next.tasks.get_mut(task) {
+                        let stopped = close_attempt(task, AttemptOutcome::Submitted, fact.at);
+                        if task.pull_request().is_none() {
+                            task.links.push(Link::PullRequest {
+                                number: *number,
+                                url: url.clone(),
+                                checks: Checks::Unknown,
+                            });
+                        }
+                        task.state = TaskState::PrOpen;
+                        task.updated_at = fact.at;
+                        changed = true;
+                        if stopped {
+                            actions.push(Action::StopSession {
+                                task: task.id.clone(),
+                            });
+                        }
+                    }
+                }
+                Some(TaskState::PrOpen) => {
+                    if let Some(task) = next.tasks.get_mut(task) {
+                        if task.pull_request().is_none() {
+                            task.links.push(Link::PullRequest {
+                                number: *number,
+                                url: url.clone(),
+                                checks: Checks::Unknown,
+                            });
+                            changed = true;
+                        }
+                        task.updated_at = fact.at;
+                    }
+                }
+                _ => {}
             }
         }
 
         FactKind::PullRequestChecksChanged { task, checks } => {
-            if let Some(task) = next.tasks.get_mut(task) {
+            if let Some(task) = next.tasks.get_mut(task)
+                && task.state == TaskState::PrOpen
+            {
                 for link in task.links.iter_mut() {
                     if let Link::PullRequest {
                         checks: recorded, ..
@@ -402,9 +446,15 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                 .is_some_and(|task| task.state == TaskState::PrOpen)
             {
                 if let Some(task) = next.tasks.get_mut(task) {
+                    let stopped = close_attempt(task, AttemptOutcome::Submitted, fact.at);
                     task.state = TaskState::Landed;
                     task.updated_at = fact.at;
                     changed = true;
+                    if stopped {
+                        actions.push(Action::StopSession {
+                            task: task.id.clone(),
+                        });
+                    }
                     if let Some(lease) = take_last_worktree(task) {
                         actions.push(Action::ReleaseWorktree {
                             task: task.id.clone(),
@@ -416,10 +466,19 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
         }
 
         FactKind::PullRequestClosedUnmerged { task } => {
-            if let Some(task) = next.tasks.get_mut(task) {
+            if let Some(task) = next.tasks.get_mut(task)
+                && !matches!(task.state, TaskState::Cancelled | TaskState::Landed)
+            {
+                let stopped = close_attempt(task, AttemptOutcome::Stopped, fact.at);
                 task.state = TaskState::Cancelled;
+                task.retry = None;
                 task.updated_at = fact.at;
                 changed = true;
+                if stopped {
+                    actions.push(Action::StopSession {
+                        task: task.id.clone(),
+                    });
+                }
                 actions.push(Action::HoldForUser {
                     task: task.id.clone(),
                 });
@@ -447,14 +506,30 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
         }
 
         FactKind::RetryExhausted { task } => {
-            if let Some(task) = next.tasks.get_mut(task) {
-                task.state = TaskState::Failed;
-                task.retry = None;
-                task.updated_at = fact.at;
-                changed = true;
-                actions.push(Action::HoldForUser {
-                    task: task.id.clone(),
-                });
+            let accepting = next.tasks.get(task).is_some_and(|task| {
+                task.state.in_flight()
+                    || (task.state == TaskState::Approved && task.retry.is_some())
+            });
+            if accepting {
+                if let Some(task) = next.tasks.get_mut(task) {
+                    let stopped = if task.state.in_flight() {
+                        close_attempt(task, AttemptOutcome::Failed, fact.at)
+                    } else {
+                        false
+                    };
+                    task.state = TaskState::Failed;
+                    task.retry = None;
+                    task.updated_at = fact.at;
+                    changed = true;
+                    if stopped {
+                        actions.push(Action::StopSession {
+                            task: task.id.clone(),
+                        });
+                    }
+                    actions.push(Action::HoldForUser {
+                        task: task.id.clone(),
+                    });
+                }
             }
         }
 

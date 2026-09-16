@@ -4,9 +4,9 @@ use std::time::Duration;
 use crate::action::{Action, Baseline};
 use crate::fact::{Fact, FactKind, Liveness};
 use crate::model::{
-    Answer, Attempt, AttemptOutcome, Checks, CommitId, Dependency, Limits, Link, ProfileId,
-    ProjectState, Question, Retry, Task, TaskId, TaskState, Timestamp, ValidationRecord,
-    WorktreeLease,
+    Answer, Attempt, AttemptOutcome, Checks, CommitId, CoordinatorSession, Dependency, Limits,
+    Link, ProfileId, ProjectState, Question, Retry, Task, TaskId, TaskState, Timestamp,
+    ValidationRecord, WorktreeLease,
 };
 
 pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) {
@@ -611,6 +611,31 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             }
         }
 
+        FactKind::CoordinatorSessionStarted { session } => {
+            next.coordinator = Some(CoordinatorSession {
+                session: session.clone(),
+                started_at: fact.at,
+                context_tokens: 0,
+            });
+        }
+
+        FactKind::CoordinatorContextMeasured { tokens } => {
+            let limit = next.limits.coordinator_context_tokens;
+            if let Some(coordinator) = next.coordinator.clone() {
+                if limit > 0 && *tokens >= limit {
+                    next.coordinator = None;
+                    actions.push(Action::RotateCoordinator {
+                        session: coordinator.session,
+                    });
+                } else if coordinator.context_tokens != *tokens {
+                    next.coordinator = Some(CoordinatorSession {
+                        context_tokens: *tokens,
+                        ..coordinator
+                    });
+                }
+            }
+        }
+
         FactKind::DaemonRestarted => {
             for task in next.tasks.values_mut() {
                 if !task.state.in_flight() {
@@ -757,11 +782,11 @@ fn publication_blocked(state: &ProjectState, task: &TaskId) -> bool {
     state.tasks.get(task).is_some_and(|task| {
         task.dependencies
             .iter()
-            .any(|dependency| !edge_satisfied(state, dependency))
+            .any(|dependency| !dependency_satisfied(state, dependency))
     })
 }
 
-fn edge_satisfied(state: &ProjectState, dependency: &Dependency) -> bool {
+pub fn dependency_satisfied(state: &ProjectState, dependency: &Dependency) -> bool {
     state
         .tasks
         .get(&dependency.task)

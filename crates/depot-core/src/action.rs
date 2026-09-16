@@ -1,4 +1,4 @@
-use crate::model::{CommitId, ProfileId, TaskId, Timestamp, WorktreeLease};
+use crate::model::{CommitId, ProfileId, SessionId, TaskId, Timestamp, WorktreeLease};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Baseline {
@@ -39,6 +39,9 @@ pub enum Action {
         commit: CommitId,
     },
     RenderChecklist,
+    RotateCoordinator {
+        session: SessionId,
+    },
     Notify {
         task: TaskId,
     },

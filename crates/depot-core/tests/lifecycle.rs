@@ -144,6 +144,7 @@ fn base() -> ProjectState {
     ProjectState {
         project: ProjectId::from("depot"),
         tasks: BTreeMap::new(),
+        coordinator: None,
         profiles: BTreeMap::from([(Role::Build, profile(BUILD)), (Role::Plan, profile(PLAN))]),
         fallback_profiles: Vec::new(),
         limits: Limits::default(),
@@ -2731,4 +2732,113 @@ fn branch_push_that_invalidates_validation_renders() {
         .when("t1", TaskState::Validated, vec![Action::RenderChecklist])
         .checking(|state| subject(state, "t1").validated_commit().is_none()),
     ]);
+}
+
+fn coordinator(id: &str, started_at: u64, context_tokens: u64) -> CoordinatorSession {
+    CoordinatorSession {
+        session: session(id),
+        started_at: at(started_at),
+        context_tokens,
+    }
+}
+
+fn measured(tokens: u64) -> FactKind {
+    FactKind::CoordinatorContextMeasured { tokens }
+}
+
+fn session_started(id: &str) -> FactKind {
+    FactKind::CoordinatorSessionStarted {
+        session: session(id),
+    }
+}
+
+#[test]
+fn rule_12_a_coordinator_session_rotates_past_the_configured_context_size() {
+    let mut state = base();
+    state.limits.coordinator_context_tokens = 100;
+    state.coordinator = Some(coordinator("c1", 1_000, 0));
+
+    let (next, actions) = reduce(&state, &fact(2_000, measured(40)));
+    assert_eq!(
+        actions,
+        Vec::new(),
+        "a measurement below the limit acts on nothing"
+    );
+    assert_eq!(next.coordinator, Some(coordinator("c1", 1_000, 40)));
+
+    let (next, actions) = reduce(&next, &fact(3_000, measured(99)));
+    assert_eq!(actions, Vec::new());
+    assert_eq!(next.coordinator, Some(coordinator("c1", 1_000, 99)));
+
+    let (next, actions) = reduce(&next, &fact(4_000, measured(100)));
+    assert_eq!(
+        actions,
+        vec![Action::RotateCoordinator {
+            session: session("c1"),
+        }],
+        "hitting the limit rotates the session"
+    );
+    assert!(
+        next.coordinator.is_none(),
+        "a rotated project holds no session until a fresh one starts"
+    );
+
+    let (next, actions) = reduce(&next, &fact(5_000, session_started("c2")));
+    assert_eq!(
+        actions,
+        Vec::new(),
+        "a fresh session is launched by the rotation itself"
+    );
+    assert_eq!(next.coordinator, Some(coordinator("c2", 5_000, 0)));
+}
+
+#[test]
+fn rule_13_a_coordinator_measurement_is_ignored_without_a_live_session() {
+    let mut state = base();
+    state.limits.coordinator_context_tokens = 10;
+
+    let (next, actions) = reduce(&state, &fact(1_000, measured(9_999)));
+    assert_eq!(actions, Vec::new());
+    assert!(next.coordinator.is_none());
+
+    state.limits.coordinator_context_tokens = 0;
+    state.coordinator = Some(coordinator("c1", 2_000, 0));
+    let (next, actions) = reduce(&state, &fact(3_000, measured(u64::MAX)));
+    assert_eq!(actions, Vec::new(), "a zero limit never rotates");
+    assert_eq!(next.coordinator, Some(coordinator("c1", 2_000, u64::MAX)));
+}
+
+#[test]
+fn rule_14_an_unmapped_role_is_refused_rather_than_defaulted() {
+    let mut unmapped = base();
+    unmapped
+        .tasks
+        .insert(task_id("t1"), task("t1", TaskState::Proposed));
+    unmapped.profiles.remove(&Role::Build);
+
+    let (next, actions) = reduce(&unmapped, &fact(1_000, approved("t1")));
+
+    assert_eq!(next.tasks[&task_id("t1")].state, TaskState::Approved);
+    assert_eq!(
+        actions,
+        vec![queue("t1", None), Action::RenderChecklist],
+        "a role with no profile queues and never launches"
+    );
+    assert!(next.tasks[&task_id("t1")].attempts.is_empty());
+
+    let mut fallbacks = base();
+    fallbacks
+        .tasks
+        .insert(task_id("t1"), task("t1", TaskState::Proposed));
+    fallbacks.profiles.remove(&Role::Build);
+    fallbacks.fallback_profiles = vec![profile("fallback-profile")];
+
+    let (next, actions) = reduce(&fallbacks, &fact(2_000, approved("t1")));
+
+    assert_eq!(
+        actions,
+        vec![queue("t1", None), Action::RenderChecklist],
+        "the fallback list only replaces a profile a task already holds, so it never fills a missing mapping"
+    );
+    assert_eq!(next.tasks[&task_id("t1")].state, TaskState::Approved);
 }

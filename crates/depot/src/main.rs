@@ -21,7 +21,7 @@ USAGE
   depot task answer <task-id> --text <answer> [--by <coordinator|user>] [--project <name>]
   depot task stop <task-id> [--project <name>]
   depot ask --task <task-id> --project <name> [--relay] <question>
-  depot submit --task <task-id> --project <name> --summary <text> --artifact <path-or-url>
+  depot submit --task <task-id> --project <name>
   depot inbox [--project <name>]
   depot doc write <name> --content <text|-> [--project <name>]
 

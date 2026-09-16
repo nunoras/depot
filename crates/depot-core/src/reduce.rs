@@ -126,7 +126,10 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                 }
                 if answered
                     && task.state == TaskState::WaitingOnQuestion
-                    && task.questions.iter().all(|question| question.answer.is_some())
+                    && task
+                        .questions
+                        .iter()
+                        .all(|question| question.answer.is_some())
                 {
                     task.state = TaskState::Running;
                     actions.push(Action::ResumeSession {
@@ -298,8 +301,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                     .attempts
                     .last()
                     .is_some_and(|attempt| !is_open(attempt.outcome));
-                let under_cap =
-                    next.active_task_count() < next.limits.max_concurrent_tasks;
+                let under_cap = next.active_task_count() < next.limits.max_concurrent_tasks;
                 if !closed || !under_cap {
                     return false;
                 }
@@ -313,13 +315,13 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             if live {
                 if let Some(task) = next.tasks.get_mut(task) {
                     if let Some(attempt) = task.attempts.last_mut() {
-                        if let Some(prior) = attempt.worktree.take() {
-                            if &prior != lease {
-                                actions.push(Action::ReleaseWorktree {
-                                    task: task.id.clone(),
-                                    lease: prior,
-                                });
-                            }
+                        if let Some(prior) = attempt.worktree.take()
+                            && &prior != lease
+                        {
+                            actions.push(Action::ReleaseWorktree {
+                                task: task.id.clone(),
+                                lease: prior,
+                            });
                         }
                         attempt.worktree = Some(lease.clone());
                     }
@@ -335,13 +337,13 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                 } else if let Some(task) = next.tasks.get_mut(task)
                     && let Some(profile) = task.attempts.last().map(|a| a.profile.clone())
                 {
-                    if let Some(prior) = take_last_worktree(task) {
-                        if &prior != lease {
-                            actions.push(Action::ReleaseWorktree {
-                                task: task.id.clone(),
-                                lease: prior,
-                            });
-                        }
+                    if let Some(prior) = take_last_worktree(task)
+                        && &prior != lease
+                    {
+                        actions.push(Action::ReleaseWorktree {
+                            task: task.id.clone(),
+                            lease: prior,
+                        });
                     }
                     task.attempts.push(Attempt {
                         session: None,
@@ -450,11 +452,10 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                     if let Link::PullRequest {
                         checks: recorded, ..
                     } = link
+                        && *recorded != *checks
                     {
-                        if *recorded != *checks {
-                            *recorded = *checks;
-                            updated = true;
-                        }
+                        *recorded = *checks;
+                        updated = true;
                     }
                 }
                 if updated {
@@ -468,31 +469,28 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             if publication_blocked(&next, task) {
                 if next.tasks.contains_key(task) {
                     changed = true;
-                    actions.push(Action::HoldForUser {
-                        task: task.clone(),
-                    });
+                    actions.push(Action::HoldForUser { task: task.clone() });
                 }
             } else if next
                 .tasks
                 .get(task)
                 .is_some_and(|task| task.state == TaskState::PrOpen)
+                && let Some(task) = next.tasks.get_mut(task)
             {
-                if let Some(task) = next.tasks.get_mut(task) {
-                    let stopped = close_attempt(task, AttemptOutcome::Submitted, fact.at);
-                    task.state = TaskState::Landed;
-                    task.updated_at = fact.at;
-                    changed = true;
-                    if stopped {
-                        actions.push(Action::StopSession {
-                            task: task.id.clone(),
-                        });
-                    }
-                    if let Some(lease) = take_last_worktree(task) {
-                        actions.push(Action::ReleaseWorktree {
-                            task: task.id.clone(),
-                            lease,
-                        });
-                    }
+                let stopped = close_attempt(task, AttemptOutcome::Submitted, fact.at);
+                task.state = TaskState::Landed;
+                task.updated_at = fact.at;
+                changed = true;
+                if stopped {
+                    actions.push(Action::StopSession {
+                        task: task.id.clone(),
+                    });
+                }
+                if let Some(lease) = take_last_worktree(task) {
+                    actions.push(Action::ReleaseWorktree {
+                        task: task.id.clone(),
+                        lease,
+                    });
                 }
             }
         }
@@ -542,26 +540,24 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                 task.state.in_flight()
                     || (task.state == TaskState::Approved && task.retry.is_some())
             });
-            if accepting {
-                if let Some(task) = next.tasks.get_mut(task) {
-                    let stopped = if task.state.in_flight() {
-                        close_attempt(task, AttemptOutcome::Failed, fact.at)
-                    } else {
-                        false
-                    };
-                    task.state = TaskState::Failed;
-                    task.retry = None;
-                    task.updated_at = fact.at;
-                    changed = true;
-                    if stopped {
-                        actions.push(Action::StopSession {
-                            task: task.id.clone(),
-                        });
-                    }
-                    actions.push(Action::HoldForUser {
+            if accepting && let Some(task) = next.tasks.get_mut(task) {
+                let stopped = if task.state.in_flight() {
+                    close_attempt(task, AttemptOutcome::Failed, fact.at)
+                } else {
+                    false
+                };
+                task.state = TaskState::Failed;
+                task.retry = None;
+                task.updated_at = fact.at;
+                changed = true;
+                if stopped {
+                    actions.push(Action::StopSession {
                         task: task.id.clone(),
                     });
                 }
+                actions.push(Action::HoldForUser {
+                    task: task.id.clone(),
+                });
             }
         }
 
@@ -735,9 +731,10 @@ fn retry_due(task: &Task, at: Timestamp) -> bool {
 }
 
 fn worktree_baseline(task: &Task) -> Baseline {
-    let base = task.base_dependency.as_ref().or_else(|| {
-        (task.dependencies.len() == 1).then(|| &task.dependencies[0].task)
-    });
+    let base = task
+        .base_dependency
+        .as_ref()
+        .or_else(|| (task.dependencies.len() == 1).then(|| &task.dependencies[0].task));
     base.and_then(|id| {
         task.dependencies
             .iter()
@@ -747,10 +744,7 @@ fn worktree_baseline(task: &Task) -> Baseline {
     .unwrap_or(Baseline::DefaultBranchHead)
 }
 
-fn base_dependency_is_valid(
-    dependencies: &[Dependency],
-    base_dependency: &Option<TaskId>,
-) -> bool {
+fn base_dependency_is_valid(dependencies: &[Dependency], base_dependency: &Option<TaskId>) -> bool {
     match base_dependency {
         None => dependencies.len() <= 1,
         Some(base) => dependencies
@@ -798,9 +792,10 @@ fn repin_acquired_task(state: &mut ProjectState, task: &TaskId, baseline: &Basel
         .filter_map(|(id, task)| task.validated_commit().map(|c| (id.clone(), c.clone())))
         .collect();
     if let Some(task) = state.tasks.get_mut(task) {
-        let base = task.base_dependency.clone().or_else(|| {
-            (task.dependencies.len() == 1).then(|| task.dependencies[0].task.clone())
-        });
+        let base = task
+            .base_dependency
+            .clone()
+            .or_else(|| (task.dependencies.len() == 1).then(|| task.dependencies[0].task.clone()));
         for dependency in task.dependencies.iter_mut() {
             let is_base = base.as_ref() == Some(&dependency.task);
             if is_base && validated.get(&dependency.task) == Some(commit) {
@@ -839,11 +834,7 @@ fn dependency_pins(state: &ProjectState, task: &TaskId) -> Vec<(TaskId, CommitId
         .unwrap_or_default()
 }
 
-fn restore_dependency_pins(
-    state: &mut ProjectState,
-    task: &TaskId,
-    pins: &[(TaskId, CommitId)],
-) {
+fn restore_dependency_pins(state: &mut ProjectState, task: &TaskId, pins: &[(TaskId, CommitId)]) {
     if let Some(task) = state.tasks.get_mut(task) {
         for dependency in task.dependencies.iter_mut() {
             if let Some((_, commit)) = pins.iter().find(|(id, _)| id == &dependency.task) {

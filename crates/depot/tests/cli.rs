@@ -468,6 +468,144 @@ fn a_question_is_answered_and_a_task_is_stopped_from_the_command_line() {
         .expect("read")
         .expect("present");
     assert_eq!(task.state, TaskState::Cancelled);
+
+    let stopped_again = cli.run(&["task", "stop", "t-1", "--project", "example"]);
+    assert_eq!(
+        stopped_again.status.code(),
+        Some(0),
+        "stderr: {}",
+        stderr(&stopped_again)
+    );
+    assert_eq!(stdout(&stopped_again), "stopped t-1\n");
+    let task = store
+        .task(&added.project.id, &TaskId::new("t-1"))
+        .expect("read")
+        .expect("present");
+    assert_eq!(task.state, TaskState::Cancelled);
+    assert_eq!(
+        store
+            .events(&added.project.id)
+            .expect("events")
+            .iter()
+            .filter(|event| event.kind == "task_cancelled")
+            .count(),
+        1,
+        "a repeated stop does not journal again"
+    );
+}
+
+#[test]
+fn stopping_a_landed_task_prints_refusal_and_leaves_the_record() {
+    let cli = Cli::new();
+    let added = cli.registered_with(BUILD_ONLY);
+    let store = Store::open(&cli.depot_home()).expect("store");
+    store
+        .put_task(&task(
+            added.project.id.as_str(),
+            "t-1",
+            TaskState::Landed,
+            1_000,
+        ))
+        .expect("seeded landed");
+
+    let output = cli.run(&["task", "stop", "t-1", "--project", "example"]);
+
+    assert_eq!(output.status.code(), Some(1), "stdout: {}", stdout(&output));
+    let message = stderr(&output);
+    assert!(message.contains("t-1"), "got {message}");
+    assert!(message.contains("landed"), "got {message}");
+    assert!(message.contains("stopped"), "got {message}");
+    assert_eq!(stdout(&output), "");
+
+    let held = store
+        .task(&added.project.id, &TaskId::new("t-1"))
+        .expect("read")
+        .expect("present");
+    assert_eq!(held.state, TaskState::Landed);
+    assert!(
+        store
+            .events(&added.project.id)
+            .expect("events")
+            .iter()
+            .all(|event| event.kind != "task_cancelled")
+    );
+}
+
+#[test]
+fn approving_a_running_task_prints_refusal_and_leaves_the_record() {
+    let cli = Cli::new();
+    let added = cli.registered_with(BUILD_ONLY);
+    let store = Store::open(&cli.depot_home()).expect("store");
+    store
+        .put_task(&task(
+            added.project.id.as_str(),
+            "t-1",
+            TaskState::Running,
+            1_000,
+        ))
+        .expect("seeded running");
+
+    let output = cli.run(&["task", "approve", "t-1", "--project", "example"]);
+
+    assert_eq!(output.status.code(), Some(1), "stdout: {}", stdout(&output));
+    let message = stderr(&output);
+    assert!(message.contains("t-1"), "got {message}");
+    assert!(message.contains("running"), "got {message}");
+    assert!(message.contains("approved"), "got {message}");
+    assert_eq!(stdout(&output), "");
+
+    let held = store
+        .task(&added.project.id, &TaskId::new("t-1"))
+        .expect("read")
+        .expect("present");
+    assert_eq!(held.state, TaskState::Running);
+    assert!(
+        store
+            .events(&added.project.id)
+            .expect("events")
+            .iter()
+            .all(|event| event.kind != "task_approved")
+    );
+}
+
+#[test]
+fn answering_with_no_open_question_prints_refusal_and_leaves_the_record() {
+    let cli = Cli::new();
+    let added = cli.registered_with(BUILD_ONLY);
+    let store = Store::open(&cli.depot_home()).expect("store");
+    store
+        .put_task(&task(
+            added.project.id.as_str(),
+            "t-1",
+            TaskState::Proposed,
+            1_000,
+        ))
+        .expect("seeded proposed");
+
+    let output = cli.run(&[
+        "task",
+        "answer",
+        "t-1",
+        "--text",
+        "nothing open",
+        "--project",
+        "example",
+    ]);
+
+    assert_eq!(output.status.code(), Some(1), "stdout: {}", stdout(&output));
+    let message = stderr(&output);
+    assert!(message.contains("t-1"), "got {message}");
+    assert!(message.contains("proposed"), "got {message}");
+    assert!(message.contains("no unanswered question"), "got {message}");
+    assert_eq!(stdout(&output), "");
+
+    assert!(
+        store
+            .events(&added.project.id)
+            .expect("events")
+            .iter()
+            .all(|event| event.kind != "question_answered")
+    );
 }
 
 #[test]

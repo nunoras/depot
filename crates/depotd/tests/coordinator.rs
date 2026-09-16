@@ -564,6 +564,98 @@ fn approving_an_already_approved_task_is_a_successful_noop() {
     let fixture = support::fixture();
     let added = support::register_with_config(&fixture, "example", BUILD_ONLY);
     let store = Store::open(&fixture.home).expect("store");
+    store
+        .put_task(&support::simple_task(
+            &added.project.id,
+            "t-1",
+            depot_core::TaskState::Approved,
+            1_000,
+        ))
+        .expect("seeded approved");
+
+    let approved = depotd::approve_tasks(&fixture.home, Some("example"), &["t-1".to_string()])
+        .expect("already approved stays a success");
+
+    assert_eq!(approved[0].state, depot_core::TaskState::Approved);
+    assert!(
+        store
+            .events(&added.project.id)
+            .expect("events")
+            .iter()
+            .all(|event| event.kind != "task_approved"),
+        "a no-op approval leaves no journal entry"
+    );
+}
+
+#[test]
+fn stopping_a_landed_task_is_refused_without_writing() {
+    let fixture = support::fixture();
+    let added = support::register_with_config(&fixture, "example", BUILD_ONLY);
+    let store = Store::open(&fixture.home).expect("store");
+    store
+        .put_task(&support::simple_task(
+            &added.project.id,
+            "t-1",
+            depot_core::TaskState::Landed,
+            1_000,
+        ))
+        .expect("seeded landed");
+
+    let error = depotd::stop_task(&fixture.home, Some("example"), "t-1")
+        .expect_err("a landed task cannot be stopped");
+    let message = error.to_string();
+    assert!(message.contains("t-1"), "got {message}");
+    assert!(message.contains("landed"), "got {message}");
+    assert!(message.contains("stopped"), "got {message}");
+
+    let task = store
+        .task(&added.project.id, &TaskId::new("t-1"))
+        .expect("read")
+        .expect("present");
+    assert_eq!(task.state, depot_core::TaskState::Landed);
+    assert!(
+        store
+            .events(&added.project.id)
+            .expect("events")
+            .iter()
+            .all(|event| event.kind != "task_cancelled"),
+        "a refused stop leaves no cancel journal entry"
+    );
+}
+
+#[test]
+fn stopping_an_already_cancelled_task_is_a_successful_noop() {
+    let fixture = support::fixture();
+    let added = support::register_with_config(&fixture, "example", BUILD_ONLY);
+    let store = Store::open(&fixture.home).expect("store");
+    store
+        .put_task(&support::simple_task(
+            &added.project.id,
+            "t-1",
+            depot_core::TaskState::Cancelled,
+            1_000,
+        ))
+        .expect("seeded cancelled");
+
+    let stopped = depotd::stop_task(&fixture.home, Some("example"), "t-1")
+        .expect("already cancelled stays a success");
+
+    assert_eq!(stopped.state, depot_core::TaskState::Cancelled);
+    assert!(
+        store
+            .events(&added.project.id)
+            .expect("events")
+            .iter()
+            .all(|event| event.kind != "task_cancelled"),
+        "a no-op stop leaves no journal entry"
+    );
+}
+
+#[test]
+fn answering_with_no_open_question_is_refused_without_writing() {
+    let fixture = support::fixture();
+    let added = support::register_with_config(&fixture, "example", BUILD_ONLY);
+    let store = Store::open(&fixture.home).expect("store");
 
     depotd::add_task(
         &fixture.home,
@@ -577,20 +669,27 @@ fn approving_an_already_approved_task_is_a_successful_noop() {
         },
     )
     .expect("added");
-    let first = depotd::approve_tasks(&fixture.home, Some("example"), &["t-1".to_string()])
-        .expect("approved");
-    let second = depotd::approve_tasks(&fixture.home, Some("example"), &["t-1".to_string()])
-        .expect("already approved stays a success");
 
-    assert_eq!(first[0].state, second[0].state);
-    assert_eq!(
+    let error = depotd::answer_question(
+        &fixture.home,
+        Some("example"),
+        "t-1",
+        "nothing to answer",
+        "coordinator",
+    )
+    .expect_err("no open question means refuse");
+    let message = error.to_string();
+    assert!(message.contains("t-1"), "got {message}");
+    assert!(message.contains("proposed"), "got {message}");
+    assert!(message.contains("no unanswered question"), "got {message}");
+
+    assert!(
         store
             .events(&added.project.id)
             .expect("events")
             .iter()
-            .filter(|event| event.kind == "task_approved")
-            .count(),
-        1
+            .all(|event| event.kind != "question_answered"),
+        "a refused answer leaves no journal entry"
     );
 }
 

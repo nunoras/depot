@@ -57,26 +57,13 @@ pub fn approve_tasks(
     for id in ids {
         let id = TaskId::new(id);
         let current = task(&store, &project, &id)?;
-        match current.state {
-            TaskState::Cancelled | TaskState::Failed | TaskState::Landed => {
-                return Err(Error::Project(format!(
-                    "task `{id}` is {} and cannot be approved",
-                    state_name(current.state)
-                )));
-            }
-            TaskState::Proposed
-            | TaskState::Approved
-            | TaskState::Running
-            | TaskState::WaitingOnQuestion
-            | TaskState::Validating
-            | TaskState::Validated
-            | TaskState::PrOpen => ready.push(current),
-        }
+        let plan = prepare_approve(&current)?;
+        ready.push((current, plan));
     }
     let mut approved = Vec::new();
-    for current in ready {
+    for (current, plan) in ready {
         let id = current.id.clone();
-        if current.state == TaskState::Proposed {
+        if plan == Prepared::Apply {
             let fact = Fact {
                 at: now(),
                 kind: FactKind::TaskApproved { task: id.clone() },
@@ -99,13 +86,7 @@ pub fn answer_question(
     let project = select_project(&store, selection)?;
     let id = TaskId::new(id);
     let current = task(&store, &project, &id)?;
-    let position = current
-        .questions
-        .iter()
-        .rposition(|question| question.answer.is_none())
-        .ok_or_else(|| {
-            Error::Project(format!("task `{id}` has no unanswered question"))
-        })?;
+    let position = prepare_answer(&current)?;
     let by = parse_answered_by(by)?;
     let fact = Fact {
         at: now(),
@@ -128,12 +109,14 @@ pub fn stop_task(home: &DepotHome, selection: Option<&str>, id: &str) -> Result<
     let store = Store::open(home)?;
     let project = select_project(&store, selection)?;
     let id = TaskId::new(id);
-    task(&store, &project, &id)?;
-    let fact = Fact {
-        at: now(),
-        kind: FactKind::TaskCancelled { task: id.clone() },
-    };
-    apply(&store, &project, &["task_cancelled", id.as_str()], &fact)?;
+    let current = task(&store, &project, &id)?;
+    if prepare_stop(&current)? == Prepared::Apply {
+        let fact = Fact {
+            at: now(),
+            kind: FactKind::TaskCancelled { task: id.clone() },
+        };
+        apply(&store, &project, &["task_cancelled", id.as_str()], &fact)?;
+    }
     task(&store, &project, &id)
 }
 
@@ -157,6 +140,49 @@ pub fn write_narrative(
     let store = Store::open(home)?;
     let project = select_project(&store, selection)?;
     write_document(&home.project_home(&project.slug), name, content)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Prepared {
+    Apply,
+    AlreadyDone,
+}
+
+fn prepare_approve(task: &Task) -> Result<Prepared> {
+    match task.state {
+        TaskState::Proposed => Ok(Prepared::Apply),
+        TaskState::Approved => Ok(Prepared::AlreadyDone),
+        _ => Err(transition_refused(task, "approved")),
+    }
+}
+
+fn prepare_stop(task: &Task) -> Result<Prepared> {
+    match task.state {
+        TaskState::Cancelled => Ok(Prepared::AlreadyDone),
+        TaskState::Landed => Err(transition_refused(task, "stopped")),
+        _ => Ok(Prepared::Apply),
+    }
+}
+
+fn prepare_answer(task: &Task) -> Result<usize> {
+    task.questions
+        .iter()
+        .rposition(|question| question.answer.is_none())
+        .ok_or_else(|| {
+            Error::Project(format!(
+                "task `{}` is {} and has no unanswered question",
+                task.id,
+                state_name(task.state)
+            ))
+        })
+}
+
+fn transition_refused(task: &Task, action: &str) -> Error {
+    Error::Project(format!(
+        "task `{}` is {} and cannot be {action}",
+        task.id,
+        state_name(task.state)
+    ))
 }
 
 fn apply(store: &Store, project: &Project, parts: &[&str], fact: &Fact) -> Result<()> {

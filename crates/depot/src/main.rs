@@ -246,10 +246,8 @@ fn ask_command(arguments: &[String]) -> Result<String, Failure> {
 
 fn submit_command(arguments: &[String]) -> Result<String, Failure> {
     let flags = Flags::parse(arguments, &[])?;
-    flags.reject_unknown(&["task", "project", "summary", "artifact"])?;
+    flags.reject_unknown(&["task", "project"])?;
     flags.reject_positionals()?;
-    flags.required("summary")?;
-    flags.required("artifact")?;
     let home = DepotHome::resolve()?;
     let task = submit_task(&home, flags.value("project"), flags.required("task")?)?;
     Ok(format!("submitted {}\n", task.id))

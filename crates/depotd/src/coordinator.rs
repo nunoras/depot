@@ -99,7 +99,7 @@ impl CoordinatorContext {
             task.id, self.project.id
         );
         let submit = format!(
-            "depot submit --task {} --project {} --summary \"<what changed>\" --artifact <path-or-url>",
+            "depot submit --task {} --project {}",
             task.id, self.project.id
         );
 

@@ -409,7 +409,7 @@ fn rule_03_a_validation_validates_exactly_one_commit() {
                 },
             )],
         )
-        .when("t1", TaskState::Validated, vec![])
+        .when("t1", TaskState::Validated, vec![Action::RenderChecklist])
         .checking(|state| subject(state, "t1").validated_commit() == Some(&commit("c1"))),
         case(
             "a new commit on the branch invalidates the validation",
@@ -422,7 +422,7 @@ fn rule_03_a_validation_validates_exactly_one_commit() {
                 },
             )],
         )
-        .when("t1", TaskState::Validated, vec![])
+        .when("t1", TaskState::Validated, vec![Action::RenderChecklist])
         .checking(|state| subject(state, "t1").validated_commit().is_none()),
         case(
             "an invalidated prerequisite refuses to unlock a waiting dependent",
@@ -438,7 +438,7 @@ fn rule_03_a_validation_validates_exactly_one_commit() {
                 },
             )],
         )
-        .when("t1", TaskState::Approved, vec![])
+        .when("t1", TaskState::Approved, vec![Action::RenderChecklist])
         .checking(|state| {
             subject(state, "t0").validated_commit().is_none()
                 && subject(state, "t1")
@@ -790,6 +790,9 @@ fn rule_07_rate_limits_retry_with_bounded_backoff_then_pause() {
             "t1",
             TaskState::Approved,
             vec![
+                Action::StopSession {
+                    task: task_id("t1"),
+                },
                 queue("t1", Some(at(1_000).plus(backoff))),
                 Action::RenderChecklist,
             ],
@@ -814,6 +817,9 @@ fn rule_07_rate_limits_retry_with_bounded_backoff_then_pause() {
             "t1",
             TaskState::Approved,
             vec![
+                Action::StopSession {
+                    task: task_id("t1"),
+                },
                 queue("t1", Some(at(1_000).plus(backoff * 2))),
                 Action::RenderChecklist,
             ],
@@ -830,7 +836,13 @@ fn rule_07_rate_limits_retry_with_bounded_backoff_then_pause() {
         .when(
             "t1",
             TaskState::Failed,
-            vec![hold("t1"), Action::RenderChecklist],
+            vec![
+                Action::StopSession {
+                    task: task_id("t1"),
+                },
+                hold("t1"),
+                Action::RenderChecklist,
+            ],
         ),
         case(
             "the retry uses the configured fallback profile",
@@ -845,6 +857,9 @@ fn rule_07_rate_limits_retry_with_bounded_backoff_then_pause() {
             "t1",
             TaskState::Approved,
             vec![
+                Action::StopSession {
+                    task: task_id("t1"),
+                },
                 queue("t1", Some(at(1_000).plus(backoff))),
                 Action::RenderChecklist,
             ],
@@ -868,6 +883,9 @@ fn rule_07_rate_limits_retry_with_bounded_backoff_then_pause() {
             "t1",
             TaskState::Approved,
             vec![
+                Action::StopSession {
+                    task: task_id("t1"),
+                },
                 queue("t1", Some(at(1_000).plus(backoff))),
                 Action::RenderChecklist,
             ],
@@ -938,7 +956,7 @@ fn rule_08_question_routing_follows_the_project_setting() {
             state(vec![running("t1")]),
             vec![fact(1_000, asked("which database?", false))],
         )
-        .when("t1", TaskState::Running, vec![])
+        .when("t1", TaskState::Running, vec![Action::RenderChecklist])
         .checking(|state| subject(state, "t1").questions.len() == 1),
         case(
             "an always-relay project relays every question",
@@ -1043,7 +1061,7 @@ fn rule_10_restart_reconciliation_prefers_unknown_over_a_guess() {
             state(vec![running_with_session("t1", "s1", "w1")]),
             vec![fact(1_000, FactKind::DaemonRestarted)],
         )
-        .when("t1", TaskState::Running, vec![])
+        .when("t1", TaskState::Running, vec![Action::RenderChecklist])
         .checking(|state| {
             holds(state, "t1", AttemptOutcome::Unknown)
                 && subject(state, "t1")
@@ -1060,7 +1078,11 @@ fn rule_10_restart_reconciliation_prefers_unknown_over_a_guess() {
             )]),
             vec![fact(2_000, FactKind::DaemonRestarted)],
         )
-        .when("t1", TaskState::WaitingOnQuestion, vec![])
+        .when(
+            "t1",
+            TaskState::WaitingOnQuestion,
+            vec![Action::RenderChecklist],
+        )
         .checking(|state| holds(state, "t1", AttemptOutcome::Unknown)),
         case(
             "a session proven gone is reported rather than replaced",
@@ -1096,7 +1118,7 @@ fn rule_10_restart_reconciliation_prefers_unknown_over_a_guess() {
                 ),
             ],
         )
-        .when("t1", TaskState::Running, vec![])
+        .when("t1", TaskState::Running, vec![Action::RenderChecklist])
         .checking(|state| holds(state, "t1", AttemptOutcome::InFlight)),
     ]);
 }
@@ -1259,7 +1281,7 @@ fn pull_request_checks_are_recorded_without_a_transition() {
                 },
             )],
         )
-        .when("t1", TaskState::PrOpen, vec![])
+        .when("t1", TaskState::PrOpen, vec![Action::RenderChecklist])
         .checking(|state| {
             subject(state, "t1")
                 .pull_request()
@@ -2194,7 +2216,7 @@ fn relayed_questions_do_not_leave_validating_or_terminal_states() {
                 },
             )],
         )
-        .when("t1", TaskState::Validating, vec![])
+        .when("t1", TaskState::Validating, vec![Action::RenderChecklist])
         .checking(|state| subject(state, "t1").questions.len() == 1),
         case(
             "a relayed question on a validated task stays validated",
@@ -2208,7 +2230,7 @@ fn relayed_questions_do_not_leave_validating_or_terminal_states() {
                 },
             )],
         )
-        .when("t1", TaskState::Validated, vec![])
+        .when("t1", TaskState::Validated, vec![Action::RenderChecklist])
         .checking(|state| subject(state, "t1").questions.len() == 1),
     ]);
 }
@@ -2540,4 +2562,134 @@ fn merge_closes_an_open_attempt_before_landing() {
                 .last()
                 .is_some_and(|attempt| attempt.worktree.is_none())
     })]);
+}
+
+#[test]
+fn pull_request_opened_during_validation_only_attaches_the_link() {
+    run(vec![case(
+        "a pr opened while validating keeps validating and later failure holds",
+        state(vec![with_attempt(
+            task("t1", TaskState::Validating),
+            Attempt {
+                outcome: AttemptOutcome::Submitted,
+                worktree: Some(lease("w1")),
+                finished_at: Some(at(0)),
+                ..attempt(BUILD)
+            },
+        )]),
+        vec![
+            fact(
+                1_000,
+                FactKind::PullRequestOpened {
+                    task: task_id("t1"),
+                    number: 3,
+                    url: "https://example.com/3".to_owned(),
+                },
+            ),
+            fact(2_000, failed("t1", "cb")),
+        ],
+    )
+    .when(
+        "t1",
+        TaskState::Failed,
+        vec![hold("t1"), Action::RenderChecklist],
+    )
+    .checking(|state| {
+        subject(state, "t1").pull_request().is_some()
+            && subject(state, "t1").state == TaskState::Failed
+    })]);
+}
+
+#[test]
+fn answering_one_of_several_questions_keeps_waiting() {
+    run(vec![case(
+        "a second unanswered question blocks resume",
+        state(vec![{
+            let mut task = with_question(
+                running_with_session("t1", "s1", "w1"),
+                TaskState::WaitingOnQuestion,
+                "first?",
+            );
+            task.questions.push(Question {
+                text: "second?".to_owned(),
+                asked_at: at(1_500),
+                answer: None,
+            });
+            task
+        }]),
+        vec![fact(
+            2_000,
+            FactKind::QuestionAnswered {
+                task: task_id("t1"),
+                answer: "sqlite".to_owned(),
+                by: AnsweredBy::User,
+            },
+        )],
+    )
+    .when(
+        "t1",
+        TaskState::WaitingOnQuestion,
+        vec![Action::RenderChecklist],
+    )
+    .checking(|state| {
+        subject(state, "t1")
+            .questions
+            .iter()
+            .filter(|question| question.answer.is_none())
+            .count()
+            == 1
+    })]);
+}
+
+#[test]
+fn cancel_before_session_id_still_stops_the_launched_worker() {
+    run(vec![case(
+        "cancelling a session-less running attempt emits stop",
+        state(vec![running("t1")]),
+        vec![fact(
+            1_000,
+            FactKind::TaskCancelled {
+                task: task_id("t1"),
+            },
+        )],
+    )
+    .when(
+        "t1",
+        TaskState::Cancelled,
+        vec![
+            Action::StopSession {
+                task: task_id("t1"),
+            },
+            Action::RenderChecklist,
+        ],
+    )
+    .checking(|state| holds(state, "t1", AttemptOutcome::Stopped))]);
+}
+
+#[test]
+fn daemon_restart_renders_when_attempts_become_unknown() {
+    run(vec![case(
+        "restart reconciliation renders the unknown outcome",
+        state(vec![running_with_session("t1", "s1", "w1")]),
+        vec![fact(1_000, FactKind::DaemonRestarted)],
+    )
+    .when("t1", TaskState::Running, vec![Action::RenderChecklist])
+    .checking(|state| holds(state, "t1", AttemptOutcome::Unknown))]);
+}
+
+#[test]
+fn branch_push_that_invalidates_validation_renders() {
+    run(vec![case(
+        "moving the branch head off a validated commit renders",
+        state(vec![validated("t1", "c1")]),
+        vec![fact(
+            1_000,
+            FactKind::BranchPushed {
+                task: task_id("t1"),
+                commit: commit("c2"),
+            },
+        )],
+    )
+    .when("t1", TaskState::Validated, vec![Action::RenderChecklist])
+    .checking(|state| subject(state, "t1").validated_commit().is_none())]);
 }

@@ -94,6 +94,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                     answer: None,
                 });
                 task.updated_at = fact.at;
+                changed = true;
                 if relay
                     && matches!(
                         task.state,
@@ -101,7 +102,6 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                     )
                 {
                     task.state = TaskState::WaitingOnQuestion;
-                    changed = true;
                     actions.push(Action::Notify { task: id.clone() });
                     actions.push(Action::HoldForUser { task: id });
                 }
@@ -110,17 +110,25 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
 
         FactKind::QuestionAnswered { task, answer, by } => {
             if let Some(task) = next.tasks.get_mut(task) {
-                if let Some(question) = task.unanswered_question() {
+                let answered = if let Some(question) = task.unanswered_question() {
                     question.answer = Some(Answer {
                         text: answer.clone(),
                         by: *by,
                         at: fact.at,
                     });
-                }
+                    true
+                } else {
+                    false
+                };
                 task.updated_at = fact.at;
-                if task.state == TaskState::WaitingOnQuestion {
-                    task.state = TaskState::Running;
+                if answered {
                     changed = true;
+                }
+                if answered
+                    && task.state == TaskState::WaitingOnQuestion
+                    && task.questions.iter().all(|question| question.answer.is_some())
+                {
+                    task.state = TaskState::Running;
                     actions.push(Action::ResumeSession {
                         task: task.id.clone(),
                     });
@@ -178,6 +186,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                     && attempt.outcome == AttemptOutcome::Unknown
                 {
                     attempt.outcome = AttemptOutcome::InFlight;
+                    changed = true;
                 }
                 task.updated_at = fact.at;
             }
@@ -371,7 +380,10 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             if let Some(task) = next.tasks.get_mut(task)
                 && !matches!(task.state, TaskState::Landed | TaskState::Cancelled)
             {
-                task.branch_head = Some(commit.clone());
+                if task.branch_head.as_ref() != Some(commit) {
+                    task.branch_head = Some(commit.clone());
+                    changed = true;
+                }
                 task.updated_at = fact.at;
             }
         }
@@ -379,7 +391,20 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
         FactKind::PullRequestOpened { task, number, url } => {
             let state = next.tasks.get(task).map(|task| task.state);
             match state {
-                Some(TaskState::Validating | TaskState::Validated) => {
+                Some(TaskState::Validating) => {
+                    if let Some(task) = next.tasks.get_mut(task) {
+                        if task.pull_request().is_none() {
+                            task.links.push(Link::PullRequest {
+                                number: *number,
+                                url: url.clone(),
+                                checks: Checks::Unknown,
+                            });
+                            changed = true;
+                        }
+                        task.updated_at = fact.at;
+                    }
+                }
+                Some(TaskState::Validated) => {
                     if let Some(task) = next.tasks.get_mut(task) {
                         let stopped = close_attempt(task, AttemptOutcome::Submitted, fact.at);
                         if task.pull_request().is_none() {
@@ -420,13 +445,20 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             if let Some(task) = next.tasks.get_mut(task)
                 && task.state == TaskState::PrOpen
             {
+                let mut updated = false;
                 for link in task.links.iter_mut() {
                     if let Link::PullRequest {
                         checks: recorded, ..
                     } = link
                     {
-                        *recorded = *checks;
+                        if *recorded != *checks {
+                            *recorded = *checks;
+                            updated = true;
+                        }
                     }
+                }
+                if updated {
+                    changed = true;
                 }
                 task.updated_at = fact.at;
             }
@@ -592,6 +624,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                     && attempt.outcome == AttemptOutcome::InFlight
                 {
                     attempt.outcome = AttemptOutcome::Unknown;
+                    changed = true;
                 }
             }
         }
@@ -636,7 +669,7 @@ fn close_attempt(task: &mut Task, outcome: AttemptOutcome, at: Timestamp) -> boo
     }
     attempt.outcome = outcome;
     attempt.finished_at = Some(at);
-    attempt.session.is_some()
+    true
 }
 
 fn take_last_worktree(task: &mut Task) -> Option<WorktreeLease> {

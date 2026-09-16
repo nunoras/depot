@@ -21,8 +21,11 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             intent,
             role,
             dependencies,
+            base_dependency,
         } => {
-            if !next.tasks.contains_key(task) {
+            if !next.tasks.contains_key(task)
+                && base_dependency_is_valid(dependencies, base_dependency)
+            {
                 let project = next.project.clone();
                 next.tasks.insert(
                     task.clone(),
@@ -34,6 +37,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                         role: *role,
                         state: TaskState::Proposed,
                         dependencies: dependencies.clone(),
+                        base_dependency: base_dependency.clone(),
                         attempts: Vec::new(),
                         questions: Vec::new(),
                         validations: Vec::new(),
@@ -195,11 +199,11 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             duration,
             output_tail,
         } => {
-            let settled = next
+            let accepting = next
                 .tasks
                 .get(task)
-                .is_none_or(|task| matches!(task.state, TaskState::Landed | TaskState::Cancelled));
-            if !settled {
+                .is_some_and(|task| task.state == TaskState::Validating);
+            if accepting {
                 if let Some(task) = next.tasks.get_mut(task) {
                     task.validations.push(ValidationRecord {
                         command: command.clone(),
@@ -243,6 +247,14 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             baseline,
         } => {
             repin_acquired_task(&mut next, task, baseline);
+            let may_rework = next.tasks.get(task).is_some_and(|task| {
+                task.state == TaskState::Validated
+                    && task
+                        .attempts
+                        .last()
+                        .is_some_and(|attempt| !is_open(attempt.outcome))
+                    && next.active_task_count() < next.limits.max_concurrent_tasks
+            });
             if let Some(task) = next.tasks.get_mut(task) {
                 let live = task
                     .attempts
@@ -253,7 +265,9 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                         attempt.worktree = Some(lease.clone());
                     }
                     task.updated_at = fact.at;
-                } else if let Some(profile) = task.attempts.last().map(|a| a.profile.clone()) {
+                } else if may_rework
+                    && let Some(profile) = task.attempts.last().map(|a| a.profile.clone())
+                {
                     task.attempts.push(Attempt {
                         session: None,
                         profile: profile.clone(),
@@ -374,11 +388,13 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             let fallback = fallback_profile(&next, profile);
             if let Some(task) = next.tasks.get_mut(task) {
                 let attempts = task.attempts.len() as u32;
-                if let Some(attempt) = task.attempts.last_mut() {
-                    attempt.outcome = AttemptOutcome::Failed;
-                    attempt.finished_at = Some(fact.at);
-                }
+                let stopped = close_attempt(task, AttemptOutcome::Failed, fact.at);
                 task.updated_at = fact.at;
+                if stopped {
+                    actions.push(Action::StopSession {
+                        task: task.id.clone(),
+                    });
+                }
                 if attempts >= limits.max_attempts {
                     task.state = TaskState::Failed;
                     task.retry = None;
@@ -515,12 +531,28 @@ fn retry_due(task: &Task, at: Timestamp) -> bool {
 }
 
 fn worktree_baseline(task: &Task) -> Baseline {
-    task.dependencies
-        .iter()
-        .min_by(|left, right| left.task.cmp(&right.task))
-        .map_or(Baseline::DefaultBranchHead, |dependency| {
-            Baseline::PinnedCommit(dependency.commit.clone())
-        })
+    let base = task.base_dependency.as_ref().or_else(|| {
+        (task.dependencies.len() == 1).then(|| &task.dependencies[0].task)
+    });
+    base.and_then(|id| {
+        task.dependencies
+            .iter()
+            .find(|dependency| &dependency.task == id)
+            .map(|dependency| Baseline::PinnedCommit(dependency.commit.clone()))
+    })
+    .unwrap_or(Baseline::DefaultBranchHead)
+}
+
+fn base_dependency_is_valid(
+    dependencies: &[Dependency],
+    base_dependency: &Option<TaskId>,
+) -> bool {
+    match base_dependency {
+        None => dependencies.len() <= 1,
+        Some(base) => dependencies
+            .iter()
+            .any(|dependency| &dependency.task == base),
+    }
 }
 
 fn publication_blocked(state: &ProjectState, task: &TaskId) -> bool {

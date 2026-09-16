@@ -59,6 +59,7 @@ fn task(id: &str, state: TaskState) -> Task {
         role: Role::Build,
         state,
         dependencies: Vec::new(),
+        base_dependency: None,
         attempts: Vec::new(),
         questions: Vec::new(),
         validations: Vec::new(),
@@ -131,6 +132,11 @@ fn depending_on(mut task: Task, prerequisite: &str, commit_id: &str) -> Task {
         task: task_id(prerequisite),
         commit: commit(commit_id),
     });
+    task
+}
+
+fn with_base(mut task: Task, prerequisite: &str) -> Task {
+    task.base_dependency = Some(task_id(prerequisite));
     task
 }
 
@@ -521,6 +527,7 @@ fn rule_04_a_stale_dependency_blocks_publication_until_revalidated() {
                 {
                     let mut prerequisite = validated("t0", "c1");
                     prerequisite.branch_head = Some(commit("c2"));
+                    prerequisite.state = TaskState::Validating;
                     prerequisite
                 },
             ]),
@@ -1108,6 +1115,7 @@ fn a_proposed_task_is_recorded_once() {
             intent: "record tasks in sqlite".to_owned(),
             role: Role::Build,
             dependencies: Vec::new(),
+            base_dependency: None,
         },
     );
     let (recorded, actions) = reduce(&before, &proposed);
@@ -1211,4 +1219,219 @@ fn with_question(mut task: Task, state: TaskState, text: &str) -> Task {
         answer: None,
     });
     task
+}
+
+#[test]
+fn late_validation_cannot_revive_a_duration_failed_task() {
+    run(vec![case(
+        "a late success after a duration overrun stays failed",
+        state(vec![with_attempt(
+            validating("t1"),
+            Attempt {
+                outcome: AttemptOutcome::Submitted,
+                worktree: Some(lease("w1")),
+                ..attempt(BUILD)
+            },
+        )]),
+        vec![
+            fact(
+                1_000,
+                FactKind::RunDurationExceeded {
+                    task: task_id("t1"),
+                },
+            ),
+            fact(2_000, passed("t1", "cb")),
+        ],
+    )
+    .when("t1", TaskState::Failed, vec![])
+    .checking(|state| subject(state, "t1").validations.is_empty())]);
+}
+
+#[test]
+fn worktree_acquired_rework_respects_state_and_cap() {
+    let closed_validated = || {
+        with_attempt(
+            validated("t1", "cb"),
+            Attempt {
+                outcome: AttemptOutcome::Submitted,
+                worktree: Some(lease("w1")),
+                profile: profile(BUILD),
+                started_at: at(0),
+                finished_at: Some(at(0)),
+                session: None,
+            },
+        )
+    };
+
+    run(vec![
+        case(
+            "rework launches only while under the concurrency cap",
+            {
+                let mut state = state(vec![closed_validated(), running("t2")]);
+                state.limits.max_concurrent_tasks = 1;
+                state
+            },
+            vec![fact(
+                1_000,
+                FactKind::WorktreeAcquired {
+                    task: task_id("t1"),
+                    lease: lease("w2"),
+                    baseline: Baseline::DefaultBranchHead,
+                },
+            )],
+        )
+        .when("t1", TaskState::Validated, vec![])
+        .checking(|state| {
+            subject(state, "t1").attempts.len() == 1
+                && subject(state, "t2").state == TaskState::Running
+        }),
+        case(
+            "a failed task is not restarted by worktree acquisition",
+            state(vec![with_attempt(
+                task("t1", TaskState::Failed),
+                Attempt {
+                    outcome: AttemptOutcome::Failed,
+                    finished_at: Some(at(0)),
+                    ..attempt(BUILD)
+                },
+            )]),
+            vec![fact(
+                2_000,
+                FactKind::WorktreeAcquired {
+                    task: task_id("t1"),
+                    lease: lease("w2"),
+                    baseline: Baseline::DefaultBranchHead,
+                },
+            )],
+        )
+        .when("t1", TaskState::Failed, vec![])
+        .checking(|state| subject(state, "t1").attempts.len() == 1),
+        case(
+            "a cancelled task is not restarted by worktree acquisition",
+            state(vec![with_attempt(
+                task("t1", TaskState::Cancelled),
+                Attempt {
+                    outcome: AttemptOutcome::Stopped,
+                    finished_at: Some(at(0)),
+                    ..attempt(BUILD)
+                },
+            )]),
+            vec![fact(
+                3_000,
+                FactKind::WorktreeAcquired {
+                    task: task_id("t1"),
+                    lease: lease("w2"),
+                    baseline: Baseline::DefaultBranchHead,
+                },
+            )],
+        )
+        .when("t1", TaskState::Cancelled, vec![])
+        .checking(|state| subject(state, "t1").attempts.len() == 1),
+    ]);
+}
+
+#[test]
+fn rate_limit_stops_a_live_session() {
+    run(vec![case(
+        "a rate-limited running session is stopped before retry queues",
+        state(vec![running_with_session("t1", "s1", "w1")]),
+        vec![fact(
+            1_000,
+            FactKind::ProviderRateLimited {
+                task: task_id("t1"),
+                profile: profile(BUILD),
+            },
+        )],
+    )
+    .when(
+        "t1",
+        TaskState::Approved,
+        vec![
+            Action::StopSession {
+                task: task_id("t1"),
+            },
+            queue("t1", Some(at(1_000).plus(Duration::from_secs(30)))),
+            Action::RenderChecklist,
+        ],
+    )
+    .checking(|state| {
+        holds(state, "t1", AttemptOutcome::Failed)
+            && subject(state, "t1")
+                .attempts
+                .last()
+                .and_then(|attempt| attempt.worktree.clone())
+                == Some(lease("w1"))
+    })]);
+}
+
+#[test]
+fn multi_dependency_tasks_require_a_declared_base() {
+    let edges = vec![
+        Dependency {
+            task: task_id("a"),
+            commit: commit("ca"),
+        },
+        Dependency {
+            task: task_id("b"),
+            commit: commit("cb"),
+        },
+    ];
+
+    let refused = fact(
+        1_000,
+        FactKind::TaskProposed {
+            task: task_id("t1"),
+            title: "depends on two".to_owned(),
+            intent: "needs both".to_owned(),
+            role: Role::Build,
+            dependencies: edges.clone(),
+            base_dependency: None,
+        },
+    );
+    let (next, actions) = reduce(&base(), &refused);
+    assert!(next.tasks.is_empty());
+    assert!(actions.is_empty());
+
+    let accepted = fact(
+        2_000,
+        FactKind::TaskProposed {
+            task: task_id("t1"),
+            title: "depends on two".to_owned(),
+            intent: "needs both".to_owned(),
+            role: Role::Build,
+            dependencies: edges,
+            base_dependency: Some(task_id("b")),
+        },
+    );
+    let (next, actions) = reduce(&base(), &accepted);
+    assert_eq!(actions, vec![Action::RenderChecklist]);
+    let recorded = subject(&next, "t1");
+    assert_eq!(recorded.base_dependency, Some(task_id("b")));
+    assert_eq!(recorded.dependencies.len(), 2);
+
+    run(vec![case(
+        "acquire uses the declared base pin rather than the minimum id",
+        state(vec![
+            with_base(
+                depending_on(
+                    depending_on(task("t1", TaskState::Proposed), "a", "ca"),
+                    "b",
+                    "cb",
+                ),
+                "b",
+            ),
+            validated("a", "ca"),
+            validated("b", "cb"),
+        ]),
+        vec![fact(3_000, approved("t1"))],
+    )
+    .when(
+        "t1",
+        TaskState::Running,
+        vec![
+            acquire("t1", Baseline::PinnedCommit(commit("cb"))),
+            launch("t1", BUILD),
+            Action::RenderChecklist,
+        ],
+    )]);
 }

@@ -25,6 +25,7 @@ pub enum FactKind {
         intent: String,
         role: Role,
         dependencies: Vec<Dependency>,
+        base_dependency: Option<TaskId>,
     },
     TaskApproved {
         task: TaskId,

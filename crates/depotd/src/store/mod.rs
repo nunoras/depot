@@ -7,7 +7,6 @@ use std::time::Duration;
 use depot_core::{Fact, ProjectId, ProjectState, Timestamp};
 use rusqlite::{Connection, params};
 
-use crate::checklist::write_checklist;
 use crate::config::ProjectConfig;
 use crate::error::{Error, Result};
 use crate::factcodec;
@@ -152,13 +151,6 @@ impl Store {
             Some(raw) => Ok(Some(raw?.into_event()?)),
             None => Ok(None),
         }
-    }
-
-    pub(crate) fn write_checklist(&self, project: &Project) -> Result<()> {
-        let project_home = self.home.project_home(&project.slug);
-        project_home.ensure()?;
-        write_checklist(&project_home, &self.project_state(project)?)?;
-        Ok(())
     }
 
     pub fn events(&self, project: &ProjectId) -> Result<Vec<RecordedEvent>> {

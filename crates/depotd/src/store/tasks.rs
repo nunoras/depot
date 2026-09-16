@@ -180,8 +180,8 @@ impl Store {
             )?;
         }
 
-        transaction.commit()?;
         std::fs::write(&checklist_path, checklist)?;
+        transaction.commit()?;
         Ok(())
     }
 

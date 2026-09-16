@@ -2,8 +2,6 @@ use depot_core::{
     Checks, ProjectState, Question, Task, TaskState, Timestamp, dependency_satisfied,
 };
 
-use crate::error::Result;
-use crate::home::ProjectHome;
 use crate::vocabulary::{checks_name, role_name};
 
 const SECTIONS: [(TaskState, &str); 10] = [
@@ -55,15 +53,6 @@ pub fn render_checklist(state: &ProjectState) -> String {
     }
 
     out
-}
-
-pub(crate) fn write_checklist(
-    project_home: &ProjectHome,
-    state: &ProjectState,
-) -> Result<std::path::PathBuf> {
-    let path = project_home.checklist_path();
-    std::fs::write(&path, render_checklist(state))?;
-    Ok(path)
 }
 
 fn render_task(out: &mut String, state: &ProjectState, task: &Task) {

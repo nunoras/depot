@@ -94,7 +94,12 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                     answer: None,
                 });
                 task.updated_at = fact.at;
-                if relay {
+                if relay
+                    && matches!(
+                        task.state,
+                        TaskState::Running | TaskState::WaitingOnQuestion,
+                    )
+                {
                     task.state = TaskState::WaitingOnQuestion;
                     changed = true;
                     actions.push(Action::Notify { task: id.clone() });
@@ -259,6 +264,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             task,
             lease,
             baseline,
+            included,
         } => {
             let live = next.tasks.get(task).is_some_and(|task| {
                 task.attempts
@@ -283,9 +289,16 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             });
             let mut attached = false;
             if live {
-                repin_acquired_task(&mut next, task, baseline);
                 if let Some(task) = next.tasks.get_mut(task) {
                     if let Some(attempt) = task.attempts.last_mut() {
+                        if let Some(prior) = attempt.worktree.take() {
+                            if &prior != lease {
+                                actions.push(Action::ReleaseWorktree {
+                                    task: task.id.clone(),
+                                    lease: prior,
+                                });
+                            }
+                        }
                         attempt.worktree = Some(lease.clone());
                     }
                     task.updated_at = fact.at;
@@ -293,6 +306,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                 }
             } else if rework_candidate {
                 let previous_pins = dependency_pins(&next, task);
+                apply_included_pins(&mut next, task, included);
                 repin_acquired_task(&mut next, task, baseline);
                 if publication_blocked(&next, task) {
                     restore_dependency_pins(&mut next, task, &previous_pins);
@@ -300,10 +314,12 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                     && let Some(profile) = task.attempts.last().map(|a| a.profile.clone())
                 {
                     if let Some(prior) = take_last_worktree(task) {
-                        actions.push(Action::ReleaseWorktree {
-                            task: task.id.clone(),
-                            lease: prior,
-                        });
+                        if &prior != lease {
+                            actions.push(Action::ReleaseWorktree {
+                                task: task.id.clone(),
+                                lease: prior,
+                            });
+                        }
                     }
                     task.attempts.push(Attempt {
                         session: None,
@@ -373,18 +389,21 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                         task: task.clone(),
                     });
                 }
-            } else if let Some(task) = next.tasks.get_mut(task) {
-                if task.state != TaskState::Landed {
+            } else if next
+                .tasks
+                .get(task)
+                .is_some_and(|task| task.state == TaskState::PrOpen)
+            {
+                if let Some(task) = next.tasks.get_mut(task) {
                     task.state = TaskState::Landed;
                     task.updated_at = fact.at;
                     changed = true;
-                }
-                if let Some(lease) = take_last_worktree(task) {
-                    actions.push(Action::ReleaseWorktree {
-                        task: task.id.clone(),
-                        lease,
-                    });
-                    changed = true;
+                    if let Some(lease) = take_last_worktree(task) {
+                        actions.push(Action::ReleaseWorktree {
+                            task: task.id.clone(),
+                            lease,
+                        });
+                    }
                 }
             }
         }
@@ -664,9 +683,29 @@ fn repin_acquired_task(state: &mut ProjectState, task: &TaskId, baseline: &Basel
         .filter_map(|(id, task)| task.validated_commit().map(|c| (id.clone(), c.clone())))
         .collect();
     if let Some(task) = state.tasks.get_mut(task) {
+        let base = task.base_dependency.clone().or_else(|| {
+            (task.dependencies.len() == 1).then(|| task.dependencies[0].task.clone())
+        });
         for dependency in task.dependencies.iter_mut() {
-            if validated.get(&dependency.task) == Some(commit) {
+            let is_base = base.as_ref() == Some(&dependency.task);
+            if is_base && validated.get(&dependency.task) == Some(commit) {
                 dependency.commit = commit.clone();
+            }
+        }
+    }
+}
+
+fn apply_included_pins(state: &mut ProjectState, task: &TaskId, included: &[Dependency]) {
+    if included.is_empty() {
+        return;
+    }
+    if let Some(task) = state.tasks.get_mut(task) {
+        for dependency in task.dependencies.iter_mut() {
+            if let Some(pin) = included
+                .iter()
+                .find(|included| included.task == dependency.task)
+            {
+                dependency.commit = pin.commit.clone();
             }
         }
     }

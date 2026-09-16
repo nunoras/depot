@@ -5,6 +5,7 @@ mod clock;
 mod commands;
 mod config;
 mod coordinator;
+mod daemon;
 mod documents;
 mod error;
 mod factcodec;
@@ -28,6 +29,9 @@ pub use coordinator::{
     BRIEF_TEMPLATE, COORDINATOR_KICKOFF_TEMPLATE, COORDINATOR_POLICY, CoordinatorContext, Launch,
     WorkerLaunch, render_template,
 };
+pub use daemon::{
+    Daemon, Delivery, Notifier, ValidationResult, ValidationRunner, pull_request_body,
+};
 pub use documents::{document_path, write_document};
 pub use error::{Error, Result};
 pub use home::{
@@ -38,6 +42,6 @@ pub use home::{
 pub use inbox::{InboxEntry, Need, inbox_entries, render_inbox};
 pub use project::{LocationKind, Project};
 pub use projects::{Added, StatusSelection, add_project, render_status, select_project};
-pub use settings::Settings;
+pub use settings::{ProfileSettings, Settings};
 pub use store::{Applied, EventOutcome, RecordedEvent, SCHEMA_VERSION, Store, event_key};
 pub use vocabulary::{ROLE_NAMES, role_from_name};

@@ -107,13 +107,11 @@ pub fn encode_payload(kind: &FactKind) -> String {
         FactKind::WorktreeAcquired {
             task,
             lease,
-            path,
             baseline,
             included,
         } => object(vec![
             ("task", quoted(task.as_str())),
             ("lease", quoted(lease.as_str())),
-            ("path", quoted(path)),
             (
                 "baseline",
                 match baseline {

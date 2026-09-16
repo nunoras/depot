@@ -77,6 +77,7 @@ impl CoordinatorContext {
         let done = done_criteria(task.role);
         let dependencies = dependency_lines(&self.state, task);
         let validation = validation_note(&self.config);
+        let worker_context = worker_context(task)?;
         let store = display(self.home.root());
         let checklist = display(&self.checklist_path());
         let scratch = display(&self.home.scratch_dir());
@@ -93,6 +94,7 @@ impl CoordinatorContext {
                 ("done", done),
                 ("dependencies", &dependencies),
                 ("validation", &validation),
+                ("worker_context", &worker_context),
                 ("store", &store),
                 ("checklist", &checklist),
                 ("scratch", &scratch),
@@ -127,6 +129,18 @@ pub fn render_template(template: &str, values: &[(&str, &str)]) -> Result<String
     }
     out.push_str(rest);
     Ok(out)
+}
+
+fn worker_context(task: &Task) -> Result<String> {
+    let attempt = task
+        .attempts
+        .last()
+        .and_then(|attempt| attempt.worktree.as_ref())
+        .ok_or_else(|| Error::Project(format!("task `{}` has no worker attempt", task.id)))?;
+    Ok(format!(
+        "DEPOT_TASK_ID={}\nDEPOT_ATTEMPT_ID={attempt}",
+        task.id
+    ))
 }
 
 fn output_destination(task: &Task, home: &ProjectHome) -> String {

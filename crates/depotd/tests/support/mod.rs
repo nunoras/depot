@@ -118,7 +118,6 @@ pub fn full_task(project: &ProjectId, id: &str) -> Task {
                 session: Some(SessionId::new("session-1")),
                 profile: ProfileId::new("glm-5.3"),
                 worktree: Some(WorktreeLease::new("lease-1")),
-                worktree_path: Some("/worktrees/lease-1".to_string()),
                 started_at: Timestamp::from_millis(1_700_000_000_000),
                 finished_at: Some(Timestamp::from_millis(1_700_000_060_000)),
                 outcome: AttemptOutcome::Failed,
@@ -126,8 +125,7 @@ pub fn full_task(project: &ProjectId, id: &str) -> Task {
             Attempt {
                 session: None,
                 profile: ProfileId::new("gpt-5.5"),
-                worktree: None,
-                worktree_path: None,
+                worktree: Some(WorktreeLease::new("lease-2")),
                 started_at: Timestamp::from_millis(1_700_000_120_000),
                 finished_at: None,
                 outcome: AttemptOutcome::Unknown,

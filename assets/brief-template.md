@@ -22,6 +22,12 @@ Task `{{task}}` of project `{{project}}`, role `{{role}}`.
 
 {{validation}}
 
+## Worker context
+
+Before using either worker call, set these environment variables in your shell:
+
+    {{worker_context}}
+
 ## The store
 
 Everything depot owns lives outside the project repository.

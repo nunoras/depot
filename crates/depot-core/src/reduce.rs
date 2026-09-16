@@ -306,7 +306,6 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
         FactKind::WorktreeAcquired {
             task,
             lease,
-            path,
             baseline,
             included,
         } => {
@@ -343,7 +342,6 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                             });
                         }
                         attempt.worktree = Some(lease.clone());
-                        attempt.worktree_path = Some(path.clone());
                     }
                     task.updated_at = fact.at;
                     attached = true;
@@ -369,7 +367,6 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                         session: None,
                         profile: profile.clone(),
                         worktree: Some(lease.clone()),
-                        worktree_path: Some(path.clone()),
                         started_at: fact.at,
                         finished_at: None,
                         outcome: AttemptOutcome::InFlight,
@@ -740,7 +737,6 @@ fn start_ready_tasks(
             session: None,
             profile: profile.clone(),
             worktree: None,
-            worktree_path: None,
             started_at: at,
             finished_at: None,
             outcome: AttemptOutcome::InFlight,

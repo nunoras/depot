@@ -160,7 +160,6 @@ pub struct Attempt {
     pub session: Option<SessionId>,
     pub profile: ProfileId,
     pub worktree: Option<WorktreeLease>,
-    pub worktree_path: Option<String>,
     pub started_at: Timestamp,
     pub finished_at: Option<Timestamp>,
     pub outcome: AttemptOutcome,

@@ -78,7 +78,6 @@ pub enum FactKind {
     WorktreeAcquired {
         task: TaskId,
         lease: WorktreeLease,
-        path: String,
         baseline: crate::action::Baseline,
         included: Vec<Dependency>,
     },

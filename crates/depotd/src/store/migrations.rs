@@ -144,7 +144,6 @@ CREATE TABLE coordinators (
 
 pub const TASK_SUBMISSION_V5: &str = "
 ALTER TABLE tasks ADD COLUMN submission_summary TEXT;
-ALTER TABLE task_attempts ADD COLUMN worktree_path TEXT;
 CREATE TABLE task_submission_artifacts (
     project_id TEXT NOT NULL,
     task_id    TEXT NOT NULL,

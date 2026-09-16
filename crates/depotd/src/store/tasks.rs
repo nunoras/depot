@@ -194,7 +194,7 @@ impl Store {
 
     fn attempts(&self, project: &ProjectId, task: &str) -> Result<Vec<Attempt>> {
         let mut statement = self.connection().prepare(
-            "SELECT session, profile, worktree, worktree_path, started_at, finished_at, outcome
+            "SELECT session, profile, worktree, started_at, finished_at, outcome
              FROM task_attempts WHERE project_id = ?1 AND task_id = ?2 ORDER BY position",
         )?;
         let rows = statement.query_map(params![project.as_str(), task], |row| {
@@ -202,7 +202,6 @@ impl Store {
                 session: row.get("session")?,
                 profile: row.get("profile")?,
                 worktree: row.get("worktree")?,
-                worktree_path: row.get("worktree_path")?,
                 started_at: row.get("started_at")?,
                 finished_at: row.get("finished_at")?,
                 outcome: row.get("outcome")?,
@@ -215,7 +214,6 @@ impl Store {
                 session: raw.session.map(SessionId::new),
                 profile: ProfileId::new(raw.profile),
                 worktree: raw.worktree.map(WorktreeLease::new),
-                worktree_path: raw.worktree_path,
                 started_at: millis(raw.started_at)?,
                 finished_at: raw.finished_at.map(millis).transpose()?,
                 outcome: outcome_from_name(&raw.outcome)?,
@@ -367,7 +365,6 @@ struct RawAttempt {
     session: Option<String>,
     profile: String,
     worktree: Option<String>,
-    worktree_path: Option<String>,
     started_at: i64,
     finished_at: Option<i64>,
     outcome: String,
@@ -450,9 +447,9 @@ pub(super) fn write_task(transaction: &Transaction<'_>, task: &Task) -> Result<(
     for (position, attempt) in task.attempts.iter().enumerate() {
         transaction.execute(
             "INSERT INTO task_attempts (
-                    project_id, task_id, position, session, profile, worktree, worktree_path,
-                    started_at, finished_at, outcome
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                    project_id, task_id, position, session, profile, worktree, started_at,
+                    finished_at, outcome
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 task.project.as_str(),
                 task.id.as_str(),
@@ -460,7 +457,6 @@ pub(super) fn write_task(transaction: &Transaction<'_>, task: &Task) -> Result<(
                 attempt.session.as_ref().map(SessionId::as_str),
                 attempt.profile.as_str(),
                 attempt.worktree.as_ref().map(WorktreeLease::as_str),
-                attempt.worktree_path,
                 attempt.started_at.millis() as i64,
                 attempt.finished_at.map(|at| at.millis() as i64),
                 outcome_name(attempt.outcome),

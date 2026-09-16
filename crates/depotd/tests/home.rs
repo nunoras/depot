@@ -155,7 +155,8 @@ fn a_failed_project_home_write_leaves_no_registration() {
     );
 
     std::fs::remove_file(blocked).expect("unblock");
-    let added = add_project(&fixture.home, directory.to_str().unwrap()).expect("register after unblock");
+    let added =
+        add_project(&fixture.home, directory.to_str().unwrap()).expect("register after unblock");
     assert!(added.created);
     assert!(added.home.checklist_path().is_file());
     assert_eq!(store.projects().expect("projects").len(), 1);
@@ -189,7 +190,8 @@ fn a_blocked_checklist_path_refuses_add_without_registering() {
     );
 
     std::fs::remove_dir_all(project_home.root()).expect("remove the blocked home");
-    let added = add_project(&fixture.home, directory.to_str().unwrap()).expect("register after unblock");
+    let added =
+        add_project(&fixture.home, directory.to_str().unwrap()).expect("register after unblock");
     assert!(added.created);
     assert!(added.home.checklist_path().is_file());
     assert_eq!(store.projects().expect("projects").len(), 1);

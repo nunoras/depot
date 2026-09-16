@@ -33,12 +33,17 @@ Everything depot owns lives outside your repositories, in one home: `$DEPOT_HOME
     media/
 ```
 
-`depot project add <path-or-url>` registers a project, writes its home directory, and scaffolds its committed config.
+`depot project add <path-or-url>` registers a project and writes its home directory.
+A path project also scaffolds its committed `.depot.toml` when that file is missing.
 Adding the same project twice is idempotent; a path that is not an existing directory is refused.
-`depot status [--project <name>] [--all]` prints the rendered checklist.
+
+`depot status` prints the rendered checklist for the project this directory belongs to.
+`--project <name>` names one registered project, and `--all` lists every project.
+A directory that matches none is an error that names the registered projects.
 
 The store applies its schema migrations on open and refuses a database written by a newer build rather than downgrading it.
-`Store` is the only writer of `checklist.md`, and `render_checklist` is a pure function of a `ProjectState`: the same state always produces the same bytes.
+`checklist.md` is rewritten from the records on registration and on every task write; hand edits do not stick.
+`render_checklist` is a pure function of a `ProjectState`: the same state always produces the same bytes.
 `crates/depotd/tests/` asserts that rather than assuming it.
 
 ## The configuration split
@@ -105,7 +110,7 @@ cargo fmt --all --check
 
 `crates/depot-core/tests/lifecycle.rs` holds one table per lifecycle rule, each row a scenario asserting the resulting task state and the exact actions the daemon intends to take.
 The rules are numbered in the ticket that built this skeleton: [nunoras/depot#31](https://github.com/nunoras/depot/issues/31).
-`crates/depot-core/tests/purity.rs` keeps the core dependency-free, and `crates/depot/tests/cli.rs` drives the real binary.
+`crates/depot-core/tests/purity.rs` keeps the core dependency-free, `crates/depotd/tests/` covers the store, home, config split and checklist, and `crates/depot/tests/cli.rs` drives the real binary.
 
 ## Where to read next
 

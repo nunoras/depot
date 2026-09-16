@@ -506,12 +506,12 @@ mod windows_token_acl {
     use std::path::Path;
     use std::ptr;
 
-    use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, ERROR_SUCCESS, HANDLE, PSID};
+    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_SUCCESS, HANDLE, LocalFree, PSID};
     use windows_sys::Win32::Security::Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT};
     use windows_sys::Win32::Security::{
-        CopySid, CreateWellKnownSid, EqualSid, GetAce, GetLengthSid, GetTokenInformation,
-        IsValidSid, TokenUser, ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, DACL_SECURITY_INFORMATION,
-        OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, TOKEN_QUERY, TOKEN_USER,
+        ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, CopySid, CreateWellKnownSid,
+        DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetLengthSid, GetTokenInformation, IsValidSid,
+        OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, TOKEN_QUERY, TOKEN_USER, TokenUser,
         WinBuiltinAdministratorsSid, WinLocalSystemSid,
     };
     use windows_sys::Win32::System::SystemServices::ACCESS_ALLOWED_ACE_TYPE;
@@ -556,9 +556,7 @@ mod windows_token_acl {
         let _guard = FreeDesc(security);
 
         if dacl.is_null() {
-            return Err(
-                "the file has a NULL DACL, which grants access to everyone".to_owned(),
-            );
+            return Err("the file has a NULL DACL, which grants access to everyone".to_owned());
         }
 
         let current_user = current_user_sid()?;
@@ -583,13 +581,17 @@ mod windows_token_acl {
             if allowed.Mask == 0 {
                 continue;
             }
-            let sid = unsafe {
-                ptr::addr_of!((*allowed).SidStart) as PSID
-            };
+            let sid = unsafe { ptr::addr_of!((*allowed).SidStart) as PSID };
             if unsafe { IsValidSid(sid) } == 0 {
                 return Err("an allow ACE carried an invalid SID".to_owned());
             }
-            identities.push(classify_sid(sid, owner, current_user.as_ptr(), administrators.as_ptr(), system.as_ptr()));
+            identities.push(classify_sid(
+                sid,
+                owner,
+                current_user.as_ptr(),
+                administrators.as_ptr(),
+                system.as_ptr(),
+            ));
         }
         Ok(identities)
     }
@@ -632,12 +634,7 @@ mod windows_token_acl {
         let mut size = SECURITY_MAX_SID_SIZE as u32;
         let mut bytes = vec![0_u8; SECURITY_MAX_SID_SIZE];
         let ok = unsafe {
-            CreateWellKnownSid(
-                kind,
-                ptr::null_mut(),
-                bytes.as_mut_ptr() as PSID,
-                &mut size,
-            )
+            CreateWellKnownSid(kind, ptr::null_mut(), bytes.as_mut_ptr() as PSID, &mut size)
         };
         if ok == 0 {
             return Err(format!(

@@ -20,7 +20,10 @@ So the adapter inspects the directory with git, refuses with the reason, and nev
 
 **Forge.** Depot polls the GitHub API rather than shelling out to `gh`, because the decision ticket settled on the API and because the end-to-end suite needs a fake endpoint rather than a fake CLI.
 The client's base URL is a parameter, so the tests point it at a local endpoint and GitHub Enterprise stays possible without touching the code.
-Credentials come from an authenticated `gh auth token` when that exists, otherwise from an owner-only file in the depot home that depot refuses to read if anybody but its owner can, and never from the project, because a project is a thing that gets pushed.
+Credentials come from an authenticated `gh auth token` when that exists, otherwise from an owner-only `github-token` file in the depot home, and never from the project, because a project is a thing that gets pushed.
+On Unix the file's mode must exclude group and other.
+On Windows its DACL may grant only the current user, the owner, Administrators and SYSTEM.
+Any other platform is refused, because the ACL cannot be proven.
 
 **Profiles.** A role resolves to a profile from project configuration, with the configured fallback list behind it.
 The adapter does not read a file and does not hold the default: it resolves a role against the map it is given and refuses an unmapped role, naming the roles that are configured.

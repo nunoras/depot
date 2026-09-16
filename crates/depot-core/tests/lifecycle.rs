@@ -1350,6 +1350,7 @@ fn rate_limit_stops_a_live_session() {
             Action::StopSession {
                 task: task_id("t1"),
             },
+            release("t1", "w1"),
             queue("t1", Some(at(1_000).plus(Duration::from_secs(30)))),
             Action::RenderChecklist,
         ],
@@ -1359,9 +1360,231 @@ fn rate_limit_stops_a_live_session() {
             && subject(state, "t1")
                 .attempts
                 .last()
+                .is_some_and(|attempt| attempt.worktree.is_none())
+    })]);
+}
+
+#[test]
+fn merge_is_blocked_while_dependency_pins_are_stale() {
+    run(vec![case(
+        "a merged pr with a stale pin stays open and holds for the user",
+        state(vec![
+            depending_on(
+                with_pull_request(
+                    with_attempt(
+                        task("t1", TaskState::PrOpen),
+                        Attempt {
+                            outcome: AttemptOutcome::Submitted,
+                            worktree: Some(lease("w1")),
+                            ..attempt(BUILD)
+                        },
+                    ),
+                    7,
+                    Checks::Passing,
+                ),
+                "t0",
+                "c1",
+            ),
+            validated("t0", "c2"),
+        ]),
+        vec![fact(1_000, merged("t1"))],
+    )
+    .when(
+        "t1",
+        TaskState::PrOpen,
+        vec![hold("t1"), Action::RenderChecklist],
+    )
+    .checking(|state| {
+        subject(state, "t1")
+            .attempts
+            .last()
+            .and_then(|attempt| attempt.worktree.clone())
+            == Some(lease("w1"))
+            && subject(state, "t1")
+                .dependencies
+                .first()
+                .map(|edge| &edge.commit)
+                == Some(&commit("c1"))
+    })]);
+}
+
+#[test]
+fn rejected_rework_does_not_repin_a_validated_task() {
+    run(vec![
+        case(
+            "a capped rework leaves the old pin in place",
+            {
+                let mut state = state(vec![
+                    depending_on(
+                        with_attempt(
+                            validated("t1", "cb"),
+                            Attempt {
+                                outcome: AttemptOutcome::Submitted,
+                                worktree: Some(lease("w1")),
+                                finished_at: Some(at(0)),
+                                ..attempt(BUILD)
+                            },
+                        ),
+                        "t0",
+                        "c1",
+                    ),
+                    validated("t0", "c2"),
+                    running("t2"),
+                ]);
+                state.limits.max_concurrent_tasks = 1;
+                state
+            },
+            vec![fact(
+                1_000,
+                FactKind::WorktreeAcquired {
+                    task: task_id("t1"),
+                    lease: lease("w2"),
+                    baseline: Baseline::PinnedCommit(commit("c2")),
+                },
+            )],
+        )
+        .when("t1", TaskState::Validated, vec![])
+        .checking(|state| {
+            subject(state, "t1").attempts.len() == 1
+                && subject(state, "t1")
+                    .dependencies
+                    .first()
+                    .map(|edge| &edge.commit)
+                    == Some(&commit("c1"))
+                && publication_still_blocked(state, "t1")
+        }),
+        case(
+            "a multi-dep rework restores pins when a non-base edge is still stale",
+            state(vec![
+                with_base(
+                    depending_on(
+                        depending_on(
+                            with_attempt(
+                                validated("t1", "cb"),
+                                Attempt {
+                                    outcome: AttemptOutcome::Submitted,
+                                    worktree: Some(lease("w1")),
+                                    finished_at: Some(at(0)),
+                                    ..attempt(BUILD)
+                                },
+                            ),
+                            "a",
+                            "ca1",
+                        ),
+                        "b",
+                        "cb1",
+                    ),
+                    "a",
+                ),
+                validated("a", "ca2"),
+                validated("b", "cb2"),
+            ]),
+            vec![fact(
+                2_000,
+                FactKind::WorktreeAcquired {
+                    task: task_id("t1"),
+                    lease: lease("w2"),
+                    baseline: Baseline::PinnedCommit(commit("ca2")),
+                },
+            )],
+        )
+        .when("t1", TaskState::Validated, vec![])
+        .checking(|state| {
+            let edges = &subject(state, "t1").dependencies;
+            edges
+                .iter()
+                .any(|edge| edge.task == task_id("a") && edge.commit == commit("ca1"))
+                && edges
+                    .iter()
+                    .any(|edge| edge.task == task_id("b") && edge.commit == commit("cb1"))
+                && subject(state, "t1").attempts.len() == 1
+        }),
+    ]);
+}
+
+#[test]
+fn rate_limit_retry_releases_the_worktree_but_exhaustion_keeps_it() {
+    run(vec![
+        case(
+            "a retryable rate limit releases the closed attempt lease",
+            state(vec![running_with_session("t1", "s1", "w1")]),
+            vec![fact(
+                1_000,
+                FactKind::ProviderRateLimited {
+                    task: task_id("t1"),
+                    profile: profile(BUILD),
+                },
+            )],
+        )
+        .when(
+            "t1",
+            TaskState::Approved,
+            vec![
+                Action::StopSession {
+                    task: task_id("t1"),
+                },
+                release("t1", "w1"),
+                queue("t1", Some(at(1_000).plus(Duration::from_secs(30)))),
+                Action::RenderChecklist,
+            ],
+        )
+        .checking(|state| {
+            subject(state, "t1")
+                .attempts
+                .last()
+                .is_some_and(|attempt| attempt.worktree.is_none())
+        }),
+        case(
+            "exhausting retries keeps the lease for review",
+            state(vec![{
+                let mut task = with_attempts(task("t1", TaskState::Running), 2);
+                task.attempts.push(Attempt {
+                    session: Some(session("s1")),
+                    worktree: Some(lease("w1")),
+                    ..attempt(BUILD)
+                });
+                task
+            }]),
+            vec![fact(
+                2_000,
+                FactKind::ProviderRateLimited {
+                    task: task_id("t1"),
+                    profile: profile(BUILD),
+                },
+            )],
+        )
+        .when(
+            "t1",
+            TaskState::Failed,
+            vec![
+                Action::StopSession {
+                    task: task_id("t1"),
+                },
+                hold("t1"),
+                Action::RenderChecklist,
+            ],
+        )
+        .checking(|state| {
+            subject(state, "t1")
+                .attempts
+                .last()
                 .and_then(|attempt| attempt.worktree.clone())
                 == Some(lease("w1"))
-    })]);
+        }),
+    ]);
+}
+
+fn publication_still_blocked(state: &ProjectState, id: &str) -> bool {
+    subject(state, id)
+        .dependencies
+        .iter()
+        .any(|dependency| {
+            state
+                .tasks
+                .get(&dependency.task)
+                .and_then(|task| task.validated_commit())
+                != Some(&dependency.commit)
+        })
 }
 
 #[test]

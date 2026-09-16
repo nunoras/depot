@@ -26,7 +26,7 @@ pub use config::{
 };
 pub use coordinator::{
     BRIEF_TEMPLATE, COORDINATOR_KICKOFF_TEMPLATE, COORDINATOR_POLICY, CoordinatorContext, Launch,
-    render_template,
+    WorkerLaunch, render_template,
 };
 pub use documents::{document_path, write_document};
 pub use error::{Error, Result};

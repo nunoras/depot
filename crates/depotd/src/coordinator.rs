@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use depot_core::{ProjectState, Role, Task};
 
 use crate::config::ProjectConfig;
+use crate::documents::write_document;
 use crate::error::{Error, Result};
 use crate::home::ProjectHome;
 use crate::project::Project;
@@ -22,6 +23,12 @@ pub const SUBMIT_COMMAND: &str =
 pub struct Launch {
     pub policy: &'static str,
     pub kickoff: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkerLaunch {
+    pub brief_path: PathBuf,
+    pub prompt: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,6 +77,16 @@ impl CoordinatorContext {
                 ],
             )?,
         })
+    }
+
+    pub fn worker_launch(&self, task: &Task) -> Result<WorkerLaunch> {
+        let prompt = self.brief(task)?;
+        let brief_path = write_document(
+            &self.home,
+            &format!("brief-{}.md", task.id.as_str()),
+            &prompt,
+        )?;
+        Ok(WorkerLaunch { brief_path, prompt })
     }
 
     pub fn brief(&self, task: &Task) -> Result<String> {

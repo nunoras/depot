@@ -239,6 +239,26 @@ fn the_brief_renders_from_a_task_record_without_repeating_the_coordinator() {
 }
 
 #[test]
+fn a_worker_launch_stores_the_brief_and_delivers_it_as_the_prompt() {
+    let fixture = support::fixture();
+    let added = support::register_with_config(&fixture, "example", BUILD_ONLY);
+    let store = Store::open(&fixture.home).expect("store");
+    let task = support::full_task(&added.project.id, "t-1");
+    let context = store.coordinator_context(&added.project).expect("context");
+
+    let launch = context.worker_launch(&task).expect("worker launch");
+
+    assert_eq!(
+        std::fs::read_to_string(&launch.brief_path).expect("stored brief"),
+        launch.prompt
+    );
+    assert_eq!(
+        launch.brief_path.parent(),
+        Some(context.home.documents_dir().as_path())
+    );
+}
+
+#[test]
 fn a_brief_for_a_build_task_names_its_worktree_as_the_output_destination() {
     let fixture = support::fixture();
     let (_store, context) = context(&fixture, "example");

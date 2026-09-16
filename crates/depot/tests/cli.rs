@@ -798,6 +798,50 @@ fn worker_ask_records_a_relayed_question_from_explicit_context() {
 }
 
 #[test]
+fn worker_commentary_does_not_change_task_state() {
+    let cli = Cli::new();
+    let added = cli.registered_with(BUILD_ONLY);
+    let store = Store::open(&cli.depot_home()).expect("store");
+    let mut seeded = task(added.project.id.as_str(), "t-1", TaskState::Running, 1);
+    seeded.attempts.push(depot_core::Attempt {
+        session: Some(depot_core::SessionId::new("session-1")),
+        profile: depot_core::ProfileId::new("build"),
+        worktree: Some(depot_core::WorktreeLease::new("attempt-1")),
+        started_at: depot_core::Timestamp::from_millis(1),
+        finished_at: None,
+        outcome: depot_core::AttemptOutcome::InFlight,
+    });
+    store.put_task(&seeded).expect("seeded task");
+
+    let output = cli.run_worker(
+        &[
+            "doc",
+            "write",
+            "notes.md",
+            "--content",
+            "Worker commentary.",
+            "--project",
+            "example",
+        ],
+        "t-1",
+        "attempt-1",
+    );
+
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    assert_eq!(
+        store
+            .task(&added.project.id, &TaskId::new("t-1"))
+            .expect("task")
+            .expect("present"),
+        seeded
+    );
+    assert_eq!(
+        std::fs::read_to_string(added.home.documents_dir().join("notes.md")).expect("commentary"),
+        "Worker commentary."
+    );
+}
+
+#[test]
 fn worker_submit_records_its_summary_artifacts_and_starts_validation() {
     let cli = Cli::new();
     let added = cli.registered_with(BUILD_ONLY);

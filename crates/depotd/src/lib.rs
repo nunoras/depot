@@ -12,7 +12,7 @@ mod settings;
 mod store;
 mod vocabulary;
 
-pub use checklist::{format_timestamp, render_checklist, write_checklist};
+pub use checklist::{format_timestamp, render_checklist};
 pub use config::{
     PROJECT_CONFIG_FILE_NAME, ProjectConfig, PullRequestConfig, QuestionsConfig, ValidationConfig,
 };

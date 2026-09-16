@@ -63,6 +63,35 @@ fn a_store_written_by_an_older_schema_migrates_forward_on_open() {
     assert_eq!(task.title, "Wire the store");
     assert_eq!(task.validations.len(), 1);
     assert_eq!(task.validations[0].exit_code, 0);
+
+    let key = "t-1:worker_submitted:abc1234";
+    let first = depot_core::Fact {
+        at: depot_core::Timestamp::from_millis(1_700_000_000_000),
+        kind: depot_core::FactKind::WorkerSubmitted {
+            task: TaskId::new("t-1"),
+            commit: depot_core::CommitId::new("abc1234"),
+        },
+    };
+    store
+        .put_project(&depotd::Project {
+            id: ProjectId::new("/work/other"),
+            kind: depotd::LocationKind::Path,
+            slug: "other".to_string(),
+            created_at: depot_core::Timestamp::from_millis(1_700_000_000_000),
+        })
+        .expect("second project");
+    assert!(matches!(
+        store
+            .record_event(&ProjectId::new("/work/example"), key, &first)
+            .unwrap(),
+        depotd::EventOutcome::Recorded
+    ));
+    assert!(matches!(
+        store
+            .record_event(&ProjectId::new("/work/other"), key, &first)
+            .unwrap(),
+        depotd::EventOutcome::Recorded
+    ));
 }
 
 #[test]

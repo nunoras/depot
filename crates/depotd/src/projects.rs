@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use depot_core::ProjectId;
 
-use crate::checklist::{render_checklist, write_checklist};
+use crate::checklist::render_checklist;
 use crate::clock::now;
 use crate::config::ProjectConfig;
 use crate::error::{Error, Result};
@@ -36,8 +36,7 @@ pub fn add_project(home: &DepotHome, target: &str) -> Result<Added> {
 
     let created = store.put_project(&project)?;
     let project_home = home.project_home(&project.slug);
-    project_home.ensure()?;
-    write_checklist(&project_home, &store.project_state(&project)?)?;
+    store.write_checklist(&project)?;
 
     Ok(Added {
         project,
@@ -71,10 +70,9 @@ pub fn render_status(home: &DepotHome, selection: &StatusSelection) -> Result<St
             match project_for_directory(&store, &cwd)? {
                 Some(project) => vec![project],
                 None => {
-                    return Err(Error::NotFound(
-                        "no project matches this directory: run inside a registered project, name one with `--project`, or pass `--all`"
-                            .to_string(),
-                    ));
+                    return Err(Error::NotFound(unmatched_directory_message(
+                        &store.projects()?,
+                    )));
                 }
             }
         }
@@ -207,14 +205,22 @@ fn project_for_directory(store: &Store, directory: &Path) -> Result<Option<Proje
         })
         .collect();
     matching.sort_by_key(|project| std::cmp::Reverse(project.id.as_str().len()));
-    if let Some(project) = matching.first() {
-        return Ok(Some((*project).clone()));
-    }
+    Ok(matching.first().map(|project| (*project).clone()))
+}
 
-    if projects.len() == 1 {
-        return Ok(projects.into_iter().next());
+fn unmatched_directory_message(projects: &[Project]) -> String {
+    if projects.is_empty() {
+        return "no project matches this directory: no projects are registered; name one with `--project` after `depot project add`, or pass `--all`"
+            .to_string();
     }
-    Ok(None)
+    let names = projects
+        .iter()
+        .map(|project| format!("`{}`", project.slug))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "no project matches this directory: registered projects are {names}; run inside a registered project, name one with `--project`, or pass `--all`"
+    )
 }
 
 fn is_url(target: &str) -> bool {

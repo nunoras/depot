@@ -122,10 +122,29 @@ fn status_from_a_directory_outside_every_project_says_so() {
 
     let error = render_status(&fixture.home, &StatusSelection::CurrentDirectory)
         .expect_err("no project owns the depot checkout");
+    let message = error.to_string();
 
+    assert!(message.contains("no project matches this directory"));
+    assert!(message.contains("`first`"));
+    assert!(message.contains("`second`"));
+}
+
+#[test]
+fn status_from_outside_a_sole_registered_project_is_not_a_guess() {
+    let fixture = support::fixture();
+    let added = support::register(&fixture, "only");
+
+    let error = render_status(&fixture.home, &StatusSelection::CurrentDirectory)
+        .expect_err("a bare status outside the project must not invent a match");
+    let message = error.to_string();
+
+    assert!(message.contains("no project matches this directory"));
     assert!(
-        error
-            .to_string()
-            .contains("no project matches this directory")
+        message.contains(&format!("`{}`", added.project.slug)),
+        "the refusal should name the registered project, got {message}"
+    );
+    assert!(
+        message.contains("--project") && message.contains("--all"),
+        "the refusal should name the explicit selection flags, got {message}"
     );
 }

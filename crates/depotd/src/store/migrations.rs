@@ -113,7 +113,24 @@ CREATE INDEX tasks_by_project_state ON tasks (project_id, state);
 CREATE INDEX events_by_project ON events (project_id, id);
 ";
 
-const MIGRATIONS: &[&str] = &[SCHEMA_V1, INDEXES_V2];
+pub const EVENTS_PROJECT_KEY_V3: &str = "
+CREATE TABLE events_v3 (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id TEXT NOT NULL,
+    key        TEXT NOT NULL,
+    at         INTEGER NOT NULL,
+    kind       TEXT NOT NULL,
+    payload    TEXT NOT NULL,
+    UNIQUE (project_id, key)
+);
+INSERT INTO events_v3 (id, project_id, key, at, kind, payload)
+    SELECT id, project_id, key, at, kind, payload FROM events;
+DROP TABLE events;
+ALTER TABLE events_v3 RENAME TO events;
+CREATE INDEX events_by_project ON events (project_id, id);
+";
+
+const MIGRATIONS: &[&str] = &[SCHEMA_V1, INDEXES_V2, EVENTS_PROJECT_KEY_V3];
 
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
 

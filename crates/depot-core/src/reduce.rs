@@ -246,8 +246,12 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             lease,
             baseline,
         } => {
-            repin_acquired_task(&mut next, task, baseline);
-            let may_rework = next.tasks.get(task).is_some_and(|task| {
+            let live = next.tasks.get(task).is_some_and(|task| {
+                task.attempts
+                    .last()
+                    .is_some_and(|attempt| is_open(attempt.outcome))
+            });
+            let rework_candidate = next.tasks.get(task).is_some_and(|task| {
                 task.state == TaskState::Validated
                     && task
                         .attempts
@@ -255,17 +259,20 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                         .is_some_and(|attempt| !is_open(attempt.outcome))
                     && next.active_task_count() < next.limits.max_concurrent_tasks
             });
-            if let Some(task) = next.tasks.get_mut(task) {
-                let live = task
-                    .attempts
-                    .last()
-                    .is_some_and(|attempt| is_open(attempt.outcome));
-                if live {
+            if live {
+                repin_acquired_task(&mut next, task, baseline);
+                if let Some(task) = next.tasks.get_mut(task) {
                     if let Some(attempt) = task.attempts.last_mut() {
                         attempt.worktree = Some(lease.clone());
                     }
                     task.updated_at = fact.at;
-                } else if may_rework
+                }
+            } else if rework_candidate {
+                let previous_pins = dependency_pins(&next, task);
+                repin_acquired_task(&mut next, task, baseline);
+                if publication_blocked(&next, task) {
+                    restore_dependency_pins(&mut next, task, &previous_pins);
+                } else if let Some(task) = next.tasks.get_mut(task)
                     && let Some(profile) = task.attempts.last().map(|a| a.profile.clone())
                 {
                     task.attempts.push(Attempt {
@@ -322,21 +329,30 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
         }
 
         FactKind::PullRequestMerged { task, .. } => {
-            if let Some(task) = next.tasks.get_mut(task) {
-                task.state = TaskState::Landed;
-                task.updated_at = fact.at;
-                changed = true;
-            }
-            if let Some(lease) = next
-                .tasks
-                .get(task)
-                .and_then(|task| task.attempts.last())
-                .and_then(|attempt| attempt.worktree.clone())
-            {
-                actions.push(Action::ReleaseWorktree {
-                    task: task.clone(),
-                    lease,
-                });
+            if publication_blocked(&next, task) {
+                if next.tasks.contains_key(task) {
+                    changed = true;
+                    actions.push(Action::HoldForUser {
+                        task: task.clone(),
+                    });
+                }
+            } else {
+                if let Some(task) = next.tasks.get_mut(task) {
+                    task.state = TaskState::Landed;
+                    task.updated_at = fact.at;
+                    changed = true;
+                }
+                if let Some(lease) = next
+                    .tasks
+                    .get(task)
+                    .and_then(|task| task.attempts.last())
+                    .and_then(|attempt| attempt.worktree.clone())
+                {
+                    actions.push(Action::ReleaseWorktree {
+                        task: task.clone(),
+                        lease,
+                    });
+                }
             }
         }
 
@@ -389,6 +405,10 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             if let Some(task) = next.tasks.get_mut(task) {
                 let attempts = task.attempts.len() as u32;
                 let stopped = close_attempt(task, AttemptOutcome::Failed, fact.at);
+                let lease = task
+                    .attempts
+                    .last()
+                    .and_then(|attempt| attempt.worktree.clone());
                 task.updated_at = fact.at;
                 if stopped {
                     actions.push(Action::StopSession {
@@ -403,6 +423,15 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                         task: task.id.clone(),
                     });
                 } else {
+                    if let Some(lease) = lease {
+                        if let Some(attempt) = task.attempts.last_mut() {
+                            attempt.worktree = None;
+                        }
+                        actions.push(Action::ReleaseWorktree {
+                            task: task.id.clone(),
+                            lease,
+                        });
+                    }
                     let not_before = fact.at.plus(backoff_for(&limits, attempts));
                     task.state = TaskState::Approved;
                     task.retry = Some(Retry {
@@ -596,6 +625,33 @@ fn repin_acquired_task(state: &mut ProjectState, task: &TaskId, baseline: &Basel
     if let Some(task) = state.tasks.get_mut(task) {
         for dependency in task.dependencies.iter_mut() {
             if validated.get(&dependency.task) == Some(commit) {
+                dependency.commit = commit.clone();
+            }
+        }
+    }
+}
+
+fn dependency_pins(state: &ProjectState, task: &TaskId) -> Vec<(TaskId, CommitId)> {
+    state
+        .tasks
+        .get(task)
+        .map(|task| {
+            task.dependencies
+                .iter()
+                .map(|dependency| (dependency.task.clone(), dependency.commit.clone()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn restore_dependency_pins(
+    state: &mut ProjectState,
+    task: &TaskId,
+    pins: &[(TaskId, CommitId)],
+) {
+    if let Some(task) = state.tasks.get_mut(task) {
+        for dependency in task.dependencies.iter_mut() {
+            if let Some((_, commit)) = pins.iter().find(|(id, _)| id == &dependency.task) {
                 dependency.commit = commit.clone();
             }
         }

@@ -124,6 +124,78 @@ fn a_broken_project_config_refuses_add_without_registering() {
 }
 
 #[test]
+fn a_failed_project_home_write_leaves_no_registration() {
+    let fixture = support::fixture();
+    fixture.home.ensure().expect("depot home");
+    let directory = support::project_directory(&fixture, "example");
+    let blocked_home = fixture.home.project_home("example");
+    let blocked = blocked_home.root();
+    std::fs::write(blocked, "not a directory").expect("block the project home path");
+
+    let error = add_project(&fixture.home, directory.to_str().unwrap())
+        .expect_err("a blocked project home must refuse registration");
+
+    assert!(
+        !error.to_string().is_empty(),
+        "the refusal should carry an io error, got {error}"
+    );
+
+    let store = Store::open(&fixture.home).expect("store");
+    assert!(
+        store.projects().expect("projects").is_empty(),
+        "a refused add must leave no durable project row"
+    );
+    assert!(
+        blocked.is_file(),
+        "the pre-existing block should remain a file, not a half-created project home"
+    );
+    assert!(
+        !blocked.is_dir(),
+        "a refused add must not replace the block with a project home directory"
+    );
+
+    std::fs::remove_file(blocked).expect("unblock");
+    let added = add_project(&fixture.home, directory.to_str().unwrap()).expect("register after unblock");
+    assert!(added.created);
+    assert!(added.home.checklist_path().is_file());
+    assert_eq!(store.projects().expect("projects").len(), 1);
+}
+
+#[test]
+fn a_blocked_checklist_path_refuses_add_without_registering() {
+    let fixture = support::fixture();
+    fixture.home.ensure().expect("depot home");
+    let directory = support::project_directory(&fixture, "blocked");
+    let project_home = fixture.home.project_home("blocked");
+    std::fs::create_dir_all(project_home.root()).expect("project home");
+    std::fs::create_dir(project_home.checklist_path()).expect("block checklist path");
+
+    let error = add_project(&fixture.home, directory.to_str().unwrap())
+        .expect_err("a blocked checklist path must refuse registration");
+
+    assert!(
+        !error.to_string().is_empty(),
+        "the refusal should carry an io error, got {error}"
+    );
+
+    let store = Store::open(&fixture.home).expect("store");
+    assert!(
+        store.projects().expect("projects").is_empty(),
+        "a refused add must leave no durable project row"
+    );
+    assert!(
+        project_home.checklist_path().is_dir(),
+        "the blocked checklist path must remain a directory"
+    );
+
+    std::fs::remove_dir_all(project_home.root()).expect("remove the blocked home");
+    let added = add_project(&fixture.home, directory.to_str().unwrap()).expect("register after unblock");
+    assert!(added.created);
+    assert!(added.home.checklist_path().is_file());
+    assert_eq!(store.projects().expect("projects").len(), 1);
+}
+
+#[test]
 fn two_projects_with_the_same_name_get_their_own_directories() {
     let fixture = support::fixture();
     let first = support::project_directory(&fixture, "one/depot");

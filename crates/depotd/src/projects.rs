@@ -37,10 +37,21 @@ pub fn add_project(home: &DepotHome, target: &str) -> Result<Added> {
     let state = store.project_state(&project)?;
     let checklist = render_checklist(&state);
     let project_home = home.project_home(&project.slug);
+    let created_home = !project_home.root().exists();
 
-    let created = store.put_project(&project)?;
-    project_home.ensure()?;
-    std::fs::write(project_home.checklist_path(), checklist)?;
+    let created = match (|| {
+        project_home.ensure()?;
+        std::fs::write(project_home.checklist_path(), &checklist)?;
+        store.put_project(&project)
+    })() {
+        Ok(created) => created,
+        Err(error) => {
+            if created_home {
+                let _ = std::fs::remove_dir_all(project_home.root());
+            }
+            return Err(error);
+        }
+    };
 
     Ok(Added {
         project,

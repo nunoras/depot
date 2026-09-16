@@ -126,8 +126,8 @@ The two calls a worker uses to move state:
 
 | verb | what it does |
 |---|---|
-| `depot ask <question>` | records a relayed question, pauses the worker and waits for an answer from the coordinator or the user. |
-| `depot submit --summary <text> --artifact <path-or-url>...` | records the submission summary and artifacts, then triggers validation against HEAD. |
+| `depot ask --task <task-id> --project <name> --relay <question>` | records a relayed question, pauses the worker and waits for an answer from the coordinator or the user. |
+| `depot submit --task <task-id> --project <name>` | records the submission, then triggers validation against HEAD. |
 
 A worker with `DEPOT_TASK_ID` and `DEPOT_ATTEMPT_ID` set can only use `ask` and `submit`.
 Every other command is refused to enforce the worker/coordinator boundary.

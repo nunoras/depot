@@ -11,8 +11,6 @@ depot - coordinate a project's agent work
 
 USAGE
   depot project add <path-or-url>
-  depot ask <question>
-  depot submit --summary <text> --artifact <path-or-url>...
   depot status [--project <name>] [--all]
   depot task add --title <title> --intent <intent> --role <plan|build|review|fix>
                  [--depends-on <task>@<commit>]...

@@ -86,6 +86,18 @@ coordinator_context_tokens = 120000
 
 [credentials]
 github = "gh-cli"
+
+[profiles.glm-5-3]
+harness = "pi"
+model = "glm-5.3"
+effort = "high"
+account = "work"
+
+[profiles.gpt-5-5]
+harness = "pi"
+model = "gpt-5.5"
+effort = "high"
+account = "personal"
 ```
 
 Neither file accepts a key from the other side of the split, and registering a project never writes a machine-local setting into the repository.

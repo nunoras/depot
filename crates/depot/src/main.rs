@@ -74,13 +74,35 @@ fn dispatch(arguments: &[String]) -> Result<String, Failure> {
         None | Some("help") | Some("--help") | Some("-h") => Ok(USAGE.to_string()),
         Some("ask") => ask_command(&arguments[1..]),
         Some("submit") => submit_command(&arguments[1..]),
-        Some("project") => project_command(&arguments[1..]),
-        Some("task") => task_command(&arguments[1..]),
+        Some("project") => {
+            require_coordinator()?;
+            project_command(&arguments[1..])
+        }
+        Some("task") => {
+            require_coordinator()?;
+            task_command(&arguments[1..])
+        }
         Some("doc") => doc_command(&arguments[1..]),
-        Some("inbox") => inbox_command(&arguments[1..]),
+        Some("inbox") => {
+            require_coordinator()?;
+            inbox_command(&arguments[1..])
+        }
         Some("status") => status_command(&arguments[1..]),
         Some(other) => Err(Failure::Usage(format!("unknown command `{other}`"))),
     }
+}
+
+fn require_coordinator() -> Result<(), Failure> {
+    if ["DEPOT_TASK_ID", "DEPOT_ATTEMPT_ID"]
+        .into_iter()
+        .any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()))
+    {
+        return Err(Error::Project(
+            "worker context may only use `depot ask` and `depot submit` to move state".to_string(),
+        )
+        .into());
+    }
+    Ok(())
 }
 
 fn ask_command(arguments: &[String]) -> Result<String, Failure> {

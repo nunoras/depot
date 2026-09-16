@@ -1604,53 +1604,139 @@ fn rejected_rework_does_not_repin_a_validated_task() {
 
 #[test]
 fn unaccepted_worktree_acquired_releases_the_fact_lease() {
-    run(vec![case(
-        "a blocked multi-dep rework releases the unattached lease",
-        state(vec![
-            with_base(
-                depending_on(
+    run(vec![
+        case(
+            "a blocked multi-dep rework releases a distinct unattached lease",
+            state(vec![
+                with_base(
                     depending_on(
-                        with_attempt(
-                            validated("t1", "cb"),
-                            Attempt {
-                                outcome: AttemptOutcome::Submitted,
-                                worktree: Some(lease("w1")),
-                                finished_at: Some(at(0)),
-                                ..attempt(BUILD)
-                            },
+                        depending_on(
+                            with_attempt(
+                                validated("t1", "cb"),
+                                Attempt {
+                                    outcome: AttemptOutcome::Submitted,
+                                    worktree: Some(lease("w1")),
+                                    finished_at: Some(at(0)),
+                                    ..attempt(BUILD)
+                                },
+                            ),
+                            "a",
+                            "ca1",
                         ),
-                        "a",
-                        "ca1",
+                        "b",
+                        "cb1",
                     ),
-                    "b",
-                    "cb1",
+                    "a",
                 ),
-                "a",
-            ),
-            validated("a", "ca2"),
-            validated("b", "cb2"),
-        ]),
-        vec![fact(
-            1_000,
-            FactKind::WorktreeAcquired {
-                task: task_id("t1"),
-                lease: lease("w2"),
-                baseline: Baseline::PinnedCommit(commit("ca2")),
-                included: vec![Dependency {
-                    task: task_id("a"),
-                    commit: commit("ca2"),
-                }],
+                validated("a", "ca2"),
+                validated("b", "cb2"),
+            ]),
+            vec![fact(
+                1_000,
+                FactKind::WorktreeAcquired {
+                    task: task_id("t1"),
+                    lease: lease("w2"),
+                    baseline: Baseline::PinnedCommit(commit("ca2")),
+                    included: vec![Dependency {
+                        task: task_id("a"),
+                        commit: commit("ca2"),
+                    }],
+                },
+            )],
+        )
+        .when("t1", TaskState::Validated, vec![release("t1", "w2")])
+        .checking(|state| {
+            subject(state, "t1")
+                .attempts
+                .last()
+                .and_then(|attempt| attempt.worktree.clone())
+                == Some(lease("w1"))
+        }),
+        case(
+            "a blocked same-lease multi-dep rework keeps the held lease",
+            state(vec![
+                with_base(
+                    depending_on(
+                        depending_on(
+                            with_attempt(
+                                validated("t1", "cb"),
+                                Attempt {
+                                    outcome: AttemptOutcome::Submitted,
+                                    worktree: Some(lease("w1")),
+                                    finished_at: Some(at(0)),
+                                    ..attempt(BUILD)
+                                },
+                            ),
+                            "a",
+                            "ca1",
+                        ),
+                        "b",
+                        "cb1",
+                    ),
+                    "a",
+                ),
+                validated("a", "ca2"),
+                validated("b", "cb2"),
+            ]),
+            vec![fact(
+                2_000,
+                FactKind::WorktreeAcquired {
+                    task: task_id("t1"),
+                    lease: lease("w1"),
+                    baseline: Baseline::PinnedCommit(commit("ca2")),
+                    included: vec![Dependency {
+                        task: task_id("a"),
+                        commit: commit("ca2"),
+                    }],
+                },
+            )],
+        )
+        .when("t1", TaskState::Validated, vec![])
+        .checking(|state| {
+            subject(state, "t1")
+                .attempts
+                .last()
+                .and_then(|attempt| attempt.worktree.clone())
+                == Some(lease("w1"))
+        }),
+        case(
+            "a capped same-lease rework keeps the held lease",
+            {
+                let mut state = state(vec![
+                    with_attempt(
+                        validated("t1", "cb"),
+                        Attempt {
+                            outcome: AttemptOutcome::Submitted,
+                            worktree: Some(lease("w1")),
+                            finished_at: Some(at(0)),
+                            ..attempt(BUILD)
+                        },
+                    ),
+                    running("t2"),
+                ]);
+                state.limits.max_concurrent_tasks = 1;
+                state
             },
-        )],
-    )
-    .when("t1", TaskState::Validated, vec![release("t1", "w2")])
-    .checking(|state| {
-        subject(state, "t1")
-            .attempts
-            .last()
-            .and_then(|attempt| attempt.worktree.clone())
-            == Some(lease("w1"))
-    })]);
+            vec![fact(
+                3_000,
+                FactKind::WorktreeAcquired {
+                    task: task_id("t1"),
+                    lease: lease("w1"),
+                    baseline: Baseline::DefaultBranchHead,
+                    included: Vec::new(),
+                },
+            )],
+        )
+        .when("t1", TaskState::Validated, vec![])
+        .checking(|state| {
+            subject(state, "t1")
+                .attempts
+                .last()
+                .and_then(|attempt| attempt.worktree.clone())
+                == Some(lease("w1"))
+                && subject(state, "t2").state == TaskState::Running
+        }),
+    ]);
 }
 
 #[test]

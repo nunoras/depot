@@ -212,7 +212,7 @@ The fakes live in `crates/depotd/tests/support/`: a scripted program on disk for
 `crates/depot/tests/golden_path.rs` is the end-to-end suite, and it is the check to run before believing depot works.
 It drives the real `depot` binary against a real git repository with a real remote, a scripted worker, a fake boxr child process whose recorded invocations are asserted, and a local fake forge endpoint, with the daemon loop run tick by tick over the same adapters the daemon binary builds.
 Its fake boxr is the `fake_boxr` test target beside it, so a plain `cargo test` builds it before the suite runs.
-Four scenarios cover the whole journey, a worker question, a failed validation, and a restart with a task in flight; each asserts the rendered checklist, the task's state history, the commands the daemon issued and the exit codes it saw.
+Scenarios cover the whole journey, a worker question, a failed validation and a restart with a task in flight, plus the recovery edges each reconcile pass relies on; each asserts the rendered checklist, the task's state history, the commands the daemon issued and the exit codes it saw.
 `crates/depot/tests/support/` holds the fixture and includes the fakes under `crates/depotd/tests/support/` rather than duplicating them.
 It reaches no external network, so it runs anywhere.
 

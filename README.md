@@ -214,7 +214,7 @@ It drives the real `depot` binary against a real git repository with a real remo
 Its fake boxr is the `fake_boxr` test target beside it, so a plain `cargo test` builds it before the suite runs.
 Four scenarios cover the whole journey, a worker question, a failed validation, and a restart with a task in flight; each asserts the rendered checklist, the task's state history, the commands the daemon issued and the exit codes it saw.
 `crates/depot/tests/support/` holds the fixture and includes the fakes under `crates/depotd/tests/support/` rather than duplicating them.
-Nothing in it touches the network, so it runs anywhere.
+It reaches no external network, so it runs anywhere.
 
 ## Where to read next
 

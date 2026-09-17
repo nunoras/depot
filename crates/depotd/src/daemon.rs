@@ -12,7 +12,7 @@ use depot_core::{
 
 use crate::adapters::forge::{Forge, NewPullRequest, PrState, RepoSlug};
 use crate::adapters::profiles::ProfileResolver;
-use crate::adapters::sessions::{LaunchRequest, SessionProfile, Sessions};
+use crate::adapters::sessions::{LaunchRequest, SessionProfile, SessionState, Sessions};
 use crate::adapters::worktrees::{AcquireRequest, Lease, Worktrees};
 use crate::clock::now;
 use crate::error::{Error, Result};
@@ -398,8 +398,10 @@ where
     }
 
     fn acquire(&self, task: TaskId, baseline: Baseline) -> Result<()> {
-        if self.acquire_is_pending(&task)? {
-            return Ok(());
+        if self.acquire_is_pending(&task)?
+            && let Some(lease) = self.leased_worktree(&task)?
+        {
+            return self.record_worktree_acquired(&task, lease, baseline);
         }
         let attempt = self.task(&task)?.attempts.len();
         if attempt == 0 {
@@ -425,13 +427,22 @@ where
                 baseline: baseline.clone(),
             })
             .map_err(|error| Error::Project(error.to_string()))?;
+        self.record_worktree_acquired(&task, lease.lease, baseline)
+    }
+
+    fn record_worktree_acquired(
+        &self,
+        task: &TaskId,
+        lease: WorktreeLease,
+        baseline: Baseline,
+    ) -> Result<()> {
         self.record(
-            &event_key(&["worktree_acquired", task.as_str(), lease.lease.as_str()]),
+            &event_key(&["worktree_acquired", task.as_str(), lease.as_str()]),
             Fact {
                 at: now(),
                 kind: FactKind::WorktreeAcquired {
-                    task,
-                    lease: lease.lease,
+                    task: task.clone(),
+                    lease,
                     baseline,
                     included: Vec::new(),
                 },
@@ -441,7 +452,7 @@ where
 
     fn launch(&self, task: TaskId, profile: depot_core::ProfileId) -> Result<()> {
         if self.launch_is_pending(&task)? {
-            return Ok(());
+            return self.surface_unresolved_turn(&task);
         }
         let task_record = self.task(&task)?;
         let worktree = self.lease_for(&task_record)?;
@@ -505,15 +516,54 @@ where
         )
     }
 
-    fn resume(&self, task: TaskId) -> Result<()> {
-        if self.resume_is_pending(&task)? {
-            return Ok(());
+    fn surface_unresolved_turn(&self, task: &TaskId) -> Result<()> {
+        let attempt = self.task(task)?.attempts.len();
+        if attempt == 0 {
+            return Err(Error::Project(format!("task `{task}` has no attempt")));
         }
+        self.record(
+            &event_key(&[
+                "worker_turn_unresolved",
+                task.as_str(),
+                &attempt.to_string(),
+            ]),
+            Fact {
+                at: now(),
+                kind: FactKind::WorkerTurnUnresolved { task: task.clone() },
+            },
+        )
+    }
+
+    fn record_resumed(&self, task: &TaskId, session: &SessionId) -> Result<()> {
+        let at = now();
+        self.record(
+            &event_key(&["worker_resumed", task.as_str(), &at.millis().to_string()]),
+            Fact {
+                at,
+                kind: FactKind::WorkerTurnStarted {
+                    task: task.clone(),
+                    session: session.clone(),
+                },
+            },
+        )
+    }
+
+    fn resume(&self, task: TaskId) -> Result<()> {
         let record = self.task(&task)?;
         let session = self.session_for(&record)?;
+        if self.resume_is_pending(&task)? {
+            let status = self
+                .sessions
+                .status(&session)
+                .map_err(|error| Error::Project(error.to_string()))?;
+            if status == SessionState::Running {
+                return self.record_resumed(&task, &session);
+            }
+        }
         let answered = self
             .latest_answered(&task)?
             .ok_or_else(|| Error::Project(format!("task `{task}` has no answer to resume")))?;
+        let answers = self.answers_since_turn_start(&record)?;
         self.record(
             &event_key(&[
                 "worker_turn_resume_requested",
@@ -526,16 +576,9 @@ where
             },
         )?;
         self.sessions
-            .resume(&session, &resume_prompt(&record))
+            .resume(&session, &resume_prompt(&record, &answers))
             .map_err(|error| Error::Project(error.to_string()))?;
-        let at = now();
-        self.record(
-            &event_key(&["worker_resumed", task.as_str(), &at.millis().to_string()]),
-            Fact {
-                at,
-                kind: FactKind::WorkerTurnStarted { task, session },
-            },
-        )
+        self.record_resumed(&task, &session)
     }
 
     fn stop(&self, task: TaskId) -> Result<()> {
@@ -627,11 +670,7 @@ where
             let Some(attempt) = task.attempts.last() else {
                 continue;
             };
-            if task.state.in_flight()
-                && attempt.outcome.is_open()
-                && attempt.worktree.is_none()
-                && !self.acquire_is_pending(&task.id)?
-            {
+            if task.state.in_flight() && attempt.outcome.is_open() && attempt.worktree.is_none() {
                 self.acquire(task.id.clone(), depot_core::worktree_baseline(task))?;
             }
         }
@@ -643,7 +682,6 @@ where
                 && attempt.outcome.is_open()
                 && attempt.worktree.is_some()
                 && attempt.session.is_none()
-                && !self.launch_is_pending(&task.id)?
             {
                 self.launch(task.id.clone(), attempt.profile.clone())?;
             }
@@ -657,11 +695,27 @@ where
                 .attempts
                 .last()
                 .is_some_and(|attempt| attempt.outcome.is_open() && attempt.session.is_some());
-            if resumable && !task.has_unanswered_question() && self.resume_is_owed(&task.id)? {
+            if !resumable || task.has_unanswered_question() {
+                continue;
+            }
+            if self.resume_is_owed(&task.id)? || self.resume_is_pending(&task.id)? {
                 self.resume(task.id)?;
             }
         }
         Ok(())
+    }
+
+    fn leased_worktree(&self, task: &TaskId) -> Result<Option<WorktreeLease>> {
+        let repo = self.repository()?;
+        let holder = format!("depot:{}", task.as_str());
+        let pool = self
+            .worktrees
+            .pool(&repo)
+            .map_err(|error| Error::Project(error.to_string()))?;
+        Ok(pool
+            .into_iter()
+            .find(|entry| entry.holder.as_deref() == Some(holder.as_str()))
+            .and_then(|entry| entry.lease))
     }
 
     fn acquire_is_pending(&self, task: &TaskId) -> Result<bool> {
@@ -712,6 +766,30 @@ where
         )
     }
 
+    fn answers_since_turn_start(&self, task: &Task) -> Result<Vec<(String, String)>> {
+        let started = self
+            .store
+            .events(&self.project.id)?
+            .into_iter()
+            .rev()
+            .find(|event| {
+                event.task.as_ref() == Some(&task.id)
+                    && event.kind == fact_tag_name(FactTag::WorkerTurnStarted)
+            })
+            .map(|event| event.at);
+        Ok(task
+            .questions
+            .iter()
+            .filter_map(|question| {
+                let answer = question.answer.as_ref()?;
+                if started.is_some_and(|started| answer.at <= started) {
+                    return None;
+                }
+                Some((question.text.clone(), answer.text.clone()))
+            })
+            .collect())
+    }
+
     fn resume_is_pending(&self, task: &TaskId) -> Result<bool> {
         let Some(answered) = self.latest_answered(task)? else {
             return Ok(false);
@@ -747,7 +825,7 @@ where
 
     fn reconcile_sessions(&self) -> Result<()> {
         for task in self.store.tasks(&self.project.id)?.into_values() {
-            if !task.state.in_flight() || self.resume_is_pending(&task.id)? {
+            if !task.state.in_flight() {
                 continue;
             }
             let Some(session) = task
@@ -947,24 +1025,41 @@ where
     }
 }
 
-pub fn resume_prompt(task: &Task) -> String {
-    match task
-        .questions
-        .iter()
-        .rev()
-        .find(|question| question.answer.is_some())
-    {
-        Some(question) => {
-            let answer = question.answer.as_ref().expect("the question is answered");
-            let answer = crate::checklist::one_line(&answer.text);
-            let answer = answer.strip_suffix('.').unwrap_or(&answer);
-            format!(
-                "Your question \"{}\" was answered: {answer}. Continue the task.",
-                crate::checklist::one_line(&question.text)
-            )
+pub fn resume_prompt(task: &Task, answers: &[(String, String)]) -> String {
+    let answers: Vec<(String, String)> = if answers.is_empty() {
+        task.questions
+            .iter()
+            .rev()
+            .find_map(|question| {
+                let answer = question.answer.as_ref()?;
+                Some((question.text.clone(), answer.text.clone()))
+            })
+            .into_iter()
+            .collect()
+    } else {
+        answers.to_vec()
+    };
+    match answers.as_slice() {
+        [] => "An answer was recorded. Continue the task.".to_string(),
+        several => {
+            let answered: Vec<String> = several
+                .iter()
+                .map(|(question, answer)| {
+                    format!(
+                        "Your question \"{}\" was answered: {}.",
+                        crate::checklist::one_line(question),
+                        stripped(answer)
+                    )
+                })
+                .collect();
+            format!("{} Continue the task.", answered.join(" "))
         }
-        None => "An answer was recorded. Continue the task.".to_string(),
     }
+}
+
+fn stripped(answer: &str) -> String {
+    let answer = crate::checklist::one_line(answer);
+    answer.strip_suffix('.').unwrap_or(&answer).to_owned()
 }
 
 pub fn pull_request_body(task: &Task, commit: &CommitId) -> String {

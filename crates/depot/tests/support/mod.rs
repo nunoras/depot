@@ -146,6 +146,7 @@ impl Golden {
         boxr.respond("--help", BOXR_HELP, "", 0);
         boxr.respond("--harness", &format!("{SESSION}\n"), "", 0);
         boxr.report_running();
+        boxr.resume_reports_running();
         boxr.respond(
             "resume",
             &format!("session: {SESSION}\nstatus: running\n"),
@@ -227,6 +228,16 @@ impl Golden {
     pub fn allow_worktree_acquire(&self) {
         self.treehouse
             .respond("get", &lease_identity(&self.lease, LEASE), "", 0);
+    }
+
+    pub fn free_lease(&self) {
+        self.treehouse
+            .respond("status", &free_pool(&self.lease), "", 0);
+    }
+
+    pub fn hold_lease(&self) {
+        self.treehouse
+            .respond("status", &pool(&self.lease, LEASE), "", 0);
     }
 
     pub fn daemon(
@@ -561,6 +572,14 @@ fn lease_identity(lease: &Path, id: &str) -> String {
 fn pool(lease: &Path, id: &str) -> String {
     format!(
         "[{{\"name\":\"1\",\"path\":{},\"status\":\"leased\",\"lease_id\":\"{id}\",\"lease_holder\":\"depot:{TASK}\"}},{{\"name\":\"2\",\"path\":{},\"status\":\"free\",\"lease_id\":\"\",\"lease_holder\":\"\"}}]",
+        quoted(lease),
+        quoted(&lease.with_file_name("2"))
+    )
+}
+
+fn free_pool(lease: &Path) -> String {
+    format!(
+        "[{{\"name\":\"1\",\"path\":{},\"status\":\"free\",\"lease_id\":\"\",\"lease_holder\":\"\"}},{{\"name\":\"2\",\"path\":{},\"status\":\"free\",\"lease_id\":\"\",\"lease_holder\":\"\"}}]",
         quoted(lease),
         quoted(&lease.with_file_name("2"))
     )

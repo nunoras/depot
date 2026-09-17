@@ -88,6 +88,7 @@ fn need_for(tag: FactTag, task: Option<&Task>) -> Need {
         },
         FactTag::ValidationFinished
         | FactTag::WorkerLivenessChanged
+        | FactTag::WorkerTurnUnresolved
         | FactTag::RunDurationExceeded
         | FactTag::RetryExhausted
         | FactTag::ProviderRateLimited
@@ -145,6 +146,9 @@ fn headline(tag: FactTag, task: Option<&Task>) -> String {
         FactTag::WorktreeAcquireRequested => "worktree acquire requested".to_string(),
         FactTag::WorkerTurnLaunchRequested => "worker turn launch requested".to_string(),
         FactTag::WorkerTurnResumeRequested => "worker turn resume requested".to_string(),
+        FactTag::WorkerTurnUnresolved => {
+            "a worker turn could not be resolved; the worker may already be running".to_string()
+        }
         FactTag::WorkerTurnStarted => "worker turn started".to_string(),
         FactTag::WorkerTurnEnded => "worker turn ended".to_string(),
         FactTag::WorkerLivenessChanged => match task.map(|task| task.state) {

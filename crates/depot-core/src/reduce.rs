@@ -144,6 +144,25 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
         | FactKind::WorkerTurnLaunchRequested { .. }
         | FactKind::WorkerTurnResumeRequested { .. } => {}
 
+        FactKind::WorkerTurnUnresolved { task } => {
+            let unresolved = next.tasks.get(task).is_some_and(|task| {
+                task.state.in_flight()
+                    && task
+                        .attempts
+                        .last()
+                        .is_some_and(|attempt| attempt.outcome.is_open())
+            });
+            if unresolved && let Some(task) = next.tasks.get_mut(task) {
+                close_attempt(task, AttemptOutcome::Failed, fact.at);
+                task.state = TaskState::Failed;
+                task.updated_at = fact.at;
+                changed = true;
+                actions.push(Action::HoldForUser {
+                    task: task.id.clone(),
+                });
+            }
+        }
+
         FactKind::WorkerTurnStarted { task, session } => {
             if let Some(task) = next.tasks.get_mut(task)
                 && task.state.in_flight()

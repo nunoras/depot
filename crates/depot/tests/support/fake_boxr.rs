@@ -66,6 +66,15 @@ impl FakeBoxr {
         );
     }
 
+    pub fn resume_reports_running(&self) {
+        self.respond(
+            "resume.state",
+            &format!("session: {}\nstate: running\n", super::SESSION),
+            "",
+            0,
+        );
+    }
+
     pub fn calls(&self) -> Vec<Vec<String>> {
         let Ok(recorded) = fs::read_to_string(self.root.join("calls.txt")) else {
             return Vec::new();

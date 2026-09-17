@@ -485,7 +485,7 @@ fn a_worker_resumes_only_once_every_open_question_is_answered() {
             "answer",
             TASK,
             "--text",
-            "sqlite in the depot home.",
+            "8080.",
             "--by",
             "user",
             "--project",
@@ -509,7 +509,7 @@ fn a_worker_resumes_only_once_every_open_question_is_answered() {
             "answer",
             TASK,
             "--text",
-            "8080.",
+            "sqlite in the depot home.",
             "--by",
             "user",
             "--project",
@@ -523,7 +523,17 @@ fn a_worker_resumes_only_once_every_open_question_is_answered() {
     daemon
         .tick()
         .expect("the daemon resumes once every question is answered");
-    assert_eq!(golden.boxr.calls_to("resume").len(), 1);
+    let resumed = golden.boxr.calls_to("resume");
+    assert_eq!(resumed.len(), 1);
+    assert_eq!(
+        resumed[0],
+        vec![
+            "resume",
+            SESSION,
+            "Your question \"Which store?\" was answered: sqlite in the depot home. Your question \"Which port?\" was answered: 8080. Continue the task.",
+        ],
+        "both answers reach the worker in one resume turn"
+    );
 
     daemon
         .tick()
@@ -643,7 +653,7 @@ fn a_failed_validation_opens_no_pull_request_and_keeps_the_branch() {
 }
 
 #[test]
-fn a_restart_with_a_worktree_intent_does_not_acquire_a_second_worktree() {
+fn a_restart_with_a_worktree_intent_completes_it_from_the_pool() {
     let golden = Golden::new(Validation::Passing);
     let daemon = golden.daemon();
     golden.reject_worktree_acquire();
@@ -660,22 +670,67 @@ fn a_restart_with_a_worktree_intent_does_not_acquire_a_second_worktree() {
     golden.allow_worktree_acquire();
     daemon
         .recover()
-        .expect("recovery leaves the acquire intent unresolved");
+        .expect("recovery completes the acquire intent from the pool");
 
     let task = golden.task();
     assert_eq!(task.state, TaskState::Running);
-    assert_eq!(task.attempts[0].outcome, AttemptOutcome::Unknown);
-    assert_eq!(task.attempts[0].worktree, None);
-    assert_eq!(calls_to(&golden.treehouse.calls(), "get").len(), 1);
+    assert_eq!(task.attempts[0].worktree, Some(WorktreeLease::new(LEASE)));
+    assert_eq!(task.attempts[0].session, Some(SessionId::new(SESSION)));
+    assert_eq!(
+        calls_to(&golden.treehouse.calls(), "get").len(),
+        1,
+        "a lease that already exists is never acquired twice"
+    );
+    assert_eq!(golden.boxr.calls_to("--harness").len(), 1);
 }
 
 #[test]
-fn a_restart_with_a_resume_intent_does_not_resume_a_second_turn() {
+fn a_restart_without_a_leased_worktree_retries_the_acquire() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.reject_worktree_acquire();
+    golden.free_lease();
+    golden.propose();
+
+    assert!(daemon.tick().is_err(), "the acquire is interrupted");
+    assert_eq!(calls_to(&golden.treehouse.calls(), "get").len(), 1);
+
+    golden.allow_worktree_acquire();
+    assert!(
+        daemon.recover().is_err(),
+        "the launch waits until the pool reports the retried lease"
+    );
+
+    let retried = golden.task();
+    assert_eq!(retried.state, TaskState::Running);
+    assert_eq!(
+        retried.attempts[0].worktree,
+        Some(WorktreeLease::new(LEASE))
+    );
+    assert_eq!(
+        calls_to(&golden.treehouse.calls(), "get").len(),
+        2,
+        "a lease that does not exist is acquired again rather than suppressed"
+    );
+
+    golden.hold_lease();
+    daemon
+        .recover()
+        .expect("the launch proceeds once the pool reports the lease");
+
+    let running = golden.task();
+    assert_eq!(running.attempts[0].session, Some(SessionId::new(SESSION)));
+    assert_eq!(golden.boxr.calls_to("--harness").len(), 1);
+}
+
+#[test]
+fn a_restart_with_a_resume_intent_delivers_the_answer_the_probe_shows_never_landed() {
     let golden = Golden::new(Validation::Passing);
     let daemon = golden.daemon();
     golden.propose();
     daemon.tick().expect("the daemon launches the worker");
     golden.worker_commits_and_asks("Which store?");
+    golden.boxr.report_finished();
     assert_eq!(golden.task().state, TaskState::WaitingOnQuestion);
     golden.depot_ok(&[
         "task",
@@ -702,16 +757,73 @@ fn a_restart_with_a_resume_intent_does_not_resume_a_second_turn() {
     );
     daemon
         .recover()
-        .expect("recovery leaves the resume intent unresolved");
+        .expect("recovery retries the resume the probe proves never landed");
 
     let task = golden.task();
     assert_eq!(task.state, TaskState::Running);
-    assert_eq!(task.attempts[0].outcome, AttemptOutcome::Unknown);
-    assert_eq!(golden.boxr.calls_to("resume").len(), 1);
+    let resumed = golden.boxr.calls_to("resume");
+    assert_eq!(
+        resumed.len(),
+        2,
+        "a resume the session proves never landed is retried"
+    );
+    assert_eq!(
+        resumed[1],
+        vec![
+            "resume",
+            SESSION,
+            "Your question \"Which store?\" was answered: sqlite in the depot home. Continue the task.",
+        ]
+    );
 }
 
 #[test]
-fn a_restart_with_a_launch_intent_does_not_launch_a_second_worker() {
+fn a_restart_with_a_resume_intent_does_not_resume_a_running_session_again() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_asks("Which store?");
+    golden.boxr.report_running();
+    golden.depot_ok(&[
+        "task",
+        "answer",
+        TASK,
+        "--text",
+        "sqlite in the depot home.",
+        "--by",
+        "user",
+        "--project",
+        SLUG,
+    ]);
+    golden.boxr.respond("resume", "", "resume interrupted", 1);
+
+    assert!(daemon.tick().is_err(), "the resume is interrupted");
+    assert!(golden.history(TASK).contains(&RESUME_REQUESTED.to_string()));
+    assert_eq!(golden.boxr.calls_to("resume").len(), 1);
+
+    golden.boxr.respond(
+        "resume",
+        &format!("session: {SESSION}\nstatus: running\n"),
+        "",
+        0,
+    );
+    daemon
+        .recover()
+        .expect("recovery completes a resume intent the running session proves landed");
+
+    let task = golden.task();
+    assert_eq!(task.state, TaskState::Running);
+    assert_eq!(task.attempts[0].outcome, AttemptOutcome::InFlight);
+    assert_eq!(
+        golden.boxr.calls_to("resume").len(),
+        1,
+        "a running session is not resumed a second time"
+    );
+}
+
+#[test]
+fn a_restart_with_a_launch_intent_surfaces_it_rather_than_launching_again() {
     let golden = Golden::new(Validation::Passing);
     let daemon = golden.daemon();
     golden
@@ -728,13 +840,31 @@ fn a_restart_with_a_launch_intent_does_not_launch_a_second_worker() {
         .respond("--harness", &format!("{SESSION}\n"), "", 0);
     daemon
         .recover()
-        .expect("recovery leaves the intent unresolved");
+        .expect("recovery surfaces the unresolved launch instead of launching again");
 
     let task = golden.task();
-    assert_eq!(task.state, TaskState::Running);
-    assert_eq!(task.attempts[0].outcome, AttemptOutcome::Unknown);
+    assert_eq!(task.state, TaskState::Failed);
     assert_eq!(task.attempts[0].session, None);
-    assert_eq!(golden.boxr.calls_to("--harness").len(), 1);
+    assert_eq!(
+        golden.boxr.calls_to("--harness").len(),
+        1,
+        "no duplicate worker"
+    );
+    assert!(task.attempts[0].worktree.is_some(), "the worktree is kept");
+
+    let blocked = golden.status();
+    assert!(
+        blocked.contains("Blocked - needs a person (1)"),
+        "{blocked}"
+    );
+    assert_eq!(blocked, golden.checklist());
+
+    let inbox = golden.depot_ok(&["inbox", "--project", SLUG]);
+    assert!(inbox.contains("## For the user (1)"), "{inbox}");
+    assert!(
+        inbox.contains("a worker turn could not be resolved"),
+        "{inbox}"
+    );
 }
 
 #[test]

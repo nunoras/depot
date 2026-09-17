@@ -49,5 +49,11 @@ fn respond(root: &Path, arguments: &[String]) -> ExitCode {
         .ok()
         .and_then(|text| text.trim().parse::<u8>().ok())
         .unwrap_or(0);
+    if code == 0
+        && key == "resume"
+        && let Ok(state) = fs::read_to_string(root.join("resume.state.stdout"))
+    {
+        let _ = fs::write(root.join("status.stdout"), state);
+    }
     ExitCode::from(code)
 }

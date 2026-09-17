@@ -15,6 +15,7 @@ Leasing a worktree, launching a worker and resuming a worker record a durable in
 The pool is the truth for a lease, so an acquire intent the pool confirms is completed from it and an acquire intent the pool contradicts is retried.
 A session state only says the process is alive, so it is never taken as proof a resume landed: the prompt is sent again on every tick up to a bounded number of attempts, and the task is held for a person once that ladder is exhausted.
 A launch leaves no session id behind when the process dies before recording it, so an uncompleted launch is held for a person at once.
+That intent is recorded immediately before the launch call, because it is read as evidence that a launch may have happened: a configuration error caught before anything launches has to leave the task launchable rather than fail it over a worker that does not exist, and `crates/depot/tests/golden_path.rs` pins that case.
 Validation, pushing, opening a pull request and releasing a worktree do not yet have that crash boundary, so their adapters must remain idempotent until their own durable intents exist.
 
 The alternative we rejected was to queue the actions a fact produced and have the daemon drain the queue.

@@ -103,6 +103,7 @@ pub enum FactTag {
     TaskCancelled,
     QuestionAsked,
     QuestionAnswered,
+    WorkerTurnLaunchRequested,
     WorkerTurnStarted,
     WorkerTurnEnded,
     WorkerLivenessChanged,
@@ -132,6 +133,7 @@ pub fn fact_tag(kind: &FactKind) -> FactTag {
         FactKind::TaskCancelled { .. } => FactTag::TaskCancelled,
         FactKind::QuestionAsked { .. } => FactTag::QuestionAsked,
         FactKind::QuestionAnswered { .. } => FactTag::QuestionAnswered,
+        FactKind::WorkerTurnLaunchRequested { .. } => FactTag::WorkerTurnLaunchRequested,
         FactKind::WorkerTurnStarted { .. } => FactTag::WorkerTurnStarted,
         FactKind::WorkerTurnEnded { .. } => FactTag::WorkerTurnEnded,
         FactKind::WorkerLivenessChanged { .. } => FactTag::WorkerLivenessChanged,
@@ -162,6 +164,7 @@ pub fn fact_tag_name(tag: FactTag) -> &'static str {
         FactTag::TaskCancelled => "task_cancelled",
         FactTag::QuestionAsked => "question_asked",
         FactTag::QuestionAnswered => "question_answered",
+        FactTag::WorkerTurnLaunchRequested => "worker_turn_launch_requested",
         FactTag::WorkerTurnStarted => "worker_turn_started",
         FactTag::WorkerTurnEnded => "worker_turn_ended",
         FactTag::WorkerLivenessChanged => "worker_liveness_changed",
@@ -192,6 +195,7 @@ pub fn fact_tag_from_name(name: &str) -> Result<FactTag> {
         "task_cancelled" => FactTag::TaskCancelled,
         "question_asked" => FactTag::QuestionAsked,
         "question_answered" => FactTag::QuestionAnswered,
+        "worker_turn_launch_requested" => FactTag::WorkerTurnLaunchRequested,
         "worker_turn_started" => FactTag::WorkerTurnStarted,
         "worker_turn_ended" => FactTag::WorkerTurnEnded,
         "worker_liveness_changed" => FactTag::WorkerLivenessChanged,
@@ -226,6 +230,7 @@ pub fn fact_task(kind: &FactKind) -> Option<TaskId> {
         | FactKind::TaskCancelled { task }
         | FactKind::QuestionAsked { task, .. }
         | FactKind::QuestionAnswered { task, .. }
+        | FactKind::WorkerTurnLaunchRequested { task }
         | FactKind::WorkerTurnStarted { task, .. }
         | FactKind::WorkerTurnEnded { task }
         | FactKind::WorkerLivenessChanged { task, .. }

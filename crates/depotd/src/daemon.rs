@@ -424,8 +424,26 @@ where
     }
 
     fn launch(&self, task: TaskId, profile: depot_core::ProfileId) -> Result<()> {
+        if self.launch_is_pending(&task)? {
+            return Ok(());
+        }
         let task_record = self.task(&task)?;
         let worktree = self.lease_for(&task_record)?;
+        let attempt = task_record
+            .attempts
+            .last()
+            .ok_or_else(|| Error::Project(format!("task `{task}` has no attempt")))?;
+        self.record(
+            &event_key(&[
+                "worker_turn_launch_requested",
+                task.as_str(),
+                &attempt.started_at.millis().to_string(),
+            ]),
+            Fact {
+                at: now(),
+                kind: FactKind::WorkerTurnLaunchRequested { task: task.clone() },
+            },
+        )?;
         let config = self.store.project_config(&self.project)?;
         let settings = self.store.home().load_settings()?;
         let profiles = settings.configured_profiles(&config)?;
@@ -588,6 +606,7 @@ where
                 && open(attempt.outcome)
                 && attempt.worktree.is_some()
                 && attempt.session.is_none()
+                && !self.launch_is_pending(&task.id)?
             {
                 self.launch(task.id.clone(), attempt.profile.clone())?;
             }
@@ -611,6 +630,29 @@ where
             }
         }
         Ok(())
+    }
+
+    fn launch_is_pending(&self, task: &TaskId) -> Result<bool> {
+        let Some(attempt) = self.task(task)?.attempts.last().cloned() else {
+            return Ok(false);
+        };
+        let requested = self.store.event(
+            &self.project.id,
+            &event_key(&[
+                "worker_turn_launch_requested",
+                task.as_str(),
+                &attempt.started_at.millis().to_string(),
+            ]),
+        )?;
+        let Some(requested) = requested else {
+            return Ok(false);
+        };
+        let started = self.store.last_event_id(
+            &self.project.id,
+            task,
+            fact_tag_name(FactTag::WorkerTurnStarted),
+        )?;
+        Ok(Some(requested.id) > started)
     }
 
     fn resume_is_owed(&self, task: &TaskId) -> Result<bool> {

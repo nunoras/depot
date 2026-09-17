@@ -99,6 +99,7 @@ fn need_for(tag: FactTag, task: Option<&Task>) -> Need {
         | FactTag::TaskApproved
         | FactTag::TaskCancelled
         | FactTag::QuestionAnswered
+        | FactTag::WorkerTurnLaunchRequested
         | FactTag::WorkerTurnStarted
         | FactTag::WorkerTurnEnded
         | FactTag::WorkerSubmissionRecorded
@@ -139,6 +140,7 @@ fn headline(tag: FactTag, task: Option<&Task>) -> String {
             None => "asked a question that is already answered".to_string(),
         },
         FactTag::QuestionAnswered => "answered".to_string(),
+        FactTag::WorkerTurnLaunchRequested => "worker turn launch requested".to_string(),
         FactTag::WorkerTurnStarted => "worker turn started".to_string(),
         FactTag::WorkerTurnEnded => "worker turn ended".to_string(),
         FactTag::WorkerLivenessChanged => match task.map(|task| task.state) {

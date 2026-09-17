@@ -375,7 +375,9 @@ impl Golden {
     pub fn state_history(&self, task: &str) -> Vec<String> {
         self.history(task)
             .into_iter()
-            .filter(|kind| kind != "worker_liveness_changed")
+            .filter(|kind| {
+                kind != "worker_liveness_changed" && kind != "worker_turn_launch_requested"
+            })
             .collect()
     }
 

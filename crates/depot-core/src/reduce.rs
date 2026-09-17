@@ -140,6 +140,8 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             }
         }
 
+        FactKind::WorkerTurnLaunchRequested { .. } => {}
+
         FactKind::WorkerTurnStarted { task, session } => {
             if let Some(task) = next.tasks.get_mut(task)
                 && task.state.in_flight()

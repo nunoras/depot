@@ -11,6 +11,7 @@ use support::{
 const PROPOSED: &str = "task_proposed";
 const APPROVED: &str = "task_approved";
 const ACQUIRED: &str = "worktree_acquired";
+const LAUNCH_REQUESTED: &str = "worker_turn_launch_requested";
 const TURN_STARTED: &str = "worker_turn_started";
 const LIVENESS: &str = "worker_liveness_changed";
 const ASKED: &str = "question_asked";
@@ -423,6 +424,33 @@ fn a_failed_validation_opens_no_pull_request_and_keeps_the_branch() {
             VALIDATED
         ]
     );
+}
+
+#[test]
+fn a_restart_with_a_launch_intent_does_not_launch_a_second_worker() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden
+        .boxr
+        .respond("--harness", "", "launch interrupted", 1);
+    golden.propose();
+
+    assert!(daemon.tick().is_err(), "the launch is interrupted");
+    assert!(golden.history(TASK).contains(&LAUNCH_REQUESTED.to_string()));
+    assert!(!golden.history(TASK).contains(&TURN_STARTED.to_string()));
+
+    golden
+        .boxr
+        .respond("--harness", &format!("{SESSION}\n"), "", 0);
+    daemon
+        .recover()
+        .expect("recovery leaves the intent unresolved");
+
+    let task = golden.task();
+    assert_eq!(task.state, TaskState::Running);
+    assert_eq!(task.attempts[0].outcome, AttemptOutcome::Unknown);
+    assert_eq!(task.attempts[0].session, None);
+    assert_eq!(golden.boxr.calls_to("--harness").len(), 1);
 }
 
 #[test]

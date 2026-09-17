@@ -1,4 +1,5 @@
 use std::env;
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -13,20 +14,29 @@ const RECORD: char = '\u{1e}';
 
 pub struct FakeBoxr {
     root: PathBuf,
-    binary: PathBuf,
+    executable_directory: PathBuf,
 }
 
 impl FakeBoxr {
     pub fn new(root: &Path) -> Self {
         fs::create_dir_all(root).expect("the fake boxr directory is created");
+        let executable_directory = root
+            .parent()
+            .expect("the fake boxr directory has a parent")
+            .join("bin");
+        fs::create_dir_all(&executable_directory).expect("the fake boxr bin directory is created");
+        fs::copy(binary(), executable_directory.join(executable_name()))
+            .expect("the fake boxr executable is installed on PATH");
         Self {
             root: root.to_owned(),
-            binary: binary(),
+            executable_directory,
         }
     }
 
     pub fn program(&self) -> Program {
-        Program::new(&self.binary).with_env(DIRECTORY, &self.root)
+        Program::new(executable_name())
+            .with_env(DIRECTORY, &self.root)
+            .with_env("PATH", self.path())
     }
 
     pub fn respond(&self, key: &str, stdout: &str, stderr: &str, exit_code: u8) {
@@ -79,6 +89,18 @@ impl FakeBoxr {
             .into_iter()
             .filter(|arguments| arguments.first().is_some_and(|first| first == command))
             .collect()
+    }
+}
+
+fn executable_name() -> &'static str {
+    if cfg!(windows) { "boxr.exe" } else { "boxr" }
+}
+
+impl FakeBoxr {
+    fn path(&self) -> OsString {
+        let mut paths = vec![self.executable_directory.clone()];
+        paths.extend(env::split_paths(&env::var_os("PATH").unwrap_or_default()));
+        env::join_paths(paths).expect("the fake boxr PATH is joined")
     }
 }
 

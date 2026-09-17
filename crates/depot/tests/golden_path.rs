@@ -542,6 +542,7 @@ fn a_restart_with_a_task_in_flight_marks_it_unknown_and_launches_no_replacement(
     assert_eq!(in_flight.state, TaskState::Running);
     assert_eq!(in_flight.attempts.len(), 1);
     assert_eq!(in_flight.attempts[0].outcome, AttemptOutcome::InFlight);
+    assert!(golden.history(TASK).contains(&LAUNCH_REQUESTED.to_string()));
 
     let _lock =
         InstanceLock::acquire(&golden.home).expect("the lock is free once the first daemon stops");
@@ -559,7 +560,11 @@ fn a_restart_with_a_task_in_flight_marks_it_unknown_and_launches_no_replacement(
         depotd::StderrNotifier,
     );
 
-    golden.restart(&daemon);
+    golden.boxr.respond("status", "", "status interrupted", 1);
+    assert!(
+        daemon.recover().is_err(),
+        "recovery cannot observe liveness"
+    );
     let marked = golden.task();
     assert_eq!(marked.state, TaskState::Running);
     assert_eq!(

@@ -18,13 +18,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use depot_core::{Fact, Task, TaskId, Timestamp};
+use depot_core::{Task, TaskId};
 use depotd::adapters::forge::GitHub;
 use depotd::adapters::sessions::{Boxr, Sessions};
 use depotd::adapters::worktrees::Treehouse;
 use depotd::{
     Daemon, DepotHome, ForgeDelivery, HOME_ENV, ProfileSettings, Project, RecordedEvent, Settings,
-    ShellValidation, StderrNotifier, Store, event_key,
+    ShellValidation, StderrNotifier, Store,
 };
 use fake_forge::FakeForge;
 use fake_program::FakeProgram;
@@ -396,28 +396,6 @@ impl Golden {
             .collect()
     }
 
-    pub fn restart(
-        &self,
-        daemon: &Daemon<
-            '_,
-            Boxr,
-            Treehouse,
-            ShellValidation,
-            ForgeDelivery<GitHub>,
-            StderrNotifier,
-        >,
-    ) {
-        daemon
-            .record(
-                &event_key(&["daemon_restarted", "the fixture restarted depot"]),
-                Fact {
-                    at: Timestamp::from_millis(now_millis()),
-                    kind: depot_core::FactKind::DaemonRestarted,
-                },
-            )
-            .expect("the restart is recorded");
-    }
-
     pub fn script_pull_request(&self, commit: &str) {
         self.forge.route(
             "GET",
@@ -549,13 +527,6 @@ fn with_program(directory: &Path) -> OsString {
     let mut paths = vec![directory.to_path_buf()];
     paths.extend(env::split_paths(&env::var_os("PATH").unwrap_or_default()));
     env::join_paths(paths).expect("the path is joined")
-}
-
-fn now_millis() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_millis() as u64)
-        .unwrap_or_default()
 }
 
 fn lease_identity(lease: &Path, id: &str) -> String {

@@ -240,6 +240,19 @@ impl Golden {
             .respond("status", &pool(&self.lease, LEASE), "", 0);
     }
 
+    pub fn map_build_role(&self, profile: Option<&str>) {
+        let path = self.repo.join(depotd::PROJECT_CONFIG_FILE_NAME);
+        let text = fs::read_to_string(&path).expect("the project config is readable");
+        let mut config =
+            depotd::ProjectConfig::from_toml(&text).expect("the project config parses");
+        config.profiles = profile
+            .map(|profile| BTreeMap::from([("build".to_string(), profile.to_string())]))
+            .unwrap_or_default();
+        config
+            .write(&self.repo)
+            .expect("the project config is written");
+    }
+
     pub fn daemon(
         &self,
     ) -> Daemon<'_, Boxr, Treehouse, ShellValidation, ForgeDelivery<GitHub>, StderrNotifier> {

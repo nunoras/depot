@@ -462,17 +462,6 @@ where
         if attempt == 0 {
             return Err(Error::Project(format!("task `{task}` has no attempt")));
         }
-        self.record(
-            &event_key(&[
-                "worker_turn_launch_requested",
-                task.as_str(),
-                &attempt.to_string(),
-            ]),
-            Fact {
-                at: now(),
-                kind: FactKind::WorkerTurnLaunchRequested { task: task.clone() },
-            },
-        )?;
         let config = self.store.project_config(&self.project)?;
         let settings = self.store.home().load_settings()?;
         let profiles = settings.configured_profiles(&config)?;
@@ -492,6 +481,21 @@ where
                     ))
                 })?
         };
+        let brief = self
+            .store
+            .coordinator_context(&self.project)?
+            .brief(&task_record)?;
+        self.record(
+            &event_key(&[
+                "worker_turn_launch_requested",
+                task.as_str(),
+                &attempt.to_string(),
+            ]),
+            Fact {
+                at: now(),
+                kind: FactKind::WorkerTurnLaunchRequested { task: task.clone() },
+            },
+        )?;
         let session = self
             .sessions
             .launch(&LaunchRequest {
@@ -503,10 +507,7 @@ where
                     effort: spec.effort,
                 },
                 kind: Some("worker".to_string()),
-                prompt: self
-                    .store
-                    .coordinator_context(&self.project)?
-                    .brief(&task_record)?,
+                prompt: brief,
             })
             .map_err(|error| Error::Project(error.to_string()))?;
         self.record(

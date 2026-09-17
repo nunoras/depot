@@ -925,6 +925,64 @@ fn a_restart_with_a_launch_intent_surfaces_it_rather_than_launching_again() {
 }
 
 #[test]
+fn a_configuration_error_before_a_launch_leaves_the_task_launchable() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    golden.map_build_role(None);
+
+    assert!(
+        daemon.tick().is_err(),
+        "the daemon reports the configuration problem"
+    );
+    assert!(
+        !golden.history(TASK).contains(&LAUNCH_REQUESTED.to_string()),
+        "nothing was launched, so the journal holds no launch intent"
+    );
+    assert!(golden.boxr.calls_to("--harness").is_empty());
+
+    let blocked = golden.task();
+    assert_eq!(blocked.state, TaskState::Running);
+    assert_eq!(blocked.attempts[0].session, None);
+    assert_eq!(
+        blocked.attempts[0].worktree,
+        Some(WorktreeLease::new(LEASE))
+    );
+
+    golden.map_build_role(Some(PROFILE));
+    daemon
+        .tick()
+        .expect("the daemon launches once the configuration is right");
+
+    let launched = golden.task();
+    assert_eq!(launched.state, TaskState::Running);
+    assert_eq!(launched.attempts.len(), 1, "no replacement attempt");
+    assert_eq!(
+        launched.attempts[0].session,
+        Some(SessionId::new(SESSION)),
+        "the configuration is read again and the worker launches"
+    );
+    assert_eq!(
+        golden.boxr.calls_to("--harness").len(),
+        1,
+        "the worker launches once"
+    );
+    assert!(golden.history(TASK).contains(&LAUNCH_REQUESTED.to_string()));
+    assert!(golden.history(TASK).contains(&TURN_STARTED.to_string()));
+
+    let running = golden.status();
+    assert!(running.contains("Running (1)"), "{running}");
+    assert!(!running.contains("Blocked"), "{running}");
+    assert_eq!(running, golden.checklist());
+
+    let inbox = golden.depot_ok(&["inbox", "--project", SLUG]);
+    assert!(
+        !inbox.contains("a worker turn could not be resolved"),
+        "no worker may have been launched, got\n{inbox}"
+    );
+}
+
+#[test]
 fn a_restart_with_a_task_in_flight_marks_it_unknown_and_launches_no_replacement() {
     let golden = Golden::new(Validation::Passing);
 

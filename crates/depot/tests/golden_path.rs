@@ -1,0 +1,512 @@
+mod support;
+
+use depot_core::{AttemptOutcome, CommitId, ProfileId, SessionId, TaskState, WorktreeLease};
+use depotd::InstanceLock;
+use support::git;
+use support::{
+    ACCOUNT, BRANCH, Golden, HARNESS, LEASE, MODEL, PROFILE, SESSION, SLUG, TASK, Validation,
+    calls_to,
+};
+
+const PROPOSED: &str = "task_proposed";
+const APPROVED: &str = "task_approved";
+const ACQUIRED: &str = "worktree_acquired";
+const TURN_STARTED: &str = "worker_turn_started";
+const LIVENESS: &str = "worker_liveness_changed";
+const ASKED: &str = "question_asked";
+const ANSWERED: &str = "question_answered";
+const SUBMITTED: &str = "worker_submitted";
+const VALIDATED: &str = "validation_finished";
+const PUSHED: &str = "branch_pushed";
+const OPENED: &str = "pull_request_opened";
+const CHECKS: &str = "pull_request_checks_changed";
+const MERGED: &str = "pull_request_merged";
+const RESTARTED: &str = "daemon_restarted";
+
+#[test]
+fn the_whole_journey_runs_from_proposal_to_a_released_worktree() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+
+    let added = golden.depot_ok(&[
+        "task",
+        "add",
+        "--title",
+        "Wire the store",
+        "--intent",
+        "Persist the records in sqlite.",
+        "--role",
+        "build",
+        "--project",
+        SLUG,
+    ]);
+    assert_eq!(added, format!("added {TASK}\n"));
+
+    let held = golden.status();
+    assert!(held.contains("Held - awaiting approval (1)"), "{held}");
+    assert!(held.contains("waits on: approval"), "{held}");
+    assert_eq!(
+        held,
+        golden.checklist(),
+        "the checklist is rendered from the records"
+    );
+
+    assert_eq!(
+        golden.depot_ok(&["task", "approve", TASK, "--project", SLUG]),
+        format!("approved {TASK}\n")
+    );
+    assert_eq!(
+        golden.task().state,
+        TaskState::Running,
+        "approving a task starts it; the daemon then leases a worktree and launches the worker"
+    );
+
+    daemon.tick().expect("the daemon launches the worker");
+    daemon.tick().expect("a further poll changes nothing");
+
+    let launched = golden.task();
+    assert_eq!(launched.state, TaskState::Running);
+    assert_eq!(launched.attempts.len(), 1);
+    assert_eq!(launched.attempts[0].session, Some(SessionId::new(SESSION)));
+    assert_eq!(
+        launched.attempts[0].worktree,
+        Some(WorktreeLease::new(LEASE))
+    );
+    assert_eq!(launched.attempts[0].profile, ProfileId::new(PROFILE));
+    assert!(
+        golden
+            .status()
+            .contains(&format!("a worker turn in worktree lease `{LEASE}`"))
+    );
+
+    let launch = golden.boxr.calls_to("--harness");
+    assert_eq!(launch.len(), 1, "one worker is launched, {launch:?}");
+    let brief = golden
+        .store
+        .coordinator_context(&golden.project)
+        .expect("the coordinator context")
+        .brief(&launched)
+        .expect("the brief is rendered");
+    assert_eq!(
+        launch[0],
+        vec![
+            "--harness",
+            HARNESS,
+            "--model",
+            MODEL,
+            "--effort",
+            "high",
+            "--account",
+            ACCOUNT,
+            "--kind",
+            "worker",
+            "--detach",
+            &brief,
+        ],
+        "the launch names the resolved profile and carries the brief"
+    );
+    assert_eq!(
+        golden.treehouse.calls(),
+        vec![
+            format!("get --lease --json --lease-holder depot:{TASK}"),
+            "status --json".to_string(),
+        ]
+    );
+
+    let submitted = golden.worker_commits_and_submits();
+    assert_eq!(
+        submitted.status.code(),
+        Some(0),
+        "the worker script failed: {}",
+        support::stderr(&submitted)
+    );
+    assert!(
+        support::stdout(&submitted).ends_with(&format!("submitted {TASK}\n")),
+        "the worker reports its submission: {}",
+        support::stdout(&submitted)
+    );
+    let commit = golden.head();
+    assert_eq!(golden.task().state, TaskState::Validating);
+
+    golden.script_pull_request(&commit);
+    daemon
+        .tick()
+        .expect("the daemon validates the commit and opens the pull request");
+
+    let opened = golden.task();
+    assert_eq!(opened.state, TaskState::PrOpen);
+    assert_eq!(
+        opened
+            .pull_request()
+            .map(|(number, _, checks)| (number, checks)),
+        Some((1, depot_core::Checks::Passing))
+    );
+    assert_eq!(opened.validations.len(), 1);
+    assert_eq!(opened.validations[0].commit, CommitId::new(commit.clone()));
+    assert_eq!(opened.validations[0].exit_code, 0);
+    assert_eq!(
+        opened.validations[0].output_tail.trim(),
+        support::PASSING_OUTPUT
+    );
+    assert_eq!(opened.branch_head, Some(CommitId::new(commit.clone())));
+    assert_eq!(
+        git::git(
+            &golden.origin,
+            &["rev-parse", &format!("refs/heads/{BRANCH}")]
+        )
+        .trim(),
+        commit
+    );
+
+    let requests = golden.forge.requests();
+    let pull_request = requests
+        .iter()
+        .find(|request| request.method == "POST")
+        .expect("the daemon opened a pull request");
+    assert_eq!(pull_request.path, "/repos/nunoras/depot/pulls");
+    assert!(pull_request.body.contains("Persist the records in sqlite."));
+    assert!(pull_request.body.contains(&format!("`{commit}`")));
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.path.ends_with("/check-runs"))
+    );
+
+    let open = golden.status();
+    assert!(open.contains("Pull request open (1)"), "{open}");
+    assert!(open.contains("checks passing"), "{open}");
+    assert!(!open.contains("pull request merged"), "{open}");
+    assert_eq!(open, golden.checklist());
+
+    golden.script_merge(&commit);
+    daemon.tick().expect("the daemon observes the merge");
+
+    let landed = golden.task();
+    assert_eq!(landed.state, TaskState::Landed);
+    assert_eq!(golden.pull_requests_opened(), 1);
+    assert_eq!(
+        calls_to(&golden.treehouse.calls(), "return").len(),
+        1,
+        "the worktree returns to the pool once"
+    );
+    assert_eq!(
+        calls_to(&golden.treehouse.calls(), "get").len(),
+        1,
+        "the task leases one worktree"
+    );
+
+    let before = golden.events().len();
+    let forge_calls = golden.forge.requests().len();
+    daemon
+        .tick()
+        .expect("a poll after the merge changes nothing");
+    assert_eq!(golden.task().state, TaskState::Landed);
+    assert_eq!(
+        golden.events().len(),
+        before + 1,
+        "only the poll itself is recorded"
+    );
+    assert_eq!(golden.forge.requests().len(), forge_calls);
+    assert_eq!(golden.pull_requests_opened(), 1);
+
+    let final_checklist = golden.status();
+    assert!(final_checklist.contains("Landed (1)"), "{final_checklist}");
+    assert!(
+        final_checklist.contains("waits on: nothing"),
+        "{final_checklist}"
+    );
+    assert_eq!(final_checklist, golden.checklist());
+
+    assert_eq!(
+        golden.state_history(TASK),
+        vec![
+            PROPOSED,
+            APPROVED,
+            ACQUIRED,
+            TURN_STARTED,
+            SUBMITTED,
+            VALIDATED,
+            PUSHED,
+            OPENED,
+            CHECKS,
+            MERGED,
+        ]
+    );
+    assert!(golden.history(TASK).contains(&LIVENESS.to_string()));
+}
+
+#[test]
+fn a_worker_question_is_relayed_answered_and_the_worker_resumes_with_the_answer() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    assert_eq!(golden.task().state, TaskState::Running);
+
+    golden.boxr.report_finished();
+    let asked = golden.worker_commits_and_asks("Which store?");
+    assert_eq!(
+        asked.status.code(),
+        Some(0),
+        "the worker script failed: {}",
+        support::stderr(&asked)
+    );
+    assert!(
+        support::stdout(&asked).ends_with(&format!("asked {TASK}\n")),
+        "the worker reports its question: {}",
+        support::stdout(&asked)
+    );
+    assert!(
+        support::stderr(&asked).contains("waiting on a question"),
+        "the worker is notified: {}",
+        support::stderr(&asked)
+    );
+
+    let waiting = golden.task();
+    assert_eq!(waiting.state, TaskState::WaitingOnQuestion);
+    assert_eq!(waiting.questions.len(), 1);
+    assert_eq!(waiting.questions[0].text, "Which store?");
+    assert!(waiting.questions[0].answer.is_none());
+
+    let relayed = golden.status();
+    assert!(relayed.contains("Waiting on a question (1)"), "{relayed}");
+    assert!(relayed.contains("Which store?"), "{relayed}");
+    assert_eq!(relayed, golden.checklist());
+
+    let inbox = golden.depot_ok(&["inbox", "--project", SLUG]);
+    assert!(inbox.contains("## For the user (1)"), "{inbox}");
+    assert!(inbox.contains("Which store?"), "{inbox}");
+    assert!(inbox.contains("waiting_on_question"), "{inbox}");
+
+    daemon
+        .tick()
+        .expect("the daemon sees the paused worker and leaves it alone");
+    assert_eq!(golden.task().state, TaskState::WaitingOnQuestion);
+    assert_eq!(
+        golden.task().attempts[0].outcome,
+        AttemptOutcome::InFlight,
+        "a paused worker is not a dead worker"
+    );
+    assert!(golden.boxr.calls_to("resume").is_empty());
+    assert!(golden.boxr.calls_to("stop").is_empty());
+
+    assert_eq!(
+        golden.depot_ok(&[
+            "task",
+            "answer",
+            TASK,
+            "--text",
+            "sqlite in the depot home.",
+            "--by",
+            "user",
+            "--project",
+            SLUG,
+        ]),
+        format!("answered {TASK}\n")
+    );
+    assert_eq!(golden.task().state, TaskState::Running);
+
+    golden.boxr.report_running();
+    daemon.tick().expect("the daemon resumes the session");
+    let resumed = golden.boxr.calls_to("resume");
+    assert_eq!(resumed.len(), 1, "the worker is resumed once");
+    assert_eq!(
+        resumed[0],
+        vec![
+            "resume",
+            SESSION,
+            "Your question \"Which store?\" was answered: sqlite in the depot home. Continue the task.",
+        ]
+    );
+
+    daemon
+        .tick()
+        .expect("a further poll does not resume the worker again");
+    assert_eq!(golden.boxr.calls_to("resume").len(), 1);
+
+    let submitted = golden.worker_submits();
+    assert_eq!(
+        submitted.status.code(),
+        Some(0),
+        "the worker script failed: {}",
+        support::stderr(&submitted)
+    );
+    golden.script_pull_request(&golden.head());
+    daemon.tick().expect("the daemon validates and publishes");
+    assert_eq!(golden.task().state, TaskState::PrOpen);
+
+    assert_eq!(
+        golden.state_history(TASK),
+        vec![
+            PROPOSED,
+            APPROVED,
+            ACQUIRED,
+            TURN_STARTED,
+            ASKED,
+            ANSWERED,
+            TURN_STARTED,
+            SUBMITTED,
+            VALIDATED,
+            PUSHED,
+            OPENED,
+            CHECKS,
+        ]
+    );
+}
+
+#[test]
+fn a_failed_validation_opens_no_pull_request_and_keeps_the_branch() {
+    let golden = Golden::new(Validation::Failing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+
+    let submitted = golden.worker_commits_and_submits();
+    assert_eq!(submitted.status.code(), Some(0));
+    let commit = golden.head();
+    daemon.tick().expect("the daemon validates the commit");
+
+    let failed = golden.task();
+    assert_eq!(failed.state, TaskState::Failed);
+    assert_eq!(failed.validations.len(), 1);
+    assert_eq!(failed.validations[0].commit, CommitId::new(commit.clone()));
+    assert_eq!(failed.validations[0].exit_code, 1);
+    assert!(
+        failed.validations[0]
+            .output_tail
+            .contains(support::FAILING_OUTPUT),
+        "the validation output is attached: {}",
+        failed.validations[0].output_tail
+    );
+    assert_eq!(failed.branch_head, None);
+    assert_eq!(
+        failed.attempts[0].worktree,
+        Some(WorktreeLease::new(LEASE)),
+        "a failed validation keeps the worktree"
+    );
+
+    assert_eq!(golden.pull_requests_opened(), 0);
+    assert!(
+        golden
+            .forge
+            .requests()
+            .iter()
+            .all(|request| request.method == "GET"),
+        "no pull request is opened"
+    );
+    assert!(calls_to(&golden.treehouse.calls(), "return").is_empty());
+    assert_eq!(calls_to(&golden.treehouse.calls(), "get").len(), 1);
+    assert_eq!(git::head(&golden.lease), commit);
+    assert_eq!(
+        git::git(&golden.lease, &["branch", "--show-current"]).trim(),
+        BRANCH
+    );
+
+    let blocked = golden.status();
+    assert!(
+        blocked.contains("Blocked - needs a person (1)"),
+        "{blocked}"
+    );
+    assert!(blocked.contains("waits on: a person"), "{blocked}");
+    assert!(blocked.contains("exited 1"), "{blocked}");
+    assert!(blocked.contains(&commit), "{blocked}");
+    assert_eq!(blocked, golden.checklist());
+
+    assert_eq!(
+        golden.state_history(TASK),
+        vec![
+            PROPOSED,
+            APPROVED,
+            ACQUIRED,
+            TURN_STARTED,
+            SUBMITTED,
+            VALIDATED
+        ]
+    );
+}
+
+#[test]
+fn a_restart_with_a_task_in_flight_marks_it_unknown_and_launches_no_replacement() {
+    let golden = Golden::new(Validation::Passing);
+
+    {
+        let _lock = InstanceLock::acquire(&golden.home).expect("the daemon takes the single lock");
+        assert!(
+            InstanceLock::acquire(&golden.home).is_err(),
+            "a second daemon cannot run against the same home"
+        );
+        let daemon = golden.daemon();
+        golden.propose();
+        daemon.tick().expect("the daemon launches the worker");
+    }
+
+    let in_flight = golden.task();
+    assert_eq!(in_flight.state, TaskState::Running);
+    assert_eq!(in_flight.attempts.len(), 1);
+    assert_eq!(in_flight.attempts[0].outcome, AttemptOutcome::InFlight);
+
+    let _lock =
+        InstanceLock::acquire(&golden.home).expect("the lock is free once the first daemon stops");
+    let store = depotd::Store::open(&golden.home).expect("the restarted daemon reopens the store");
+    let daemon = depotd::Daemon::new(
+        &store,
+        golden.project.clone(),
+        depotd::adapters::sessions::Boxr::new(golden.boxr.program()),
+        depotd::adapters::worktrees::Treehouse::new(golden.treehouse.program()),
+        depotd::ShellValidation,
+        depotd::ForgeDelivery::new(
+            depotd::adapters::forge::GitHub::new(golden.forge.base_url(), support::TOKEN),
+            "main",
+        ),
+        depotd::StderrNotifier,
+    );
+
+    golden.restart(&daemon);
+    let marked = golden.task();
+    assert_eq!(marked.state, TaskState::Running);
+    assert_eq!(
+        marked.attempts[0].outcome,
+        AttemptOutcome::Unknown,
+        "recovery marks the in-flight attempt unknown instead of guessing"
+    );
+
+    golden.boxr.report_running();
+    daemon
+        .recover()
+        .expect("recovery reconciles from the records");
+
+    let recovered = golden.task();
+    assert_eq!(recovered.state, TaskState::Running);
+    assert_eq!(recovered.attempts.len(), 1, "no replacement attempt");
+    assert_eq!(recovered.attempts[0].outcome, AttemptOutcome::InFlight);
+    assert_eq!(recovered.attempts[0].session, Some(SessionId::new(SESSION)));
+    assert_eq!(
+        recovered.attempts[0].worktree,
+        Some(WorktreeLease::new(LEASE))
+    );
+
+    assert_eq!(
+        golden.boxr.calls_to("--harness").len(),
+        1,
+        "no duplicate worker"
+    );
+    assert_eq!(golden.boxr.calls_to("--version").len(), 1);
+    assert_eq!(
+        calls_to(&golden.treehouse.calls(), "get").len(),
+        1,
+        "no duplicate worktree"
+    );
+    assert!(calls_to(&golden.treehouse.calls(), "return").is_empty());
+
+    assert!(!golden.history(TASK).contains(&RESTARTED.to_string()));
+    assert!(
+        golden.events().iter().any(|event| event.kind == RESTARTED),
+        "the restart is recorded on the journal"
+    );
+    assert!(golden.history(TASK).contains(&LIVENESS.to_string()));
+
+    let running = golden.status();
+    assert!(running.contains("Running (1)"), "{running}");
+    assert!(!running.contains("Blocked"), "{running}");
+    assert_eq!(running, golden.checklist());
+}

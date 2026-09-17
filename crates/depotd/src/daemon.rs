@@ -6,11 +6,11 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use depot_core::{
-    Action, Baseline, CommitId, Fact, FactKind, Liveness, SessionId, Task, TaskId, TaskState,
-    WorktreeLease,
+    Action, Baseline, Checks, CommitId, Fact, FactKind, Liveness, SessionId, Task, TaskId,
+    TaskState, WorktreeLease,
 };
 
-use crate::adapters::forge::{Forge, NewPullRequest, RepoSlug};
+use crate::adapters::forge::{Forge, NewPullRequest, PrState, RepoSlug};
 use crate::adapters::profiles::ProfileResolver;
 use crate::adapters::sessions::{LaunchRequest, SessionProfile, Sessions};
 use crate::adapters::worktrees::{AcquireRequest, Lease, Worktrees};
@@ -19,6 +19,7 @@ use crate::error::{Error, Result};
 use crate::home::DepotHome;
 use crate::project::{LocationKind, Project};
 use crate::store::{EventOutcome, Store, event_key};
+use crate::vocabulary::{FactTag, checks_name, fact_tag_name};
 
 pub const DAEMON_LOCK_FILE_NAME: &str = "depotd.lock";
 
@@ -64,6 +65,18 @@ pub trait Delivery {
         commit: &CommitId,
         body: &str,
     ) -> Result<(u64, String)>;
+    fn observe_pull_request(
+        &self,
+        task: &Task,
+        worktree: &Path,
+    ) -> Result<Option<ObservedPullRequest>>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObservedPullRequest {
+    pub state: PrState,
+    pub checks: Checks,
+    pub commit: CommitId,
 }
 
 pub struct ShellValidation;
@@ -161,6 +174,27 @@ impl<F: Forge> Delivery for ForgeDelivery<F> {
                 .map_err(|error| Error::Project(error.to_string()))?,
         };
         Ok((opened.number, opened.url))
+    }
+
+    fn observe_pull_request(
+        &self,
+        task: &Task,
+        worktree: &Path,
+    ) -> Result<Option<ObservedPullRequest>> {
+        let Some((number, _, _)) = task.pull_request() else {
+            return Ok(None);
+        };
+        let remote = git_output(worktree, &["remote", "get-url", "origin"])?;
+        let repo = repo_slug(remote.trim())?;
+        let observed = self
+            .forge
+            .pull_request(&repo, number)
+            .map_err(|error| Error::Project(error.to_string()))?;
+        Ok(Some(ObservedPullRequest {
+            state: observed.state,
+            checks: observed.checks,
+            commit: observed.head,
+        }))
     }
 }
 
@@ -289,6 +323,8 @@ where
                 kind: FactKind::DaemonRestarted,
             },
         )?;
+        self.reconcile_start()?;
+        self.reconcile_resume()?;
         self.reconcile_sessions()
     }
 
@@ -301,9 +337,12 @@ where
                 kind: FactKind::Polled,
             },
         )?;
+        self.reconcile_start()?;
+        self.reconcile_resume()?;
         self.reconcile_sessions()?;
         self.reconcile_validation()?;
-        self.reconcile_delivery()
+        self.reconcile_delivery()?;
+        self.reconcile_forge()
     }
 
     pub fn worker_submitted(&self, task: TaskId, commit: CommitId) -> Result<()> {
@@ -433,10 +472,19 @@ where
     }
 
     fn resume(&self, task: TaskId) -> Result<()> {
-        let session = self.session_for(&self.task(&task)?)?;
+        let record = self.task(&task)?;
+        let session = self.session_for(&record)?;
         self.sessions
-            .resume(&session, "An answer was recorded. Continue the task.")
-            .map_err(|error| Error::Project(error.to_string()))
+            .resume(&session, &resume_prompt(&record))
+            .map_err(|error| Error::Project(error.to_string()))?;
+        let at = now();
+        self.record(
+            &event_key(&["worker_resumed", task.as_str(), &at.millis().to_string()]),
+            Fact {
+                at,
+                kind: FactKind::WorkerTurnStarted { task, session },
+            },
+        )
     }
 
     fn stop(&self, task: TaskId) -> Result<()> {
@@ -523,6 +571,62 @@ where
         self.notifier.notify(&self.task(&task)?)
     }
 
+    fn reconcile_start(&self) -> Result<()> {
+        for task in self.store.tasks(&self.project.id)?.values() {
+            let Some(attempt) = task.attempts.last() else {
+                continue;
+            };
+            if task.state.in_flight() && open(attempt.outcome) && attempt.worktree.is_none() {
+                self.acquire(task.id.clone(), depot_core::worktree_baseline(task))?;
+            }
+        }
+        for task in self.store.tasks(&self.project.id)?.values() {
+            let Some(attempt) = task.attempts.last() else {
+                continue;
+            };
+            if task.state.in_flight()
+                && open(attempt.outcome)
+                && attempt.worktree.is_some()
+                && attempt.session.is_none()
+            {
+                self.launch(task.id.clone(), attempt.profile.clone())?;
+            }
+        }
+        Ok(())
+    }
+
+    fn reconcile_resume(&self) -> Result<()> {
+        for task in self.store.tasks(&self.project.id)?.into_values() {
+            if task.state != TaskState::Running {
+                continue;
+            }
+            let resumable = task.attempts.last().is_some_and(|attempt| {
+                matches!(
+                    attempt.outcome,
+                    depot_core::AttemptOutcome::InFlight | depot_core::AttemptOutcome::Unknown
+                ) && attempt.session.is_some()
+            });
+            if resumable && self.resume_is_owed(&task.id)? {
+                self.resume(task.id)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn resume_is_owed(&self, task: &TaskId) -> Result<bool> {
+        let answered = self.store.last_event_id(
+            &self.project.id,
+            task,
+            fact_tag_name(FactTag::QuestionAnswered),
+        )?;
+        let resumed = self.store.last_event_id(
+            &self.project.id,
+            task,
+            fact_tag_name(FactTag::WorkerTurnStarted),
+        )?;
+        Ok(answered.is_some() && answered > resumed)
+    }
+
     fn reconcile_sessions(&self) -> Result<()> {
         for task in self.store.tasks(&self.project.id)?.into_values() {
             if !task.state.in_flight() {
@@ -597,6 +701,72 @@ where
         Ok(())
     }
 
+    fn reconcile_forge(&self) -> Result<()> {
+        let state = self.store.project_state(&self.project)?;
+        for task in state.tasks.values() {
+            if task.state != TaskState::PrOpen {
+                continue;
+            }
+            let Some((_, _, recorded)) = task.pull_request() else {
+                continue;
+            };
+            let worktree = self.lease_for(task)?.path;
+            let Some(observed) = self.delivery.observe_pull_request(task, &worktree)? else {
+                continue;
+            };
+            let at = now();
+            match observed.state {
+                PrState::Merged => {
+                    self.record(
+                        &event_key(&[
+                            "pull_request_merged",
+                            task.id.as_str(),
+                            observed.commit.as_str(),
+                        ]),
+                        Fact {
+                            at,
+                            kind: FactKind::PullRequestMerged {
+                                task: task.id.clone(),
+                                commit: observed.commit,
+                            },
+                        },
+                    )?;
+                }
+                PrState::Closed => {
+                    self.record(
+                        &event_key(&["pull_request_closed_unmerged", task.id.as_str()]),
+                        Fact {
+                            at,
+                            kind: FactKind::PullRequestClosedUnmerged {
+                                task: task.id.clone(),
+                            },
+                        },
+                    )?;
+                }
+                PrState::Open => {
+                    if observed.checks != recorded {
+                        self.record(
+                            &event_key(&[
+                                "pull_request_checks_changed",
+                                task.id.as_str(),
+                                checks_name(observed.checks),
+                                &at.millis().to_string(),
+                            ]),
+                            Fact {
+                                at,
+                                kind: FactKind::PullRequestChecksChanged {
+                                    task: task.id.clone(),
+                                    checks: observed.checks,
+                                },
+                            },
+                        )?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn task(&self, id: &TaskId) -> Result<Task> {
         self.store
             .task(&self.project.id, id)?
@@ -642,6 +812,33 @@ where
                 "a URL project has no local repository to run".to_string(),
             )),
         }
+    }
+}
+
+fn open(outcome: depot_core::AttemptOutcome) -> bool {
+    matches!(
+        outcome,
+        depot_core::AttemptOutcome::InFlight | depot_core::AttemptOutcome::Unknown
+    )
+}
+
+pub fn resume_prompt(task: &Task) -> String {
+    match task
+        .questions
+        .iter()
+        .rev()
+        .find(|question| question.answer.is_some())
+    {
+        Some(question) => {
+            let answer = question.answer.as_ref().expect("the question is answered");
+            let answer = crate::checklist::one_line(&answer.text);
+            let answer = answer.strip_suffix('.').unwrap_or(&answer);
+            format!(
+                "Your question \"{}\" was answered: {answer}. Continue the task.",
+                crate::checklist::one_line(&question.text)
+            )
+        }
+        None => "An answer was recorded. Continue the task.".to_string(),
     }
 }
 

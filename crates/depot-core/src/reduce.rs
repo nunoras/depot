@@ -171,7 +171,11 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                     .last()
                     .is_some_and(|attempt| is_open(attempt.outcome))
             });
-            if in_flight && open && *liveness == Liveness::Gone {
+            let paused = next
+                .tasks
+                .get(task)
+                .is_some_and(|task| task.state == TaskState::WaitingOnQuestion);
+            if in_flight && open && !paused && *liveness == Liveness::Gone {
                 if let Some(task) = next.tasks.get_mut(task) {
                     if let Some(attempt) = task.attempts.last_mut() {
                         attempt.outcome = AttemptOutcome::Failed;
@@ -773,7 +777,7 @@ fn retry_due(task: &Task, at: Timestamp) -> bool {
         .is_none_or(|retry| retry.not_before <= at)
 }
 
-fn worktree_baseline(task: &Task) -> Baseline {
+pub fn worktree_baseline(task: &Task) -> Baseline {
     let base = task
         .base_dependency
         .as_ref()

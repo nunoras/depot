@@ -83,6 +83,27 @@ impl FakeForge {
             });
     }
 
+    #[allow(dead_code)]
+    pub fn replace_route(&self, method: &str, path: &str, status: u16, body: &str) {
+        let mut routes = self.routes.lock().expect("the routes are readable");
+        let route = routes
+            .iter_mut()
+            .find(|route| route.method == method && route.path == path);
+        match route {
+            Some(route) => {
+                route.status = status;
+                route.body = body.to_owned();
+            }
+            None => routes.push(Route {
+                method: method.to_owned(),
+                path: path.to_owned(),
+                query: None,
+                status,
+                body: body.to_owned(),
+            }),
+        }
+    }
+
     pub fn requests(&self) -> Vec<Recorded> {
         self.requests
             .lock()

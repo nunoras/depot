@@ -42,6 +42,7 @@ version = "0.1.0"
 dependencies = [
  "depot-core",
  "depotd",
+ "serde_json",
  "tempfile",
 ]
 

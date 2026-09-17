@@ -400,6 +400,24 @@ where
     }
 
     fn acquire(&self, task: TaskId, baseline: Baseline) -> Result<()> {
+        if self.acquire_is_pending(&task)? {
+            return Ok(());
+        }
+        let attempt = self.task(&task)?.attempts.len();
+        if attempt == 0 {
+            return Err(Error::Project(format!("task `{task}` has no attempt")));
+        }
+        self.record(
+            &event_key(&[
+                "worktree_acquire_requested",
+                task.as_str(),
+                &attempt.to_string(),
+            ]),
+            Fact {
+                at: now(),
+                kind: FactKind::WorktreeAcquireRequested { task: task.clone() },
+            },
+        )?;
         let repo = self.repository()?;
         let lease = self
             .worktrees
@@ -429,15 +447,15 @@ where
         }
         let task_record = self.task(&task)?;
         let worktree = self.lease_for(&task_record)?;
-        let attempt = task_record
-            .attempts
-            .last()
-            .ok_or_else(|| Error::Project(format!("task `{task}` has no attempt")))?;
+        let attempt = task_record.attempts.len();
+        if attempt == 0 {
+            return Err(Error::Project(format!("task `{task}` has no attempt")));
+        }
         self.record(
             &event_key(&[
                 "worker_turn_launch_requested",
                 task.as_str(),
-                &attempt.started_at.millis().to_string(),
+                &attempt.to_string(),
             ]),
             Fact {
                 at: now(),
@@ -490,8 +508,25 @@ where
     }
 
     fn resume(&self, task: TaskId) -> Result<()> {
+        if self.resume_is_pending(&task)? {
+            return Ok(());
+        }
         let record = self.task(&task)?;
         let session = self.session_for(&record)?;
+        let answered = self
+            .latest_answered(&task)?
+            .ok_or_else(|| Error::Project(format!("task `{task}` has no answer to resume")))?;
+        self.record(
+            &event_key(&[
+                "worker_turn_resume_requested",
+                task.as_str(),
+                &answered.to_string(),
+            ]),
+            Fact {
+                at: now(),
+                kind: FactKind::WorkerTurnResumeRequested { task: task.clone() },
+            },
+        )?;
         self.sessions
             .resume(&session, &resume_prompt(&record))
             .map_err(|error| Error::Project(error.to_string()))?;
@@ -594,7 +629,11 @@ where
             let Some(attempt) = task.attempts.last() else {
                 continue;
             };
-            if task.state.in_flight() && open(attempt.outcome) && attempt.worktree.is_none() {
+            if task.state.in_flight()
+                && open(attempt.outcome)
+                && attempt.worktree.is_none()
+                && !self.acquire_is_pending(&task.id)?
+            {
                 self.acquire(task.id.clone(), depot_core::worktree_baseline(task))?;
             }
         }
@@ -632,16 +671,33 @@ where
         Ok(())
     }
 
-    fn launch_is_pending(&self, task: &TaskId) -> Result<bool> {
-        let Some(attempt) = self.task(task)?.attempts.last().cloned() else {
+    fn acquire_is_pending(&self, task: &TaskId) -> Result<bool> {
+        let attempt = self.task(task)?.attempts.len();
+        if attempt == 0 {
             return Ok(false);
-        };
+        }
+        let requested = self.store.event(
+            &self.project.id,
+            &event_key(&[
+                "worktree_acquire_requested",
+                task.as_str(),
+                &attempt.to_string(),
+            ]),
+        )?;
+        Ok(requested.is_some())
+    }
+
+    fn launch_is_pending(&self, task: &TaskId) -> Result<bool> {
+        let attempt = self.task(task)?.attempts.len();
+        if attempt == 0 {
+            return Ok(false);
+        }
         let requested = self.store.event(
             &self.project.id,
             &event_key(&[
                 "worker_turn_launch_requested",
                 task.as_str(),
-                &attempt.started_at.millis().to_string(),
+                &attempt.to_string(),
             ]),
         )?;
         let Some(requested) = requested else {
@@ -655,23 +711,50 @@ where
         Ok(Some(requested.id) > started)
     }
 
-    fn resume_is_owed(&self, task: &TaskId) -> Result<bool> {
-        let answered = self.store.last_event_id(
+    fn latest_answered(&self, task: &TaskId) -> Result<Option<u64>> {
+        self.store.last_event_id(
             &self.project.id,
             task,
             fact_tag_name(FactTag::QuestionAnswered),
+        )
+    }
+
+    fn resume_is_pending(&self, task: &TaskId) -> Result<bool> {
+        let Some(answered) = self.latest_answered(task)? else {
+            return Ok(false);
+        };
+        let requested = self.store.event(
+            &self.project.id,
+            &event_key(&[
+                "worker_turn_resume_requested",
+                task.as_str(),
+                &answered.to_string(),
+            ]),
         )?;
+        let Some(requested) = requested else {
+            return Ok(false);
+        };
         let resumed = self.store.last_event_id(
             &self.project.id,
             task,
             fact_tag_name(FactTag::WorkerTurnStarted),
         )?;
-        Ok(answered.is_some() && answered > resumed)
+        Ok(Some(requested.id) > resumed)
+    }
+
+    fn resume_is_owed(&self, task: &TaskId) -> Result<bool> {
+        let answered = self.latest_answered(task)?;
+        let resumed = self.store.last_event_id(
+            &self.project.id,
+            task,
+            fact_tag_name(FactTag::WorkerTurnStarted),
+        )?;
+        Ok(answered.is_some() && answered > resumed && !self.resume_is_pending(task)?)
     }
 
     fn reconcile_sessions(&self) -> Result<()> {
         for task in self.store.tasks(&self.project.id)?.into_values() {
-            if !task.state.in_flight() {
+            if !task.state.in_flight() || self.resume_is_pending(&task.id)? {
                 continue;
             }
             let Some(session) = task

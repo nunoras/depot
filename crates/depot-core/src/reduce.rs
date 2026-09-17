@@ -140,7 +140,9 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             }
         }
 
-        FactKind::WorkerTurnLaunchRequested { .. } => {}
+        FactKind::WorktreeAcquireRequested { .. }
+        | FactKind::WorkerTurnLaunchRequested { .. }
+        | FactKind::WorkerTurnResumeRequested { .. } => {}
 
         FactKind::WorkerTurnStarted { task, session } => {
             if let Some(task) = next.tasks.get_mut(task)

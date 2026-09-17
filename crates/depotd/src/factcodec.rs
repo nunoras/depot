@@ -53,7 +53,9 @@ pub fn encode_payload(kind: &FactKind) -> String {
             ("answer", quoted(answer)),
             ("by", quoted(answered_by_name(*by))),
         ]),
+        FactKind::WorktreeAcquireRequested { task } => task_field(task.as_str()),
         FactKind::WorkerTurnLaunchRequested { task } => task_field(task.as_str()),
+        FactKind::WorkerTurnResumeRequested { task } => task_field(task.as_str()),
         FactKind::WorkerTurnStarted { task, session } => object(vec![
             ("task", quoted(task.as_str())),
             ("session", quoted(session.as_str())),

@@ -220,6 +220,15 @@ impl Golden {
         }
     }
 
+    pub fn reject_worktree_acquire(&self) {
+        self.treehouse.respond("get", "", "acquire interrupted", 1);
+    }
+
+    pub fn allow_worktree_acquire(&self) {
+        self.treehouse
+            .respond("get", &lease_identity(&self.lease, LEASE), "", 0);
+    }
+
     pub fn daemon(
         &self,
     ) -> Daemon<'_, Boxr, Treehouse, ShellValidation, ForgeDelivery<GitHub>, StderrNotifier> {
@@ -376,7 +385,13 @@ impl Golden {
         self.history(task)
             .into_iter()
             .filter(|kind| {
-                kind != "worker_liveness_changed" && kind != "worker_turn_launch_requested"
+                !matches!(
+                    kind.as_str(),
+                    "worker_liveness_changed"
+                        | "worktree_acquire_requested"
+                        | "worker_turn_launch_requested"
+                        | "worker_turn_resume_requested"
+                )
             })
             .collect()
     }

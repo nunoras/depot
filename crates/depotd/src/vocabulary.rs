@@ -103,7 +103,9 @@ pub enum FactTag {
     TaskCancelled,
     QuestionAsked,
     QuestionAnswered,
+    WorktreeAcquireRequested,
     WorkerTurnLaunchRequested,
+    WorkerTurnResumeRequested,
     WorkerTurnStarted,
     WorkerTurnEnded,
     WorkerLivenessChanged,
@@ -133,7 +135,9 @@ pub fn fact_tag(kind: &FactKind) -> FactTag {
         FactKind::TaskCancelled { .. } => FactTag::TaskCancelled,
         FactKind::QuestionAsked { .. } => FactTag::QuestionAsked,
         FactKind::QuestionAnswered { .. } => FactTag::QuestionAnswered,
+        FactKind::WorktreeAcquireRequested { .. } => FactTag::WorktreeAcquireRequested,
         FactKind::WorkerTurnLaunchRequested { .. } => FactTag::WorkerTurnLaunchRequested,
+        FactKind::WorkerTurnResumeRequested { .. } => FactTag::WorkerTurnResumeRequested,
         FactKind::WorkerTurnStarted { .. } => FactTag::WorkerTurnStarted,
         FactKind::WorkerTurnEnded { .. } => FactTag::WorkerTurnEnded,
         FactKind::WorkerLivenessChanged { .. } => FactTag::WorkerLivenessChanged,
@@ -164,7 +168,9 @@ pub fn fact_tag_name(tag: FactTag) -> &'static str {
         FactTag::TaskCancelled => "task_cancelled",
         FactTag::QuestionAsked => "question_asked",
         FactTag::QuestionAnswered => "question_answered",
+        FactTag::WorktreeAcquireRequested => "worktree_acquire_requested",
         FactTag::WorkerTurnLaunchRequested => "worker_turn_launch_requested",
+        FactTag::WorkerTurnResumeRequested => "worker_turn_resume_requested",
         FactTag::WorkerTurnStarted => "worker_turn_started",
         FactTag::WorkerTurnEnded => "worker_turn_ended",
         FactTag::WorkerLivenessChanged => "worker_liveness_changed",
@@ -195,7 +201,9 @@ pub fn fact_tag_from_name(name: &str) -> Result<FactTag> {
         "task_cancelled" => FactTag::TaskCancelled,
         "question_asked" => FactTag::QuestionAsked,
         "question_answered" => FactTag::QuestionAnswered,
+        "worktree_acquire_requested" => FactTag::WorktreeAcquireRequested,
         "worker_turn_launch_requested" => FactTag::WorkerTurnLaunchRequested,
+        "worker_turn_resume_requested" => FactTag::WorkerTurnResumeRequested,
         "worker_turn_started" => FactTag::WorkerTurnStarted,
         "worker_turn_ended" => FactTag::WorkerTurnEnded,
         "worker_liveness_changed" => FactTag::WorkerLivenessChanged,
@@ -230,7 +238,9 @@ pub fn fact_task(kind: &FactKind) -> Option<TaskId> {
         | FactKind::TaskCancelled { task }
         | FactKind::QuestionAsked { task, .. }
         | FactKind::QuestionAnswered { task, .. }
+        | FactKind::WorktreeAcquireRequested { task }
         | FactKind::WorkerTurnLaunchRequested { task }
+        | FactKind::WorkerTurnResumeRequested { task }
         | FactKind::WorkerTurnStarted { task, .. }
         | FactKind::WorkerTurnEnded { task }
         | FactKind::WorkerLivenessChanged { task, .. }

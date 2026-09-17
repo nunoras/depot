@@ -9,9 +9,10 @@ That split is invisible until you follow it end to end.
 The task then looks in flight to every reader and no worker will ever exist for it, because the rule that starts a task only looks at approved ones.
 The same shape hid in two more places: an answer recorded `ResumeSession` and the worker waited forever, and nothing in the daemon ever read the forge, so a task could open a pull request but never land, release its worktree or leave the published section of the checklist.
 
-The decision is that the daemon derives what is outstanding from the records on every tick, one idempotent pass per kind of pending work, and that this - not the action list of a fact - is what moves work forward.
+The decision is that the daemon derives what is outstanding from the records on every tick, and that this - not the action list of a fact - is what moves work forward.
 `reconcile_start` leases and launches an in-flight attempt that has neither, `reconcile_resume` delivers an answer the worker has not been told about, and `reconcile_validation`, `reconcile_delivery` and `reconcile_forge` carry a submitted commit, a validated one and an open pull request to their next state.
-Each pass is a pure function of stored records, so running it twice does nothing the second time, and a restart reconciles from the same records rather than from state that did not survive the process.
+Leasing a worktree, launching a worker and resuming a worker record a durable intent before their external call, so recovery surfaces an uncompleted intent rather than repeating it.
+Validation, pushing, opening a pull request and releasing a worktree do not yet have that crash boundary, so their adapters must remain idempotent until their own durable intents exist.
 
 The alternative we rejected was to queue the actions a fact produced and have the daemon drain the queue.
 A queue is a second source of truth beside the records, it needs its own delivery and its own recovery, and a fact whose action ran but was not yet marked as run is a duplicate side effect: a second lease, a second validation run, a second pull request.

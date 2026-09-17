@@ -11,7 +11,9 @@ use support::{
 const PROPOSED: &str = "task_proposed";
 const APPROVED: &str = "task_approved";
 const ACQUIRED: &str = "worktree_acquired";
+const ACQUIRE_REQUESTED: &str = "worktree_acquire_requested";
 const LAUNCH_REQUESTED: &str = "worker_turn_launch_requested";
+const RESUME_REQUESTED: &str = "worker_turn_resume_requested";
 const TURN_STARTED: &str = "worker_turn_started";
 const LIVENESS: &str = "worker_liveness_changed";
 const ASKED: &str = "question_asked";
@@ -424,6 +426,74 @@ fn a_failed_validation_opens_no_pull_request_and_keeps_the_branch() {
             VALIDATED
         ]
     );
+}
+
+#[test]
+fn a_restart_with_a_worktree_intent_does_not_acquire_a_second_worktree() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.reject_worktree_acquire();
+    golden.propose();
+
+    assert!(daemon.tick().is_err(), "the acquire is interrupted");
+    assert!(
+        golden
+            .history(TASK)
+            .contains(&ACQUIRE_REQUESTED.to_string())
+    );
+    assert_eq!(calls_to(&golden.treehouse.calls(), "get").len(), 1);
+
+    golden.allow_worktree_acquire();
+    daemon
+        .recover()
+        .expect("recovery leaves the acquire intent unresolved");
+
+    let task = golden.task();
+    assert_eq!(task.state, TaskState::Running);
+    assert_eq!(task.attempts[0].outcome, AttemptOutcome::Unknown);
+    assert_eq!(task.attempts[0].worktree, None);
+    assert_eq!(calls_to(&golden.treehouse.calls(), "get").len(), 1);
+}
+
+#[test]
+fn a_restart_with_a_resume_intent_does_not_resume_a_second_turn() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_asks("Which store?");
+    assert_eq!(golden.task().state, TaskState::WaitingOnQuestion);
+    golden.depot_ok(&[
+        "task",
+        "answer",
+        TASK,
+        "--text",
+        "sqlite in the depot home.",
+        "--by",
+        "user",
+        "--project",
+        SLUG,
+    ]);
+    golden.boxr.respond("resume", "", "resume interrupted", 1);
+
+    assert!(daemon.tick().is_err(), "the resume is interrupted");
+    assert!(golden.history(TASK).contains(&RESUME_REQUESTED.to_string()));
+    assert_eq!(golden.boxr.calls_to("resume").len(), 1);
+
+    golden.boxr.respond(
+        "resume",
+        &format!("session: {SESSION}\nstatus: running\n"),
+        "",
+        0,
+    );
+    daemon
+        .recover()
+        .expect("recovery leaves the resume intent unresolved");
+
+    let task = golden.task();
+    assert_eq!(task.state, TaskState::Running);
+    assert_eq!(task.attempts[0].outcome, AttemptOutcome::Unknown);
+    assert_eq!(golden.boxr.calls_to("resume").len(), 1);
 }
 
 #[test]

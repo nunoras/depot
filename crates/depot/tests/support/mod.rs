@@ -319,6 +319,28 @@ impl Golden {
         ]))
     }
 
+    pub fn worker_asks_settled(&self, question: &str) -> Output {
+        self.worker(&script(&[&format!(
+            "depot ask --task {TASK} --project {SLUG} \"{question}\""
+        )]))
+    }
+
+    pub fn worker_asks_twice(&self, first: &str, second: &str) -> Output {
+        self.worker(&script(&[
+            &format!("depot ask --task {TASK} --project {SLUG} --relay \"{first}\""),
+            &format!("depot ask --task {TASK} --project {SLUG} --relay \"{second}\""),
+        ]))
+    }
+
+    pub fn fail_pull_request_read(&self) {
+        self.forge.replace_route(
+            "GET",
+            &format!("/repos/{REPOSITORY}/pulls/1"),
+            500,
+            "{\"message\":\"Internal Server Error\"}",
+        );
+    }
+
     fn worker(&self, body: &str) -> Output {
         let name = if cfg!(windows) {
             "worker.cmd"

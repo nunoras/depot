@@ -68,7 +68,7 @@ pub trait Delivery {
     fn observe_pull_request(
         &self,
         task: &Task,
-        worktree: &Path,
+        repo: &RepoSlug,
     ) -> Result<Option<ObservedPullRequest>>;
 }
 
@@ -179,16 +179,14 @@ impl<F: Forge> Delivery for ForgeDelivery<F> {
     fn observe_pull_request(
         &self,
         task: &Task,
-        worktree: &Path,
+        repo: &RepoSlug,
     ) -> Result<Option<ObservedPullRequest>> {
         let Some((number, _, _)) = task.pull_request() else {
             return Ok(None);
         };
-        let remote = git_output(worktree, &["remote", "get-url", "origin"])?;
-        let repo = repo_slug(remote.trim())?;
         let observed = self
             .forge
-            .pull_request(&repo, number)
+            .pull_request(repo, number)
             .map_err(|error| Error::Project(error.to_string()))?;
         Ok(Some(ObservedPullRequest {
             state: observed.state,
@@ -630,7 +628,7 @@ where
                 continue;
             };
             if task.state.in_flight()
-                && open(attempt.outcome)
+                && attempt.outcome.is_open()
                 && attempt.worktree.is_none()
                 && !self.acquire_is_pending(&task.id)?
             {
@@ -642,7 +640,7 @@ where
                 continue;
             };
             if task.state.in_flight()
-                && open(attempt.outcome)
+                && attempt.outcome.is_open()
                 && attempt.worktree.is_some()
                 && attempt.session.is_none()
                 && !self.launch_is_pending(&task.id)?
@@ -655,16 +653,11 @@ where
 
     fn reconcile_resume(&self) -> Result<()> {
         for task in self.store.tasks(&self.project.id)?.into_values() {
-            if task.state != TaskState::Running {
-                continue;
-            }
-            let resumable = task.attempts.last().is_some_and(|attempt| {
-                matches!(
-                    attempt.outcome,
-                    depot_core::AttemptOutcome::InFlight | depot_core::AttemptOutcome::Unknown
-                ) && attempt.session.is_some()
-            });
-            if resumable && self.resume_is_owed(&task.id)? {
+            let resumable = task
+                .attempts
+                .last()
+                .is_some_and(|attempt| attempt.outcome.is_open() && attempt.session.is_some());
+            if resumable && !task.has_unanswered_question() && self.resume_is_owed(&task.id)? {
                 self.resume(task.id)?;
             }
         }
@@ -835,8 +828,17 @@ where
             let Some((_, _, recorded)) = task.pull_request() else {
                 continue;
             };
-            let worktree = self.lease_for(task)?.path;
-            let Some(observed) = self.delivery.observe_pull_request(task, &worktree)? else {
+            let observed = match self
+                .project_repo()
+                .and_then(|repo| self.delivery.observe_pull_request(task, &repo))
+            {
+                Ok(observed) => observed,
+                Err(error) => {
+                    log("forge_unavailable", &error.to_string());
+                    continue;
+                }
+            };
+            let Some(observed) = observed else {
                 continue;
             };
             let at = now();
@@ -938,13 +940,11 @@ where
             )),
         }
     }
-}
 
-fn open(outcome: depot_core::AttemptOutcome) -> bool {
-    matches!(
-        outcome,
-        depot_core::AttemptOutcome::InFlight | depot_core::AttemptOutcome::Unknown
-    )
+    fn project_repo(&self) -> Result<RepoSlug> {
+        let remote = git_output(&self.repository()?, &["remote", "get-url", "origin"])?;
+        repo_slug(remote.trim())
+    }
 }
 
 pub fn resume_prompt(task: &Task) -> String {

@@ -1139,6 +1139,23 @@ fn rule_10_restart_reconciliation_prefers_unknown_over_a_guess() {
         )
         .when("t1", TaskState::WaitingOnQuestion, Vec::new())
         .checking(|state| holds(state, "t1", AttemptOutcome::InFlight)),
+        case(
+            "a session gone after a settled question stays paused",
+            state(vec![with_question(
+                running_with_session("t1", "s1", "w1"),
+                TaskState::Running,
+                "which database?",
+            )]),
+            vec![fact(
+                8_000,
+                FactKind::WorkerLivenessChanged {
+                    task: task_id("t1"),
+                    liveness: Liveness::Gone,
+                },
+            )],
+        )
+        .when("t1", TaskState::Running, Vec::new())
+        .checking(|state| holds(state, "t1", AttemptOutcome::InFlight)),
     ]);
 }
 

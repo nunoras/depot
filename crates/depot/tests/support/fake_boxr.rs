@@ -25,8 +25,7 @@ impl FakeBoxr {
             .expect("the fake boxr directory has a parent")
             .join("bin");
         fs::create_dir_all(&executable_directory).expect("the fake boxr bin directory is created");
-        fs::copy(binary(), executable_directory.join(executable_name()))
-            .expect("the fake boxr executable is installed on PATH");
+        install(&binary(), &executable_directory.join(executable_name()));
         Self {
             root: root.to_owned(),
             executable_directory,
@@ -94,6 +93,17 @@ impl FakeBoxr {
 
 fn executable_name() -> &'static str {
     if cfg!(windows) { "boxr.exe" } else { "boxr" }
+}
+
+#[cfg(unix)]
+fn install(source: &Path, destination: &Path) {
+    std::os::unix::fs::symlink(source, destination)
+        .expect("the fake boxr executable is installed on PATH");
+}
+
+#[cfg(not(unix))]
+fn install(source: &Path, destination: &Path) {
+    fs::copy(source, destination).expect("the fake boxr executable is installed on PATH");
 }
 
 impl FakeBoxr {

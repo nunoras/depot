@@ -172,7 +172,7 @@ fn compile(directory: &Path) -> PathBuf {
             let rustc = env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
             let output = Command::new(rustc)
                 .arg("--edition")
-                .arg("2021")
+                .arg("2024")
                 .arg(&source)
                 .arg("-o")
                 .arg(&binary)

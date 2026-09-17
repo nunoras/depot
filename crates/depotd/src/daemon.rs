@@ -12,7 +12,7 @@ use depot_core::{
 
 use crate::adapters::forge::{Forge, NewPullRequest, PrState, RepoSlug};
 use crate::adapters::profiles::ProfileResolver;
-use crate::adapters::sessions::{LaunchRequest, SessionProfile, SessionState, Sessions};
+use crate::adapters::sessions::{LaunchRequest, SessionProfile, Sessions};
 use crate::adapters::worktrees::{AcquireRequest, Lease, Worktrees};
 use crate::clock::now;
 use crate::error::{Error, Result};
@@ -22,6 +22,7 @@ use crate::store::{EventOutcome, Store, event_key};
 use crate::vocabulary::{FactTag, checks_name, fact_tag_name};
 
 pub const DAEMON_LOCK_FILE_NAME: &str = "depotd.lock";
+const MAX_RESUME_ATTEMPTS: u32 = 3;
 
 pub struct InstanceLock {
     _file: File,
@@ -551,33 +552,30 @@ where
     fn resume(&self, task: TaskId) -> Result<()> {
         let record = self.task(&task)?;
         let session = self.session_for(&record)?;
-        if self.resume_is_pending(&task)? {
-            let status = self
-                .sessions
-                .status(&session)
-                .map_err(|error| Error::Project(error.to_string()))?;
-            if status == SessionState::Running {
-                return self.record_resumed(&task, &session);
-            }
-        }
         let answered = self
             .latest_answered(&task)?
             .ok_or_else(|| Error::Project(format!("task `{task}` has no answer to resume")))?;
-        let answers = self.answers_since_turn_start(&record)?;
+        let attempt = self.resume_attempts(&task)? + 1;
+        if attempt > MAX_RESUME_ATTEMPTS {
+            return self.surface_unresolved_turn(&task);
+        }
+        let answers = self.answers_since_turn_start(&task)?;
         self.record(
             &event_key(&[
                 "worker_turn_resume_requested",
                 task.as_str(),
                 &answered.to_string(),
+                &attempt.to_string(),
             ]),
             Fact {
                 at: now(),
                 kind: FactKind::WorkerTurnResumeRequested { task: task.clone() },
             },
         )?;
-        self.sessions
-            .resume(&session, &resume_prompt(&record, &answers))
-            .map_err(|error| Error::Project(error.to_string()))?;
+        if let Err(error) = self.sessions.resume(&session, &resume_prompt(&answers)) {
+            log("resume_failed", &error.to_string());
+            return Ok(());
+        }
         self.record_resumed(&task, &session)
     }
 
@@ -766,66 +764,98 @@ where
         )
     }
 
-    fn answers_since_turn_start(&self, task: &Task) -> Result<Vec<(String, String)>> {
-        let started = self
-            .store
-            .events(&self.project.id)?
-            .into_iter()
+    fn answers_since_turn_start(&self, task: &TaskId) -> Result<Vec<(String, String)>> {
+        let events = self.store.events(&self.project.id)?;
+        let start = events
+            .iter()
             .rev()
             .find(|event| {
-                event.task.as_ref() == Some(&task.id)
+                event.task.as_ref() == Some(task)
                     && event.kind == fact_tag_name(FactTag::WorkerTurnStarted)
             })
-            .map(|event| event.at);
-        Ok(task
-            .questions
+            .map(|event| event.id)
+            .unwrap_or(0);
+        let mut open: Vec<(u32, String, bool)> = Vec::new();
+        let mut owed: Vec<(u32, String, String)> = Vec::new();
+        for event in events
             .iter()
-            .filter_map(|question| {
-                let answer = question.answer.as_ref()?;
-                if started.is_some_and(|started| answer.at <= started) {
-                    return None;
+            .filter(|event| event.task.as_ref() == Some(task))
+        {
+            match event.kind.as_str() {
+                kind if kind == fact_tag_name(FactTag::QuestionAsked) => {
+                    let asked = open.len() as u32;
+                    open.push((asked, payload_field(&event.payload, "text")?, false));
                 }
-                Some((question.text.clone(), answer.text.clone()))
-            })
+                kind if kind == fact_tag_name(FactTag::QuestionAnswered) => {
+                    let answer = payload_field(&event.payload, "answer")?;
+                    if let Some(question) =
+                        open.iter_mut().rev().find(|(_, _, answered)| !*answered)
+                    {
+                        question.2 = true;
+                        if event.id > start {
+                            owed.push((question.0, question.1.clone(), answer));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        owed.sort_by_key(|(asked, _, _)| *asked);
+        Ok(owed
+            .into_iter()
+            .map(|(_, question, answer)| (question, answer))
             .collect())
     }
 
-    fn resume_is_pending(&self, task: &TaskId) -> Result<bool> {
-        let Some(answered) = self.latest_answered(task)? else {
-            return Ok(false);
-        };
-        let requested = self.store.event(
-            &self.project.id,
-            &event_key(&[
-                "worker_turn_resume_requested",
-                task.as_str(),
-                &answered.to_string(),
-            ]),
-        )?;
-        let Some(requested) = requested else {
-            return Ok(false);
-        };
+    fn resume_attempts(&self, task: &TaskId) -> Result<u32> {
         let resumed = self.store.last_event_id(
             &self.project.id,
             task,
             fact_tag_name(FactTag::WorkerTurnStarted),
         )?;
-        Ok(Some(requested.id) > resumed)
+        let attempts = self
+            .store
+            .events_since(&self.project.id, resumed.unwrap_or(0))?
+            .into_iter()
+            .filter(|event| {
+                event.task.as_ref() == Some(task)
+                    && event.kind == fact_tag_name(FactTag::WorkerTurnResumeRequested)
+            })
+            .count();
+        Ok(attempts as u32)
     }
 
-    fn resume_is_owed(&self, task: &TaskId) -> Result<bool> {
+    fn answer_owed(&self, task: &TaskId) -> Result<bool> {
         let answered = self.latest_answered(task)?;
         let resumed = self.store.last_event_id(
             &self.project.id,
             task,
             fact_tag_name(FactTag::WorkerTurnStarted),
         )?;
-        Ok(answered.is_some() && answered > resumed && !self.resume_is_pending(task)?)
+        Ok(answered.is_some() && answered > resumed)
+    }
+
+    fn resume_is_pending(&self, task: &TaskId) -> Result<bool> {
+        let requested = self.store.last_event_id(
+            &self.project.id,
+            task,
+            fact_tag_name(FactTag::WorkerTurnResumeRequested),
+        )?;
+        let resumed = self.store.last_event_id(
+            &self.project.id,
+            task,
+            fact_tag_name(FactTag::WorkerTurnStarted),
+        )?;
+        Ok(requested > resumed)
+    }
+
+    fn resume_is_owed(&self, task: &TaskId) -> Result<bool> {
+        Ok(self.answer_owed(task)? && !self.resume_is_pending(task)?)
     }
 
     fn reconcile_sessions(&self) -> Result<()> {
         for task in self.store.tasks(&self.project.id)?.into_values() {
-            if !task.state.in_flight() {
+            if !task.state.in_flight() || self.answer_owed(&task.id)? {
                 continue;
             }
             let Some(session) = task
@@ -1025,21 +1055,8 @@ where
     }
 }
 
-pub fn resume_prompt(task: &Task, answers: &[(String, String)]) -> String {
-    let answers: Vec<(String, String)> = if answers.is_empty() {
-        task.questions
-            .iter()
-            .rev()
-            .find_map(|question| {
-                let answer = question.answer.as_ref()?;
-                Some((question.text.clone(), answer.text.clone()))
-            })
-            .into_iter()
-            .collect()
-    } else {
-        answers.to_vec()
-    };
-    match answers.as_slice() {
+pub fn resume_prompt(answers: &[(String, String)]) -> String {
+    match answers {
         [] => "An answer was recorded. Continue the task.".to_string(),
         several => {
             let answered: Vec<String> = several
@@ -1060,6 +1077,16 @@ pub fn resume_prompt(task: &Task, answers: &[(String, String)]) -> String {
 fn stripped(answer: &str) -> String {
     let answer = crate::checklist::one_line(answer);
     answer.strip_suffix('.').unwrap_or(&answer).to_owned()
+}
+
+fn payload_field(payload: &str, field: &str) -> Result<String> {
+    let value: serde_json::Value =
+        serde_json::from_str(payload).map_err(|error| Error::Schema(error.to_string()))?;
+    value
+        .get(field)
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| Error::Schema(format!("a fact payload carries no {field}")))
 }
 
 pub fn pull_request_body(task: &Task, commit: &CommitId) -> String {

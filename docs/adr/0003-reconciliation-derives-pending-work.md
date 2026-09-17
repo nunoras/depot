@@ -12,8 +12,9 @@ The same shape hid in two more places: an answer recorded `ResumeSession` and th
 The decision is that the daemon derives what is outstanding from the records on every tick, and that this - not the action list of a fact - is what moves work forward.
 `reconcile_start` leases and launches an in-flight attempt that has neither, `reconcile_resume` delivers an answer the worker has not been told about, and `reconcile_validation`, `reconcile_delivery` and `reconcile_forge` carry a submitted commit, a validated one and an open pull request to their next state.
 Leasing a worktree, launching a worker and resuming a worker record a durable intent before their external call, so recovery resolves an uncompleted intent rather than repeating it or suppressing the work forever.
-Recovery resolves an intent with no completion from the adapter itself: the pool proves whether the lease exists and boxr proves whether the session is running, so an intent the probe confirms is completed from it and an intent the probe contradicts is retried.
-A launch leaves no session id behind when the process dies before recording it, so an uncompleted launch is held for a person instead.
+The pool is the truth for a lease, so an acquire intent the pool confirms is completed from it and an acquire intent the pool contradicts is retried.
+A session state only says the process is alive, so it is never taken as proof a resume landed: the prompt is sent again on every tick up to a bounded number of attempts, and the task is held for a person once that ladder is exhausted.
+A launch leaves no session id behind when the process dies before recording it, so an uncompleted launch is held for a person at once.
 Validation, pushing, opening a pull request and releasing a worktree do not yet have that crash boundary, so their adapters must remain idempotent until their own durable intents exist.
 
 The alternative we rejected was to queue the actions a fact produced and have the daemon drain the queue.

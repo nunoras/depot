@@ -724,7 +724,7 @@ fn a_restart_without_a_leased_worktree_retries_the_acquire() {
 }
 
 #[test]
-fn a_restart_with_a_resume_intent_delivers_the_answer_the_probe_shows_never_landed() {
+fn a_failed_resume_is_retried_on_the_next_tick_and_delivers_the_answer() {
     let golden = Golden::new(Validation::Passing);
     let daemon = golden.daemon();
     golden.propose();
@@ -745,9 +745,21 @@ fn a_restart_with_a_resume_intent_delivers_the_answer_the_probe_shows_never_land
     ]);
     golden.boxr.respond("resume", "", "resume interrupted", 1);
 
-    assert!(daemon.tick().is_err(), "the resume is interrupted");
+    daemon
+        .tick()
+        .expect("a failed resume does not stop the daemon");
     assert!(golden.history(TASK).contains(&RESUME_REQUESTED.to_string()));
     assert_eq!(golden.boxr.calls_to("resume").len(), 1);
+    assert_eq!(golden.task().state, TaskState::Running);
+    assert_eq!(
+        golden
+            .history(TASK)
+            .iter()
+            .filter(|kind| kind.as_str() == TURN_STARTED)
+            .count(),
+        1,
+        "a resume that failed records no turn start"
+    );
 
     golden.boxr.respond(
         "resume",
@@ -755,18 +767,12 @@ fn a_restart_with_a_resume_intent_delivers_the_answer_the_probe_shows_never_land
         "",
         0,
     );
-    daemon
-        .recover()
-        .expect("recovery retries the resume the probe proves never landed");
+    daemon.tick().expect("the next tick retries the resume");
 
     let task = golden.task();
     assert_eq!(task.state, TaskState::Running);
     let resumed = golden.boxr.calls_to("resume");
-    assert_eq!(
-        resumed.len(),
-        2,
-        "a resume the session proves never landed is retried"
-    );
+    assert_eq!(resumed.len(), 2, "the answer is retried until it lands");
     assert_eq!(
         resumed[1],
         vec![
@@ -775,10 +781,19 @@ fn a_restart_with_a_resume_intent_delivers_the_answer_the_probe_shows_never_land
             "Your question \"Which store?\" was answered: sqlite in the depot home. Continue the task.",
         ]
     );
+    assert_eq!(
+        golden
+            .history(TASK)
+            .iter()
+            .filter(|kind| kind.as_str() == TURN_STARTED)
+            .count(),
+        2,
+        "the turn starts when the resume lands"
+    );
 }
 
 #[test]
-fn a_restart_with_a_resume_intent_does_not_resume_a_running_session_again() {
+fn a_resume_that_keeps_failing_surfaces_the_task_to_a_person() {
     let golden = Golden::new(Validation::Passing);
     let daemon = golden.daemon();
     golden.propose();
@@ -798,27 +813,55 @@ fn a_restart_with_a_resume_intent_does_not_resume_a_running_session_again() {
     ]);
     golden.boxr.respond("resume", "", "resume interrupted", 1);
 
-    assert!(daemon.tick().is_err(), "the resume is interrupted");
-    assert!(golden.history(TASK).contains(&RESUME_REQUESTED.to_string()));
-    assert_eq!(golden.boxr.calls_to("resume").len(), 1);
-
-    golden.boxr.respond(
-        "resume",
-        &format!("session: {SESSION}\nstatus: running\n"),
-        "",
-        0,
+    for _ in 0..3 {
+        daemon
+            .tick()
+            .expect("a failed resume does not stop the daemon");
+    }
+    let retrying = golden.task();
+    assert_eq!(retrying.state, TaskState::Running);
+    assert_eq!(golden.boxr.calls_to("resume").len(), 3);
+    assert_eq!(
+        golden
+            .history(TASK)
+            .iter()
+            .filter(|kind| kind.as_str() == TURN_STARTED)
+            .count(),
+        1,
+        "a running session is never taken as proof the resume landed"
     );
-    daemon
-        .recover()
-        .expect("recovery completes a resume intent the running session proves landed");
 
+    daemon
+        .tick()
+        .expect("the exhausted ladder surfaces the task to a person");
     let task = golden.task();
-    assert_eq!(task.state, TaskState::Running);
-    assert_eq!(task.attempts[0].outcome, AttemptOutcome::InFlight);
+    assert_eq!(task.state, TaskState::Failed);
     assert_eq!(
         golden.boxr.calls_to("resume").len(),
+        3,
+        "the resume ladder is bounded"
+    );
+    assert_eq!(
+        golden
+            .history(TASK)
+            .iter()
+            .filter(|kind| kind.as_str() == TURN_STARTED)
+            .count(),
         1,
-        "a running session is not resumed a second time"
+        "no turn start is fabricated for an answer that was never delivered"
+    );
+
+    let blocked = golden.status();
+    assert!(
+        blocked.contains("Blocked - needs a person (1)"),
+        "{blocked}"
+    );
+    assert_eq!(blocked, golden.checklist());
+
+    let inbox = golden.depot_ok(&["inbox", "--project", SLUG]);
+    assert!(
+        user_section(&inbox).contains("a worker turn could not be resolved"),
+        "{inbox}"
     );
 }
 
@@ -965,4 +1008,13 @@ fn acquire_released_lock(home: &depotd::DepotHome) -> InstanceLock {
         }
     }
     panic!("the lock is free once the first daemon stops");
+}
+
+fn user_section(rendered: &str) -> &str {
+    let start = rendered
+        .find("## For the user (")
+        .expect("the inbox names the user section");
+    let rest = &rendered[start..];
+    let end = rest.find("\n## ").unwrap_or(rest.len());
+    &rest[..end]
 }

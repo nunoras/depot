@@ -293,6 +293,20 @@ fn a_worker_question_is_relayed_answered_and_the_worker_resumes_with_the_answer(
     assert!(golden.boxr.calls_to("resume").is_empty());
     assert!(golden.boxr.calls_to("stop").is_empty());
 
+    let observed = golden.depot_ok(&["inbox", "--project", SLUG]);
+    assert!(
+        observed.contains("the worker is gone"),
+        "the inbox reports the liveness the daemon observed, got\n{observed}"
+    );
+    assert!(
+        !observed.contains("the worker is live"),
+        "a paused task's dead worker is not reported as live, got\n{observed}"
+    );
+    assert!(
+        observed.contains("waiting_on_question"),
+        "the task still owes its answer, got\n{observed}"
+    );
+
     assert_eq!(
         golden.depot_ok(&[
             "task",

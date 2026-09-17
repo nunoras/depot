@@ -2,6 +2,7 @@ use std::fmt::Display;
 
 use depot_core::{Baseline, FactKind, Liveness};
 
+use crate::error::{Error, Result};
 use crate::vocabulary::{answered_by_name, checks_name, fact_tag, fact_tag_name, role_name};
 
 pub fn kind_name(kind: &FactKind) -> &'static str {
@@ -179,7 +180,17 @@ fn task_field(task: &str) -> String {
     object(vec![("task", quoted(task))])
 }
 
-fn liveness_name(liveness: Liveness) -> &'static str {
+pub fn payload_field(payload: &str, field: &str) -> Result<String> {
+    let value: serde_json::Value =
+        serde_json::from_str(payload).map_err(|error| Error::Schema(error.to_string()))?;
+    value
+        .get(field)
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| Error::Schema(format!("a fact payload carries no {field}")))
+}
+
+pub fn liveness_name(liveness: Liveness) -> &'static str {
     match liveness {
         Liveness::Live => "live",
         Liveness::Gone => "gone",

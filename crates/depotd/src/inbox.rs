@@ -1,9 +1,10 @@
 use std::collections::BTreeMap;
 
-use depot_core::{Task, TaskId, TaskState, Timestamp};
+use depot_core::{Liveness, Task, TaskId, TaskState, Timestamp};
 
 use crate::checklist::{format_timestamp, one_line};
 use crate::error::Result;
+use crate::factcodec::{liveness_name, payload_field};
 use crate::store::RecordedEvent;
 use crate::vocabulary::{FactTag, fact_tag_from_name, state_name};
 
@@ -46,7 +47,7 @@ pub fn inbox_entries(
         entries.push(InboxEntry {
             at: event.at,
             task: event.task.clone(),
-            line: line_for(tag, event.task.as_ref(), task),
+            line: line_for(tag, event, task)?,
             need: need_for(tag, task),
         });
     }
@@ -120,8 +121,8 @@ fn need_for(tag: FactTag, task: Option<&Task>) -> Need {
     }
 }
 
-fn line_for(tag: FactTag, id: Option<&TaskId>, task: Option<&Task>) -> String {
-    let subject = match (id, task) {
+fn line_for(tag: FactTag, event: &RecordedEvent, task: Option<&Task>) -> Result<String> {
+    let subject = match (event.task.as_ref(), task) {
         (Some(id), Some(task)) => format!(
             "`{id}` **{}** ({}): ",
             one_line(&task.title),
@@ -130,11 +131,11 @@ fn line_for(tag: FactTag, id: Option<&TaskId>, task: Option<&Task>) -> String {
         (Some(id), None) => format!("`{id}`: "),
         (None, _) => String::new(),
     };
-    format!("{subject}{}", headline(tag, task))
+    Ok(format!("{subject}{}", headline(tag, event, task)?))
 }
 
-fn headline(tag: FactTag, task: Option<&Task>) -> String {
-    match tag {
+fn headline(tag: FactTag, event: &RecordedEvent, task: Option<&Task>) -> Result<String> {
+    Ok(match tag {
         FactTag::TaskProposed => "a task was filed, holding for approval".to_string(),
         FactTag::TaskApproved => "approved".to_string(),
         FactTag::TaskCancelled => "stopped".to_string(),
@@ -151,10 +152,7 @@ fn headline(tag: FactTag, task: Option<&Task>) -> String {
         }
         FactTag::WorkerTurnStarted => "worker turn started".to_string(),
         FactTag::WorkerTurnEnded => "worker turn ended".to_string(),
-        FactTag::WorkerLivenessChanged => match task.map(|task| task.state) {
-            Some(TaskState::Failed) => "the worker is gone".to_string(),
-            _ => "the worker is live".to_string(),
-        },
+        FactTag::WorkerLivenessChanged => liveness_line(&event.payload)?,
         FactTag::WorkerSubmissionRecorded => "recorded a submission".to_string(),
         FactTag::WorkerSubmitted => "submitted a change".to_string(),
         FactTag::ValidationStarted => "validation started".to_string(),
@@ -189,7 +187,16 @@ fn headline(tag: FactTag, task: Option<&Task>) -> String {
         FactTag::CoordinatorContextMeasured => "context measured".to_string(),
         FactTag::DaemonRestarted => "the daemon restarted".to_string(),
         FactTag::Polled => "the daemon polled".to_string(),
-    }
+    })
+}
+
+fn liveness_line(payload: &str) -> Result<String> {
+    let liveness = payload_field(payload, "liveness")?;
+    Ok(if liveness == liveness_name(Liveness::Live) {
+        "the worker is live".to_string()
+    } else {
+        "the worker is gone".to_string()
+    })
 }
 
 fn unanswered(task: Option<&Task>) -> Option<&depot_core::Question> {

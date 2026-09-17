@@ -16,6 +16,7 @@ use crate::adapters::sessions::{LaunchRequest, SessionProfile, Sessions};
 use crate::adapters::worktrees::{AcquireRequest, Lease, Worktrees};
 use crate::clock::now;
 use crate::error::{Error, Result};
+use crate::factcodec::payload_field;
 use crate::home::DepotHome;
 use crate::project::{LocationKind, Project};
 use crate::store::{EventOutcome, Store, event_key};
@@ -1077,16 +1078,6 @@ pub fn resume_prompt(answers: &[(String, String)]) -> String {
 fn stripped(answer: &str) -> String {
     let answer = crate::checklist::one_line(answer);
     answer.strip_suffix('.').unwrap_or(&answer).to_owned()
-}
-
-fn payload_field(payload: &str, field: &str) -> Result<String> {
-    let value: serde_json::Value =
-        serde_json::from_str(payload).map_err(|error| Error::Schema(error.to_string()))?;
-    value
-        .get(field)
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_owned)
-        .ok_or_else(|| Error::Schema(format!("a fact payload carries no {field}")))
 }
 
 pub fn pull_request_body(task: &Task, commit: &CommitId) -> String {

@@ -79,6 +79,11 @@ fn acquires_releases_and_reads_the_pool() {
     assert_eq!(lease.path, fixture.lease);
     assert_eq!(lease.holder, "task-7");
     assert_eq!(lease.acquired_at, "2026-09-16T05:56:43Z");
+    assert_eq!(
+        git::git(&fixture.lease, &["branch", "--show-current"]),
+        "task-7\n",
+        "default baseline still lands on a delivery branch"
+    );
 
     treehouse
         .release(&lease)

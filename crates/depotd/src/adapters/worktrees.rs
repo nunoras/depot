@@ -160,13 +160,16 @@ impl Worktrees for Treehouse {
             acquired_at: field(&command, &value, "leased_at")?,
         };
 
-        if let Baseline::PinnedCommit(commit) = &request.baseline {
-            let branch = request.holder.replace(':', "-");
-            let args = self.git_args(&lease.path, &["checkout", "-B", &branch, commit.as_str()]);
-            if let Err(error) = self.git.run_ok(&args, None) {
-                let _ = self.return_lease(&lease);
-                return Err(error.into());
+        let branch = request.holder.replace(':', "-");
+        let checkout = match &request.baseline {
+            Baseline::PinnedCommit(commit) => {
+                self.git_args(&lease.path, &["checkout", "-B", &branch, commit.as_str()])
             }
+            Baseline::DefaultBranchHead => self.git_args(&lease.path, &["checkout", "-B", &branch]),
+        };
+        if let Err(error) = self.git.run_ok(&checkout, None) {
+            let _ = self.return_lease(&lease);
+            return Err(error.into());
         }
 
         Ok(lease)

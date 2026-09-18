@@ -11,7 +11,7 @@ When an adapter starts deciding, the same rule exists in two places and the pure
 
 **Sessions.** Depot never launches a harness itself, and it never reads a harness transcript.
 boxr launches the headless session and is the ledger, so depot reads boxr's own commands and its TOON output.
-The surface depot requires is recorded in `docs/boxr-contract.md`, together with the minimum version, because detached sessions and resume do not exist yet.
+The surface depot requires, including the minimum version, is recorded in `docs/boxr-contract.md`.
 The capability probe is the gate: a boxr that cannot do what the contract needs is refused by name, and a missing capability is never a silent fallback to something slower or vaguer.
 
 **Worktrees.** Depot never creates a worktree and never resets one.

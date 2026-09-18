@@ -14,7 +14,10 @@ The line is deliberate.
 Choosing a profile is choosing what the work costs, and a model that can name its own replacement can route around a roster.
 The candidate list is a preference a person set; the model only says which condition the work satisfies.
 Everything after the answer is code: the confidence floor, the rule's role and the candidate order are applied by `depot-core` and `depotd`, so a rule that names no candidates still resolves through the existing role-to-profile map.
-Candidates resolve in configured order for now, and ranking them by quota is the next ticket.
+Only the first candidate in configured order is read: it is the profile the task is pinned to.
+The ordered tail is carried for the ticket that ranks candidates by quota, which is the ticket that will choose among them, so a rule's candidate list is not a fallback chain and is deliberately absent from the retry path.
+Failover stays where it was: the retry path still takes its profile from the machine-local `fallback_profiles`, untouched by anything a rule says.
+Every candidate is still checked against machine-local settings when the task is filed, so a candidate that names no profile refuses creation by name rather than failing at launch.
 
 ## The decision is a judgement, not an observation
 

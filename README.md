@@ -84,6 +84,11 @@ when = "Review a change"
 role = "review"
 ```
 
+A rule's `candidates` is an optional ordered list of profiles, and only its first entry is read today: it is the profile the matching task is pinned to.
+The rest of the list is carried for the ticket that ranks candidates by quota, which is the ticket that will choose among them, so the order is not a fallback chain.
+Failover is unchanged: it still comes from the machine-local `fallback_profiles` in the depot home, the same list the retry path already used.
+A candidate that names no machine-local profile refuses task creation by name rather than failing at launch.
+
 Machine-local settings stay in the depot home and never travel to another host.
 
 `$DEPOT_HOME/config.toml`:
@@ -152,7 +157,7 @@ The verbs a coordinator drives:
 
 | verb | what it does |
 |---|---|
-| `depot task add --title <title> --intent <intent> --role <role> [--depends-on <task>@<commit>]... [--base-dependency <task-id>]` | records a task with its dependencies. Multiple dependencies need a base. It lands held, and that is the proposal. |
+| `depot task add --title <title> --intent <intent> [--role <role>] [--depends-on <task>@<commit>]... [--base-dependency <task-id>]` | records a task with its dependencies. Multiple dependencies need a base. It lands held, and that is the proposal. Without `--role` depot resolves the role from the project's dispatch rules. |
 | `depot task approve <task-id>...` | the user's go, for one task or several in one message. |
 | `depot task answer <task-id> --text <answer> [--by coordinator\|user]` | records an answer and resumes the worker. |
 | `depot task stop <task-id>` | stops a task. |

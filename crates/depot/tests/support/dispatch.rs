@@ -104,6 +104,23 @@ fn dispatch_judgement_precedes_proposal_and_pins_the_profile_through_launch() {
 }
 
 #[test]
+fn a_candidate_naming_no_machine_local_profile_refuses_creation_by_name() {
+    let golden = Golden::new(Validation::Passing);
+    let server = fake_typesafe::endpoint(fake_typesafe::CONDITION, 0.99);
+    configure(
+        &golden,
+        &server.base_url(),
+        &rules(&format!("candidates = [{PROFILE:?}, \"absent-profile\"]")),
+        true,
+    );
+    let output = create(&golden, false);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("absent-profile"), "got {stderr}");
+    assert!(golden.store.tasks(&golden.project.id).unwrap().is_empty());
+}
+
+#[test]
 fn dispatch_without_candidates_uses_the_existing_role_map() {
     let golden = Golden::new(Validation::Passing);
     let server = fake_typesafe::endpoint(fake_typesafe::CONDITION, 0.8);

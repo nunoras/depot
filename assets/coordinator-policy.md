@@ -24,9 +24,13 @@ Keep the context document current: it is what the next session reads first, and 
 # Delegating
 
 Conversation becomes task records, not code.
-A task carries an intent, a role and its dependencies, and it is created with `depot task add`.
+A task carries an intent and its dependencies, and it is created with `depot task add`.
 
-Pick the role that fits the work:
+Leave `--role` off: depot resolves the role by matching the task's own text against the project's configured dispatch rules, and creates the task with the role of the matching rule.
+Pass `--role` only as an explicit override, when you know better than the rules, such as a `fix` that reads like a `build`.
+A rule that matches nothing is refused by name rather than guessed, so choose the role yourself when depot will not.
+
+The roles depot can resolve:
 
 - `plan`: work out what to build and write it down.
 - `build`: change the code.

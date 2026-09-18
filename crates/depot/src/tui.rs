@@ -1,9 +1,10 @@
 use std::io::{Stdout, Write, stdout};
 use std::time::Duration;
 
-use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, poll, read};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, poll};
 use crossterm::terminal::{
-    Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+    Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode,
+    enable_raw_mode, size,
 };
 use crossterm::{ExecutableCommand, cursor};
 
@@ -19,9 +20,15 @@ pub fn run(home: &DepotHome, selection: &StatusSelection) -> Result<(), Error> {
         terminal.draw(&frame)?;
         let deadline = std::time::Instant::now() + REFRESH;
         while std::time::Instant::now() < deadline {
-            if poll(POLL)? && read()?.should_quit() {
-                terminal.leave()?;
-                return Ok(());
+            if poll(POLL)? {
+                match event::read()? {
+                    Event::Resize(_, _) => break,
+                    event if event.should_quit() => {
+                        terminal.leave()?;
+                        return Ok(());
+                    }
+                    _ => {}
+                }
             }
         }
     }
@@ -59,9 +66,13 @@ impl Terminal {
     }
 
     fn draw(&mut self, frame: &str) -> Result<(), Error> {
+        let width = size().map(|(width, _)| width as usize).unwrap_or(80);
         self.stdout.execute(Clear(ClearType::All))?;
         self.stdout.execute(cursor::MoveTo(0, 0))?;
-        write!(self.stdout, "{frame}")?;
+        for line in frame.lines() {
+            let visible: String = line.chars().take(width.saturating_sub(1)).collect();
+            writeln!(self.stdout, "{visible}")?;
+        }
         self.stdout.flush()?;
         Ok(())
     }

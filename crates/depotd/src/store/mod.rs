@@ -161,6 +161,20 @@ impl Store {
         raw.into_iter().map(RawEvent::into_event).collect()
     }
 
+    pub fn last_event_id(
+        &self,
+        project: &ProjectId,
+        task: &depot_core::TaskId,
+        kind: &str,
+    ) -> Result<Option<u64>> {
+        let id: Option<i64> = self.connection.query_row(
+            "SELECT MAX(id) FROM events WHERE project_id = ?1 AND task_id = ?2 AND kind = ?3",
+            params![project.as_str(), task.as_str(), kind],
+            |row| row.get(0),
+        )?;
+        Ok(id.and_then(|id| u64::try_from(id).ok()))
+    }
+
     fn first_project(
         &self,
         sql: &str,

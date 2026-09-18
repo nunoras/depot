@@ -13,6 +13,8 @@ The coordinator starts every turn with `depot inbox`, which prints the facts rec
 The journal alone says what changed and when, and the records say where each task stands now, so an entry is built from both.
 A fact on its own is not complete enough to act on, and current state on its own is not what happened since the last turn.
 Classifying an entry by the state a task is in now rather than at the moment of the fact is deliberate: a question that has since been answered stops asking for anyone.
+One line is the exception: a worker that ends its turn to ask a question is not a dead worker, so a task with an open question stays in flight when boxr reports the session gone, and the record and the fact disagree about the same moment.
+That liveness line is rendered from the `liveness` value the fact carries, so a coordinator cannot read a gone worker as live; the entry is still classified by the current state like every other one, and `crates/depot/tests/golden_path.rs` pins the line and the in-flight task that goes with it.
 A poll that observed nothing is not reported at all, because the change it observed is its own fact.
 
 **Rotation is a rule, not a judgement.**

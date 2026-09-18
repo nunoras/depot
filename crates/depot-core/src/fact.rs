@@ -43,6 +43,18 @@ pub enum FactKind {
         answer: String,
         by: AnsweredBy,
     },
+    WorktreeAcquireRequested {
+        task: TaskId,
+    },
+    WorkerTurnLaunchRequested {
+        task: TaskId,
+    },
+    WorkerTurnResumeRequested {
+        task: TaskId,
+    },
+    WorkerTurnUnresolved {
+        task: TaskId,
+    },
     WorkerTurnStarted {
         task: TaskId,
         session: SessionId,

@@ -140,12 +140,35 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             }
         }
 
+        FactKind::WorktreeAcquireRequested { .. }
+        | FactKind::WorkerTurnLaunchRequested { .. }
+        | FactKind::WorkerTurnResumeRequested { .. } => {}
+
+        FactKind::WorkerTurnUnresolved { task } => {
+            let unresolved = next.tasks.get(task).is_some_and(|task| {
+                task.state.in_flight()
+                    && task
+                        .attempts
+                        .last()
+                        .is_some_and(|attempt| attempt.outcome.is_open())
+            });
+            if unresolved && let Some(task) = next.tasks.get_mut(task) {
+                close_attempt(task, AttemptOutcome::Failed, fact.at);
+                task.state = TaskState::Failed;
+                task.updated_at = fact.at;
+                changed = true;
+                actions.push(Action::HoldForUser {
+                    task: task.id.clone(),
+                });
+            }
+        }
+
         FactKind::WorkerTurnStarted { task, session } => {
             if let Some(task) = next.tasks.get_mut(task)
                 && task.state.in_flight()
             {
                 if let Some(attempt) = task.attempts.last_mut()
-                    && is_open(attempt.outcome)
+                    && attempt.outcome.is_open()
                 {
                     attempt.session = Some(session.clone());
                 }
@@ -169,9 +192,13 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             let open = next.tasks.get(task).is_some_and(|task| {
                 task.attempts
                     .last()
-                    .is_some_and(|attempt| is_open(attempt.outcome))
+                    .is_some_and(|attempt| attempt.outcome.is_open())
             });
-            if in_flight && open && *liveness == Liveness::Gone {
+            let paused = next
+                .tasks
+                .get(task)
+                .is_some_and(|task| task.has_unanswered_question());
+            if in_flight && open && !paused && *liveness == Liveness::Gone {
                 if let Some(task) = next.tasks.get_mut(task) {
                     if let Some(attempt) = task.attempts.last_mut() {
                         attempt.outcome = AttemptOutcome::Failed;
@@ -219,7 +246,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                     && task
                         .attempts
                         .last()
-                        .is_some_and(|attempt| is_open(attempt.outcome))
+                        .is_some_and(|attempt| attempt.outcome.is_open())
             });
             if can_submit {
                 if let Some(task) = next.tasks.get_mut(task) {
@@ -312,13 +339,13 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             let live = next.tasks.get(task).is_some_and(|task| {
                 task.attempts
                     .last()
-                    .is_some_and(|attempt| is_open(attempt.outcome))
+                    .is_some_and(|attempt| attempt.outcome.is_open())
             });
             let rework_candidate = next.tasks.get(task).is_some_and(|candidate| {
                 let closed = candidate
                     .attempts
                     .last()
-                    .is_some_and(|attempt| !is_open(attempt.outcome));
+                    .is_some_and(|attempt| !attempt.outcome.is_open());
                 let under_cap = next.active_task_count() < next.limits.max_concurrent_tasks;
                 if !closed || !under_cap {
                     return false;
@@ -585,7 +612,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                     && task
                         .attempts
                         .last()
-                        .is_some_and(|attempt| is_open(attempt.outcome))
+                        .is_some_and(|attempt| attempt.outcome.is_open())
             });
             if accepting {
                 let limits = next.limits.clone();
@@ -695,15 +722,11 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
     (next, actions)
 }
 
-fn is_open(outcome: AttemptOutcome) -> bool {
-    matches!(outcome, AttemptOutcome::InFlight | AttemptOutcome::Unknown)
-}
-
 fn close_attempt(task: &mut Task, outcome: AttemptOutcome, at: Timestamp) -> bool {
     let Some(attempt) = task.attempts.last_mut() else {
         return false;
     };
-    if !is_open(attempt.outcome) {
+    if !attempt.outcome.is_open() {
         return false;
     }
     attempt.outcome = outcome;
@@ -773,7 +796,7 @@ fn retry_due(task: &Task, at: Timestamp) -> bool {
         .is_none_or(|retry| retry.not_before <= at)
 }
 
-fn worktree_baseline(task: &Task) -> Baseline {
+pub fn worktree_baseline(task: &Task) -> Baseline {
     let base = task
         .base_dependency
         .as_ref()

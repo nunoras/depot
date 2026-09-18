@@ -214,6 +214,7 @@ pub struct Task {
     pub title: String,
     pub intent: String,
     pub role: Role,
+    pub dispatch_profile: Option<ProfileId>,
     pub state: TaskState,
     pub dependencies: Vec<Dependency>,
     pub base_dependency: Option<TaskId>,

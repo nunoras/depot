@@ -476,7 +476,7 @@ pub fn resolve_credentials(gh: &Program, depot_home: &Path) -> Result<Credential
 }
 
 #[cfg(unix)]
-fn check_owner_only(path: &Path) -> Result<(), ForgeError> {
+pub(crate) fn check_owner_only(path: &Path) -> Result<(), ForgeError> {
     use std::os::unix::fs::PermissionsExt;
 
     let metadata = fs::metadata(path).map_err(|error| ForgeError::Request {
@@ -494,7 +494,7 @@ fn check_owner_only(path: &Path) -> Result<(), ForgeError> {
 }
 
 #[cfg(windows)]
-fn check_owner_only(path: &Path) -> Result<(), ForgeError> {
+pub(crate) fn check_owner_only(path: &Path) -> Result<(), ForgeError> {
     match windows_token_acl::allow_identities(path) {
         Ok(identities) => {
             if token_acl_is_restricted(&identities) {
@@ -514,7 +514,7 @@ fn check_owner_only(path: &Path) -> Result<(), ForgeError> {
 }
 
 #[cfg(not(any(unix, windows)))]
-fn check_owner_only(path: &Path) -> Result<(), ForgeError> {
+pub(crate) fn check_owner_only(path: &Path) -> Result<(), ForgeError> {
     Err(ForgeError::InsecureTokenFile {
         path: path.to_owned(),
         detail: "this platform cannot prove the token file ACL is restricted".to_owned(),

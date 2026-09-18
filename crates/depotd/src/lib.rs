@@ -6,6 +6,7 @@ mod commands;
 mod config;
 mod coordinator;
 mod daemon;
+mod dispatch;
 mod documents;
 mod error;
 mod factcodec;

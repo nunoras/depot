@@ -1,3 +1,5 @@
+#[path = "support/dispatch.rs"]
+mod dispatch;
 mod support;
 
 use depot_core::{AttemptOutcome, CommitId, ProfileId, SessionId, TaskState, WorktreeLease};

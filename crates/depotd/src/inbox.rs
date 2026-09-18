@@ -97,7 +97,8 @@ fn need_for(tag: FactTag, task: Option<&Task>) -> Need {
             Some(TaskState::Failed) | Some(TaskState::Cancelled) => Need::User,
             _ => Need::Nothing,
         },
-        FactTag::TaskProposed
+        FactTag::TaskDispatchJudged
+        | FactTag::TaskProposed
         | FactTag::TaskApproved
         | FactTag::TaskCancelled
         | FactTag::QuestionAnswered
@@ -136,6 +137,7 @@ fn line_for(tag: FactTag, event: &RecordedEvent, task: Option<&Task>) -> Result<
 
 fn headline(tag: FactTag, event: &RecordedEvent, task: Option<&Task>) -> Result<String> {
     Ok(match tag {
+        FactTag::TaskDispatchJudged => "dispatch model judgement recorded".to_string(),
         FactTag::TaskProposed => "a task was filed, holding for approval".to_string(),
         FactTag::TaskApproved => "approved".to_string(),
         FactTag::TaskCancelled => "stopped".to_string(),

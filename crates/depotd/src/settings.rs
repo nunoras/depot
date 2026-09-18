@@ -12,6 +12,7 @@ use crate::error::{Error, Result};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
+    pub typesafe_base_url: String,
     pub concurrency: usize,
     pub run_duration_minutes: u64,
     pub poll_interval_seconds: u64,
@@ -34,6 +35,7 @@ pub struct ProfileSettings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            typesafe_base_url: crate::adapters::typesafe::DEFAULT_API_BASE.into(),
             concurrency: 4,
             run_duration_minutes: 60,
             poll_interval_seconds: 30,
@@ -92,7 +94,7 @@ impl Settings {
         ConfiguredProfiles::from_entries(entries).map_err(profile_error)
     }
 
-    fn profile_spec(&self, name: ProfileId) -> Result<ProfileSpec> {
+    pub(crate) fn profile_spec(&self, name: ProfileId) -> Result<ProfileSpec> {
         let profile = self.profiles.get(name.as_str()).ok_or_else(|| {
             Error::Config(format!(
                 "profile `{name}` is not defined in machine-local settings"

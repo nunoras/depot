@@ -19,11 +19,22 @@ pub struct Fact {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FactKind {
+    TaskDispatchJudged {
+        task: TaskId,
+        chosen_rule: Option<usize>,
+        confidence: crate::Confidence,
+        model: String,
+        model_version: String,
+        rules_hash: String,
+        rules_snapshot: String,
+        resolution: crate::DispatchResolution,
+    },
     TaskProposed {
         task: TaskId,
         title: String,
         intent: String,
         role: Role,
+        dispatch_profile: Option<ProfileId>,
         dependencies: Vec<Dependency>,
         base_dependency: Option<TaskId>,
     },

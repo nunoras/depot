@@ -13,7 +13,7 @@ The destination is the published spec at [nunoras/depot#30](https://github.com/n
 | crate | what it holds |
 |---|---|
 | `crates/depot-core` | The domain model and the whole task lifecycle as one pure reduce step. |
-| `crates/depotd` | The daemon: everything with a side effect, including the four adapters depot talks to, the store, the depot home, configuration, and the coordinator's artifacts. |
+| `crates/depotd` | The daemon: everything with a side effect, including the five adapters depot talks to, the store, the depot home, configuration, and the coordinator's artifacts. |
 | `crates/depot` | The command line the coordinator and the user drive. |
 
 
@@ -105,13 +105,13 @@ typesafe_base_url = "https://api.typesafe.ai"
 [credentials]
 github = "gh-cli"
 
-[profiles.glm-5-3]
+[profiles."glm-5.3"]
 harness = "pi"
 model = "glm-5.3"
 effort = "high"
 account = "work"
 
-[profiles.gpt-5-5]
+[profiles."gpt-5.5"]
 harness = "pi"
 model = "gpt-5.5"
 effort = "high"
@@ -242,7 +242,7 @@ The fakes live in `crates/depotd/tests/support/`: a scripted program on disk for
 `crates/depotd/tests/toon.rs` covers the TOON reader the session adapter parses boxr's output with.
 
 `crates/depot/tests/golden_path.rs` is the end-to-end suite, and it is the check to run before believing depot works.
-It drives the real `depot` binary against a real git repository with a real remote, a scripted worker, a fake boxr child process whose recorded invocations are asserted, and a local fake forge endpoint, with the daemon loop run tick by tick over the same adapters the daemon binary builds.
+It drives the real `depot` binary against a real git repository with a real remote, a scripted worker, a fake boxr child process whose recorded invocations are asserted, a local fake forge endpoint and a local fake Typesafe endpoint, with the daemon loop run tick by tick over the same adapters the daemon binary builds.
 Its fake boxr is the `fake_boxr` test target beside it, so a plain `cargo test` builds it before the suite runs.
 Scenarios cover the whole journey, a worker question, a failed validation and a restart with a task in flight, plus the recovery edges each reconcile pass relies on and the dispatch path from a model-matched rule through to a pinned profile; each asserts the rendered checklist, the task's state history, the commands the daemon issued and the exit codes it saw.
 `crates/depot/tests/support/` holds the fixture and includes the fakes under `crates/depotd/tests/support/` rather than duplicating them.

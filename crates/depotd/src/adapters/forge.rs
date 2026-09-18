@@ -75,6 +75,12 @@ pub trait Forge {
         head: &str,
     ) -> Result<Option<OpenedPullRequest>, ForgeError>;
     fn open_pull_request(&self, request: &NewPullRequest) -> Result<OpenedPullRequest, ForgeError>;
+    fn merge_pull_request(
+        &self,
+        repo: &RepoSlug,
+        number: u64,
+        head: &CommitId,
+    ) -> Result<(), ForgeError>;
 }
 
 #[derive(Debug, Clone)]
@@ -125,6 +131,7 @@ impl GitHub {
         let mut response = match (method, body) {
             ("GET", None) => self.with_headers(self.agent.get(url)).call(),
             ("POST", Some(body)) => self.with_headers(self.agent.post(url)).send(body),
+            ("PUT", Some(body)) => self.with_headers(self.agent.put(url)).send(body),
             _ => return Err(invalid_method()),
         }
         .map_err(|error| ForgeError::Request {
@@ -428,6 +435,31 @@ impl Forge for GitHub {
             number,
             url: string(&url, &value, "html_url", &response)?,
         })
+    }
+
+    fn merge_pull_request(
+        &self,
+        repo: &RepoSlug,
+        number: u64,
+        head: &CommitId,
+    ) -> Result<(), ForgeError> {
+        let url = self.url(&format!("/repos/{}/pulls/{number}/merge", repo.path()));
+        let body = json!({
+            "sha": head.as_str(),
+            "merge_method": "merge",
+        })
+        .to_string();
+        let (status, response) = self.call("PUT", &url, Some(body))?;
+        match status {
+            200 => Ok(()),
+            401 | 403 => Err(ForgeError::Unauthorized { url }),
+            404 => Err(ForgeError::NotFound { url }),
+            status => Err(ForgeError::Refused {
+                url,
+                status,
+                body: response.trim().to_owned(),
+            }),
+        }
     }
 }
 
@@ -798,6 +830,11 @@ pub enum ForgeError {
         status: u16,
         body: String,
     },
+    Refused {
+        url: String,
+        status: u16,
+        body: String,
+    },
     Malformed {
         url: String,
         detail: String,
@@ -831,6 +868,10 @@ impl fmt::Display for ForgeError {
             ForgeError::Status { url, status, body } => {
                 write!(f, "GitHub answered {status} for {url}: {body}")
             }
+            ForgeError::Refused { url, status, body } => write!(
+                f,
+                "GitHub refused to merge {url} and answered {status}: {body}; the pull request is not in a state depot could merge"
+            ),
             ForgeError::Malformed { url, detail } => {
                 write!(f, "the answer from {url} is not what depot reads: {detail}")
             }

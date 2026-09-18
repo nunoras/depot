@@ -287,6 +287,7 @@ pub struct ProjectState {
     pub fallback_profiles: Vec<ProfileId>,
     pub limits: Limits,
     pub always_relay_questions: bool,
+    pub auto_merge: bool,
 }
 
 impl ProjectState {

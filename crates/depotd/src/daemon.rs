@@ -72,6 +72,13 @@ pub trait Delivery {
         task: &Task,
         repo: &RepoSlug,
     ) -> Result<Option<ObservedPullRequest>>;
+    fn merge_pull_request(
+        &self,
+        task: &Task,
+        repo: &RepoSlug,
+        number: u64,
+        head: &CommitId,
+    ) -> Result<()>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -195,6 +202,18 @@ impl<F: Forge> Delivery for ForgeDelivery<F> {
             checks: observed.checks,
             commit: observed.head,
         }))
+    }
+
+    fn merge_pull_request(
+        &self,
+        _task: &Task,
+        repo: &RepoSlug,
+        number: u64,
+        head: &CommitId,
+    ) -> Result<()> {
+        self.forge
+            .merge_pull_request(repo, number, head)
+            .map_err(|error| Error::Project(error.to_string()))
     }
 }
 
@@ -940,11 +959,12 @@ where
 
     fn reconcile_forge(&self) -> Result<()> {
         let state = self.store.project_state(&self.project)?;
+        let mut observed_open: Vec<(TaskId, u64, CommitId)> = Vec::new();
         for task in state.tasks.values() {
             if task.state != TaskState::PrOpen {
                 continue;
             }
-            let Some((_, _, recorded)) = task.pull_request() else {
+            let Some((number, _, recorded)) = task.pull_request() else {
                 continue;
             };
             let observed = match self
@@ -1007,8 +1027,46 @@ where
                             },
                         )?;
                     }
+                    observed_open.push((task.id.clone(), number, observed.commit));
                 }
             }
+        }
+        self.auto_merge(observed_open)
+    }
+
+    fn auto_merge(&self, observed_open: Vec<(TaskId, u64, CommitId)>) -> Result<()> {
+        let state = self.store.project_state(&self.project)?;
+        for (id, number, head) in observed_open {
+            let Some(task) = state.tasks.get(&id) else {
+                continue;
+            };
+            if !depot_core::auto_merge_due(&state, task, &head) {
+                continue;
+            }
+            let repo = match self.project_repo() {
+                Ok(repo) => repo,
+                Err(error) => {
+                    log("auto_merge_failed", &error.to_string());
+                    continue;
+                }
+            };
+            match self.delivery.merge_pull_request(task, &repo, number, &head) {
+                Ok(()) => {}
+                Err(error) => {
+                    log("auto_merge_failed", &error.to_string());
+                    continue;
+                }
+            }
+            self.record(
+                &event_key(&["pull_request_merged", id.as_str(), head.as_str()]),
+                Fact {
+                    at: now(),
+                    kind: FactKind::PullRequestMerged {
+                        task: id.clone(),
+                        commit: head.clone(),
+                    },
+                },
+            )?;
         }
         Ok(())
     }

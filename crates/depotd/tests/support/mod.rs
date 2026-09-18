@@ -215,5 +215,6 @@ pub fn varied_state() -> ProjectState {
         fallback_profiles: vec![ProfileId::new("gpt-5.5")],
         limits: Limits::default(),
         always_relay_questions: false,
+        auto_merge: false,
     }
 }

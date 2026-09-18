@@ -5,7 +5,7 @@ mod fake_program;
 #[path = "support/temp.rs"]
 mod temp;
 
-use depot_core::Checks;
+use depot_core::{Checks, CommitId};
 use depotd::adapters::forge::{
     CredentialSource, Forge, GitHub, NewPullRequest, PrState, RepoSlug, TOKEN_FILE,
     resolve_credentials,
@@ -333,6 +333,60 @@ fn opens_a_pull_request() {
         body["body"],
         "intent: fix the login redirect\nvalidation: cargo test passed"
     );
+}
+
+#[test]
+fn merges_a_pull_request_at_the_validated_head_only() {
+    let forge_endpoint = FakeForge::start();
+    forge_endpoint.route(
+        "PUT",
+        "/repos/acme/widget/pulls/7/merge",
+        200,
+        "{\"sha\":\"aaa111\",\"merged\":true,\"message\":\"Pull Request successfully merged\"}",
+    );
+
+    let github = GitHub::new(forge_endpoint.base_url(), "token-1");
+    github
+        .merge_pull_request(&repo(), 7, &CommitId::new("aaa111"))
+        .expect("the pull request merges");
+
+    let recorded = forge_endpoint.request_to("/repos/acme/widget/pulls/7/merge");
+    assert_eq!(recorded.method, "PUT");
+    assert_eq!(recorded.header("authorization"), Some("Bearer token-1"));
+    let body: serde_json::Value =
+        serde_json::from_str(&recorded.body).expect("the request body is json");
+    assert_eq!(body["sha"], "aaa111");
+}
+
+#[test]
+fn refuses_a_merge_the_forge_will_not_take() {
+    let forge_endpoint = FakeForge::start();
+    forge_endpoint.route(
+        "PUT",
+        "/repos/acme/widget/pulls/7/merge",
+        409,
+        "{\"message\":\"Head branch was modified. Review and try the merge again.\"}",
+    );
+    forge_endpoint.route(
+        "PUT",
+        "/repos/acme/widget/pulls/8/merge",
+        405,
+        "{\"message\":\"Pull Request is not mergeable\"}",
+    );
+
+    let github = GitHub::new(forge_endpoint.base_url(), "token-1");
+    let error = github
+        .merge_pull_request(&repo(), 7, &CommitId::new("aaa111"))
+        .expect_err("a moved head is refused");
+    let message = error.to_string();
+    assert!(message.contains("refused to merge"), "{message}");
+    assert!(message.contains("409"), "{message}");
+    assert!(message.contains("Head branch was modified"), "{message}");
+
+    let error = github
+        .merge_pull_request(&repo(), 8, &CommitId::new("bbb222"))
+        .expect_err("an unmergeable pull request is refused");
+    assert!(error.to_string().contains("405"), "{error}");
 }
 
 #[test]

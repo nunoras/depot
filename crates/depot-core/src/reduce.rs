@@ -513,8 +513,21 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             }
         }
 
-        FactKind::PullRequestMerged { task, .. } => {
-            if publication_blocked(&next, task) {
+        FactKind::PullRequestMerged { task, commit } => {
+            let merged_head_mismatch = next.tasks.get(task).is_some_and(|task| {
+                task.state == TaskState::PrOpen
+                    && task
+                        .validated_commit()
+                        .is_some_and(|validated| validated != commit)
+            });
+            if merged_head_mismatch {
+                if let Some(task) = next.tasks.get_mut(task) {
+                    task.state = TaskState::Failed;
+                    task.updated_at = fact.at;
+                }
+                changed = true;
+                actions.push(Action::HoldForUser { task: task.clone() });
+            } else if publication_blocked(&next, task) {
                 if next.tasks.contains_key(task) {
                     changed = true;
                     actions.push(Action::HoldForUser { task: task.clone() });
@@ -821,6 +834,15 @@ fn base_dependency_is_valid(dependencies: &[Dependency], base_dependency: &Optio
             .iter()
             .any(|dependency| &dependency.task == base),
     }
+}
+
+pub fn auto_merge_due(state: &ProjectState, task: &Task, head: &CommitId) -> bool {
+    state.auto_merge
+        && task.state == TaskState::PrOpen
+        && task
+            .pull_request()
+            .is_some_and(|(_, _, checks)| checks == Checks::Passing)
+        && task.validated_commit() == Some(head)
 }
 
 pub fn publication_blocked(state: &ProjectState, task: &TaskId) -> bool {

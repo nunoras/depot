@@ -161,6 +161,7 @@ fn base() -> ProjectState {
         fallback_profiles: Vec::new(),
         limits: Limits::default(),
         always_relay_questions: false,
+        auto_merge: false,
     }
 }
 
@@ -2031,7 +2032,13 @@ fn stale_pr_open_can_rework_revalidate_and_land() {
                 ),
                 fact(4_000, submitted("t1", "cb2")),
                 fact(5_000, passed("t1", "cb2")),
-                fact(6_000, merged("t1")),
+                fact(
+                    6_000,
+                    FactKind::PullRequestMerged {
+                        task: task_id("t1"),
+                        commit: commit("cb2"),
+                    },
+                ),
             ],
         )
         .when(
@@ -2316,6 +2323,79 @@ fn relayed_questions_do_not_leave_validating_or_terminal_states() {
         )
         .when("t1", TaskState::Validated, vec![Action::RenderChecklist])
         .checking(|state| subject(state, "t1").questions.len() == 1),
+    ]);
+}
+
+#[test]
+fn auto_merge_waits_for_the_project_to_opt_in_and_for_the_validated_head() {
+    let head = commit("c1");
+    let mut opted_out = with_pull_request(validated("t1", "c1"), 42, Checks::Passing);
+    opted_out.state = TaskState::PrOpen;
+    opted_out.branch_head = Some(head.clone());
+    let mut state = state(vec![opted_out]);
+
+    assert!(
+        !auto_merge_due(&state, subject(&state, "t1"), &head),
+        "a project that did not opt in is never merged automatically"
+    );
+
+    state.auto_merge = true;
+    assert!(auto_merge_due(&state, subject(&state, "t1"), &head));
+    assert!(
+        !auto_merge_due(&state, subject(&state, "t1"), &commit("c2")),
+        "a head depot never validated is never merged automatically"
+    );
+
+    let mut failing = state.clone();
+    let task = failing.tasks.get_mut(&task_id("t1")).expect("subject task");
+    task.links = vec![Link::PullRequest {
+        number: 42,
+        url: "https://github.com/nunoras/depot/pull/42".to_owned(),
+        checks: Checks::Failing,
+    }];
+    assert!(
+        !auto_merge_due(&failing, subject(&failing, "t1"), &head),
+        "failing checks are never merged automatically"
+    );
+}
+
+#[test]
+fn a_merge_of_an_unvalidated_revision_is_held_rather_than_landed() {
+    let mut task = with_pull_request(validated("t1", "c1"), 42, Checks::Passing);
+    task.state = TaskState::PrOpen;
+    task.branch_head = Some(commit("c1"));
+    run(vec![
+        case(
+            "a merged head that is not the validated commit is held for a person",
+            state(vec![with_attempt(
+                task,
+                Attempt {
+                    outcome: AttemptOutcome::Submitted,
+                    worktree: Some(lease("w1")),
+                    finished_at: Some(at(0)),
+                    ..attempt(BUILD)
+                },
+            )]),
+            vec![fact(
+                1_000,
+                FactKind::PullRequestMerged {
+                    task: task_id("t1"),
+                    commit: commit("c2"),
+                },
+            )],
+        )
+        .when(
+            "t1",
+            TaskState::Failed,
+            vec![hold("t1"), Action::RenderChecklist],
+        )
+        .checking(|state| {
+            subject(state, "t1")
+                .attempts
+                .last()
+                .and_then(|attempt| attempt.worktree.clone())
+                == Some(lease("w1"))
+        }),
     ]);
 }
 

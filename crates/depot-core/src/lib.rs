@@ -15,4 +15,6 @@ pub use model::{
     Retry, Role, SessionId, Submission, Task, TaskId, TaskState, Timestamp, ValidationRecord,
     WorktreeLease,
 };
-pub use reduce::{dependency_satisfied, publication_blocked, reduce, worktree_baseline};
+pub use reduce::{
+    auto_merge_due, dependency_satisfied, publication_blocked, reduce, worktree_baseline,
+};

@@ -1053,8 +1053,7 @@ where
             if !depot_core::auto_merge_due(&state, task, &observed.commit) {
                 continue;
             }
-            let key = merge_refusal_key(&id, &observed);
-            if self.store.event(&self.project.id, &key)?.is_some() {
+            if self.merge_was_refused_at(&id, &observed)? {
                 continue;
             }
             let attempt = self.project_repo().and_then(|repo| {
@@ -1063,19 +1062,7 @@ where
             });
             if let Err(error) = attempt {
                 log("auto_merge_failed", &error.to_string());
-                self.record(
-                    &key,
-                    Fact {
-                        at: now(),
-                        kind: FactKind::PullRequestMergeRefused {
-                            task: id.clone(),
-                            commit: observed.commit.clone(),
-                            base: observed.base.clone(),
-                            checks: observed.checks,
-                            reason: error.to_string(),
-                        },
-                    },
-                )?;
+                self.record_merge_refusal(&id, &observed, &error.to_string())?;
                 continue;
             }
             self.record(
@@ -1090,6 +1077,55 @@ where
             )?;
         }
         Ok(())
+    }
+
+    fn merge_was_refused_at(&self, task: &TaskId, observed: &ObservedPullRequest) -> Result<bool> {
+        let refusal = self
+            .store
+            .events(&self.project.id)?
+            .into_iter()
+            .rev()
+            .find(|event| {
+                event.task.as_ref() == Some(task)
+                    && event.kind == fact_tag_name(FactTag::PullRequestMergeRefused)
+            });
+        let Some(refusal) = refusal else {
+            return Ok(false);
+        };
+        Ok(
+            payload_field(&refusal.payload, "commit")? == observed.commit.as_str()
+                && payload_field(&refusal.payload, "base")? == observed.base.as_str()
+                && payload_field(&refusal.payload, "checks")? == checks_name(observed.checks),
+        )
+    }
+
+    fn record_merge_refusal(
+        &self,
+        task: &TaskId,
+        observed: &ObservedPullRequest,
+        reason: &str,
+    ) -> Result<()> {
+        let at = now();
+        self.record(
+            &event_key(&[
+                "pull_request_merge_refused",
+                task.as_str(),
+                observed.commit.as_str(),
+                observed.base.as_str(),
+                checks_name(observed.checks),
+                &at.millis().to_string(),
+            ]),
+            Fact {
+                at,
+                kind: FactKind::PullRequestMergeRefused {
+                    task: task.clone(),
+                    commit: observed.commit.clone(),
+                    base: observed.base.clone(),
+                    checks: observed.checks,
+                    reason: reason.to_owned(),
+                },
+            },
+        )
     }
 
     fn task(&self, id: &TaskId) -> Result<Task> {
@@ -1187,16 +1223,6 @@ pub fn pull_request_body(task: &Task, commit: &CommitId) -> String {
         "## Intent\n\n{}\n\n## What changed\n\n{}\n\n## Validation\n\n{}\n",
         task.intent, task.title, result
     )
-}
-
-fn merge_refusal_key(task: &TaskId, observed: &ObservedPullRequest) -> String {
-    event_key(&[
-        "pull_request_merge_refused",
-        task.as_str(),
-        observed.commit.as_str(),
-        observed.base.as_str(),
-        checks_name(observed.checks),
-    ])
 }
 
 fn log(kind: &str, value: &str) {

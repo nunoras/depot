@@ -93,6 +93,7 @@ fn need_for(tag: FactTag, task: Option<&Task>) -> Need {
         | FactTag::RunDurationExceeded
         | FactTag::RetryExhausted
         | FactTag::ProviderRateLimited
+        | FactTag::PullRequestMerged
         | FactTag::PullRequestClosedUnmerged => match state {
             Some(TaskState::Failed) | Some(TaskState::Cancelled) => Need::User,
             _ => Need::Nothing,
@@ -118,7 +119,6 @@ fn need_for(tag: FactTag, task: Option<&Task>) -> Need {
         | FactTag::BranchPushed
         | FactTag::PullRequestOpened
         | FactTag::PullRequestChecksChanged
-        | FactTag::PullRequestMerged
         | FactTag::CoordinatorSessionStarted
         | FactTag::CoordinatorContextMeasured
         | FactTag::DaemonRestarted

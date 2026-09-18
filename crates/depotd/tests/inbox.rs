@@ -2,6 +2,7 @@ mod support;
 
 use depot_core::{
     Checks, CommitId, Fact, FactKind, ProjectId, SessionId, TaskId, TaskState, Timestamp,
+    ValidationRecord,
 };
 use depotd::{Store, read_inbox};
 
@@ -354,6 +355,90 @@ fn a_question_answered_since_the_fact_was_recorded_needs_nobody() {
     assert!(
         section(&payload, "No action").contains("answered"),
         "the answer still shows in the record of the turn, got\n{payload}"
+    );
+}
+
+#[test]
+fn a_merge_that_held_the_task_reaches_the_user_from_the_inbox() {
+    let fixture = support::fixture();
+    let added = support::register_with_config(&fixture, "example", BUILD_ONLY);
+    let store = Store::open(&fixture.home).expect("store");
+    let project = &added.project.id;
+
+    let mut delivered = support::full_task(project, "t-1");
+    delivered.state = TaskState::PrOpen;
+    delivered.dependencies = Vec::new();
+    delivered.base_dependency = None;
+    delivered.branch_head = Some(CommitId::new("aaa111"));
+    delivered.merge_refused = None;
+    delivered.validations = vec![ValidationRecord {
+        command: "cargo test".to_string(),
+        commit: CommitId::new("aaa111"),
+        exit_code: 0,
+        duration: std::time::Duration::from_millis(1),
+        output_tail: "ok".to_string(),
+    }];
+    store
+        .put_task(&delivered)
+        .expect("the delivered task is stored");
+
+    let mut held = delivered.clone();
+    held.id = TaskId::new("t-2");
+    held.title = "task t-2".to_string();
+    store.put_task(&held).expect("the held task is stored");
+
+    apply(
+        &store,
+        project,
+        "pull_request_merged:t-1:aaa111",
+        1_000,
+        FactKind::PullRequestMerged {
+            task: TaskId::new("t-1"),
+            commit: CommitId::new("aaa111"),
+        },
+    );
+    apply(
+        &store,
+        project,
+        "pull_request_merged:t-2:bbb222",
+        2_000,
+        FactKind::PullRequestMerged {
+            task: TaskId::new("t-2"),
+            commit: CommitId::new("bbb222"),
+        },
+    );
+
+    assert_eq!(
+        store
+            .task(project, &TaskId::new("t-1"))
+            .expect("t-1")
+            .expect("t-1 exists")
+            .state,
+        TaskState::Landed
+    );
+    assert_eq!(
+        store
+            .task(project, &TaskId::new("t-2"))
+            .expect("t-2")
+            .expect("t-2 exists")
+            .state,
+        TaskState::Failed
+    );
+
+    let payload = read_inbox(&fixture.home, Some("example")).expect("inbox");
+
+    let user = section(&payload, "For the user");
+    assert!(
+        user.contains("`t-2`"),
+        "a merge of a revision depot never validated needs a person, got\n{payload}"
+    );
+    assert!(
+        !user.contains("`t-1`"),
+        "a landing needs nobody, got\n{payload}"
+    );
+    assert!(
+        section(&payload, "No action").contains("`t-1`"),
+        "a landing is the daemon's own work, got\n{payload}"
     );
 }
 

@@ -9,7 +9,7 @@ use depot_core::{
 use depotd::InstanceLock;
 use support::git;
 use support::{
-    ACCOUNT, BRANCH, Golden, HARNESS, LEASE, MODEL, PROFILE, SESSION, SLUG, TASK, Validation,
+    ACCOUNT, BASE, BRANCH, Golden, HARNESS, LEASE, MODEL, PROFILE, SESSION, SLUG, TASK, Validation,
     calls_to,
 };
 
@@ -1476,7 +1476,7 @@ fn an_opted_in_project_does_not_merge_while_a_dependency_pin_is_stale() {
 }
 
 #[test]
-fn a_refused_auto_merge_is_recorded_once_and_retried_only_on_a_change() {
+fn a_refused_auto_merge_is_retried_only_when_the_observation_changes() {
     let golden = Golden::new(Validation::Passing);
     let daemon = golden.daemon();
     golden.set_auto_merge(true);
@@ -1545,6 +1545,34 @@ fn a_refused_auto_merge_is_recorded_once_and_retried_only_on_a_change() {
     );
     assert_eq!(refusals(&golden), 2, "the second refusal is recorded");
     assert_eq!(golden.task().state, TaskState::PrOpen);
+
+    golden.script_pull_request_base(&commit, BASE);
+    daemon
+        .tick()
+        .expect("a base that returns to an earlier shape is a change too");
+
+    assert_eq!(
+        golden.merge_requests(),
+        3,
+        "a value returning to an earlier refused shape earns the next attempt"
+    );
+    assert_eq!(refusals(&golden), 3, "the third refusal is recorded");
+
+    let facts = forge_facts(&golden);
+    let events = golden.events().len();
+    daemon.tick().expect("an unchanged poll repeats nothing");
+
+    assert_eq!(
+        golden.merge_requests(),
+        3,
+        "an observation identical to the last attempt is never merged again"
+    );
+    assert_eq!(
+        golden.events().len(),
+        events + 1,
+        "only the tick's own polled marker is recorded"
+    );
+    assert_eq!(forge_facts(&golden), facts);
 
     let inbox = golden.depot_ok(&["inbox", "--project", SLUG]);
     assert!(

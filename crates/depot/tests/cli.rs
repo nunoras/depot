@@ -983,6 +983,7 @@ fn task(project: &str, id: &str, state: TaskState, offset: u64) -> depot_core::T
         artifacts: Vec::new(),
         links: Vec::new(),
         branch_head: None,
+        merge_refused: None,
         retry: None,
         created_at: at,
         updated_at: at,

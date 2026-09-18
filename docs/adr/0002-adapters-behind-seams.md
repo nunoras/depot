@@ -21,6 +21,7 @@ So the adapter inspects the directory with git, refuses with the reason, and nev
 
 **Forge.** Depot polls the GitHub API rather than shelling out to `gh`, because the decision ticket settled on the API and because the end-to-end suite needs a fake endpoint rather than a fake CLI.
 The client's base URL is a parameter, so the tests point it at a local endpoint and GitHub Enterprise stays possible without touching the code.
+The merge call names the validated head, so the forge refuses a branch that moved after validation; whether to merge at all is a lifecycle rule, not the adapter's, and the adapter holds no policy there either.
 Credentials come from an authenticated `gh auth token` when that exists, otherwise from an owner-only `github-token` file in the depot home, and never from the project, because a project is a thing that gets pushed.
 On Unix the file's mode must exclude group and other.
 On Windows its DACL may grant only the current user, the owner, Administrators and SYSTEM.

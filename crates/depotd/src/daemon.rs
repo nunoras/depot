@@ -72,6 +72,13 @@ pub trait Delivery {
         task: &Task,
         repo: &RepoSlug,
     ) -> Result<Option<ObservedPullRequest>>;
+    fn merge_pull_request(
+        &self,
+        task: &Task,
+        repo: &RepoSlug,
+        number: u64,
+        head: &CommitId,
+    ) -> Result<()>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,6 +86,7 @@ pub struct ObservedPullRequest {
     pub state: PrState,
     pub checks: Checks,
     pub commit: CommitId,
+    pub base: CommitId,
 }
 
 pub struct ShellValidation;
@@ -194,7 +202,20 @@ impl<F: Forge> Delivery for ForgeDelivery<F> {
             state: observed.state,
             checks: observed.checks,
             commit: observed.head,
+            base: observed.base,
         }))
+    }
+
+    fn merge_pull_request(
+        &self,
+        _task: &Task,
+        repo: &RepoSlug,
+        number: u64,
+        head: &CommitId,
+    ) -> Result<()> {
+        self.forge
+            .merge_pull_request(repo, number, head)
+            .map_err(|error| Error::Project(error.to_string()))
     }
 }
 
@@ -923,28 +944,37 @@ where
     fn reconcile_delivery(&self) -> Result<()> {
         let state = self.store.project_state(&self.project)?;
         for task in state.tasks.values() {
-            if task.state != TaskState::Validated
-                || task.pull_request().is_some()
-                || depot_core::publication_blocked(&state, &task.id)
-            {
+            if depot_core::publication_blocked(&state, &task.id) {
                 continue;
             }
-            let Some(commit) = task.validated_commit().cloned() else {
-                continue;
-            };
-            self.push(task.id.clone(), commit.clone())?;
-            self.open_pull_request(task.id.clone(), commit)?;
+            match task.state {
+                TaskState::Validated if task.pull_request().is_none() => {
+                    let Some(commit) = task.validated_commit().cloned() else {
+                        continue;
+                    };
+                    self.push(task.id.clone(), commit.clone())?;
+                    self.open_pull_request(task.id.clone(), commit)?;
+                }
+                TaskState::PrOpen => {
+                    let Some(commit) = task.push_owed().cloned() else {
+                        continue;
+                    };
+                    self.push(task.id.clone(), commit)?;
+                }
+                _ => {}
+            }
         }
         Ok(())
     }
 
     fn reconcile_forge(&self) -> Result<()> {
         let state = self.store.project_state(&self.project)?;
+        let mut observed_open: Vec<(TaskId, u64, ObservedPullRequest)> = Vec::new();
         for task in state.tasks.values() {
             if task.state != TaskState::PrOpen {
                 continue;
             }
-            let Some((_, _, recorded)) = task.pull_request() else {
+            let Some((number, _, recorded)) = task.pull_request() else {
                 continue;
             };
             let observed = match self
@@ -1007,10 +1037,95 @@ where
                             },
                         )?;
                     }
+                    observed_open.push((task.id.clone(), number, observed));
                 }
             }
         }
+        self.auto_merge(observed_open)
+    }
+
+    fn auto_merge(&self, observed_open: Vec<(TaskId, u64, ObservedPullRequest)>) -> Result<()> {
+        let state = self.store.project_state(&self.project)?;
+        for (id, number, observed) in observed_open {
+            let Some(task) = state.tasks.get(&id) else {
+                continue;
+            };
+            if !depot_core::auto_merge_due(&state, task, &observed.commit) {
+                continue;
+            }
+            if self.merge_was_refused_at(&id, &observed)? {
+                continue;
+            }
+            let attempt = self.project_repo().and_then(|repo| {
+                self.delivery
+                    .merge_pull_request(task, &repo, number, &observed.commit)
+            });
+            if let Err(error) = attempt {
+                log("auto_merge_failed", &error.to_string());
+                self.record_merge_refusal(&id, &observed, &error.to_string())?;
+                continue;
+            }
+            self.record(
+                &event_key(&["pull_request_merged", id.as_str(), observed.commit.as_str()]),
+                Fact {
+                    at: now(),
+                    kind: FactKind::PullRequestMerged {
+                        task: id.clone(),
+                        commit: observed.commit.clone(),
+                    },
+                },
+            )?;
+        }
         Ok(())
+    }
+
+    fn merge_was_refused_at(&self, task: &TaskId, observed: &ObservedPullRequest) -> Result<bool> {
+        let refusal = self
+            .store
+            .events(&self.project.id)?
+            .into_iter()
+            .rev()
+            .find(|event| {
+                event.task.as_ref() == Some(task)
+                    && event.kind == fact_tag_name(FactTag::PullRequestMergeRefused)
+            });
+        let Some(refusal) = refusal else {
+            return Ok(false);
+        };
+        Ok(
+            payload_field(&refusal.payload, "commit")? == observed.commit.as_str()
+                && payload_field(&refusal.payload, "base")? == observed.base.as_str()
+                && payload_field(&refusal.payload, "checks")? == checks_name(observed.checks),
+        )
+    }
+
+    fn record_merge_refusal(
+        &self,
+        task: &TaskId,
+        observed: &ObservedPullRequest,
+        reason: &str,
+    ) -> Result<()> {
+        let at = now();
+        self.record(
+            &event_key(&[
+                "pull_request_merge_refused",
+                task.as_str(),
+                observed.commit.as_str(),
+                observed.base.as_str(),
+                checks_name(observed.checks),
+                &at.millis().to_string(),
+            ]),
+            Fact {
+                at,
+                kind: FactKind::PullRequestMergeRefused {
+                    task: task.clone(),
+                    commit: observed.commit.clone(),
+                    base: observed.base.clone(),
+                    checks: observed.checks,
+                    reason: reason.to_owned(),
+                },
+            },
+        )
     }
 
     fn task(&self, id: &TaskId) -> Result<Task> {
@@ -1163,6 +1278,7 @@ mod tests {
             artifacts: Vec::new(),
             links: Vec::new(),
             branch_head: None,
+            merge_refused: None,
             retry: None,
             created_at: depot_core::Timestamp::from_millis(0),
             updated_at: depot_core::Timestamp::from_millis(0),

@@ -41,6 +41,7 @@ pub const HARNESS: &str = "harness-wire-1";
 pub const MODEL: &str = "wire-model";
 pub const ACCOUNT: &str = "wire-account";
 pub const REPOSITORY: &str = "nunoras/depot";
+pub const BASE: &str = "ba5eba5eba5eba5eba5eba5eba5eba5eba5eba5e";
 pub const TOKEN: &str = "depot-test-token";
 pub const PASSING_OUTPUT: &str = "the change is good";
 pub const FAILING_OUTPUT: &str = "2 tests failed";
@@ -255,6 +256,17 @@ impl Golden {
             .expect("the project config is written");
     }
 
+    pub fn set_auto_merge(&self, enabled: bool) {
+        let path = self.repo.join(depotd::PROJECT_CONFIG_FILE_NAME);
+        let text = fs::read_to_string(&path).expect("the project config is readable");
+        let mut config =
+            depotd::ProjectConfig::from_toml(&text).expect("the project config parses");
+        config.pull_request.auto_merge = enabled;
+        config
+            .write(&self.repo)
+            .expect("the project config is written");
+    }
+
     pub fn daemon(
         &self,
     ) -> Daemon<'_, Boxr, Treehouse, ShellValidation, ForgeDelivery<GitHub>, StderrNotifier> {
@@ -408,6 +420,13 @@ impl Golden {
         git::head(&self.lease)
     }
 
+    pub fn commit_in_lease(&self, file: &str, contents: &str) -> String {
+        fs::write(self.lease.join(file), contents).expect("the file is written in the lease");
+        git::git(&self.lease, &["add", file]);
+        git::git(&self.lease, &["commit", "-m", "the rework"]);
+        git::head(&self.lease)
+    }
+
     pub fn checklist(&self) -> String {
         fs::read_to_string(self.home.project_home(&self.project.slug).checklist_path())
             .expect("the checklist is written by depot")
@@ -455,7 +474,7 @@ impl Golden {
             "GET",
             &format!("/repos/{REPOSITORY}/pulls/1"),
             200,
-            &pull_request(commit, "open", false),
+            &pull_request(commit, BASE, "open", false),
         );
         self.forge.route(
             "POST",
@@ -467,13 +486,87 @@ impl Golden {
         );
     }
 
-    pub fn script_merge(&self, commit: &str) {
+    pub fn script_pull_request_base(&self, commit: &str, base: &str) {
         self.forge.replace_route(
             "GET",
             &format!("/repos/{REPOSITORY}/pulls/1"),
             200,
-            &pull_request(commit, "closed", true),
+            &pull_request(commit, base, "open", false),
         );
+    }
+
+    pub fn script_existing_pull_request(&self, commit: &str) {
+        self.forge.route(
+            "GET",
+            &format!("/repos/{REPOSITORY}/commits/{commit}/check-runs"),
+            200,
+            &check_runs(),
+        );
+        self.forge.route(
+            "GET",
+            &format!("/repos/{REPOSITORY}/pulls/1"),
+            200,
+            &pull_request(commit, BASE, "open", false),
+        );
+        self.forge.replace_route_query(
+            "GET",
+            &format!("/repos/{REPOSITORY}/pulls"),
+            Some(&format!("state=open&head=nunoras%3A{BRANCH}")),
+            200,
+            &format!(
+                "[{{\"number\":1,\"html_url\":\"https://forge.test/{REPOSITORY}/pull/1\",\"state\":\"open\"}}]"
+            ),
+        );
+    }
+
+    pub fn script_merge(&self, commit: &str) {
+        self.forge.route(
+            "GET",
+            &format!("/repos/{REPOSITORY}/commits/{commit}/check-runs"),
+            200,
+            &check_runs(),
+        );
+        self.forge.replace_route(
+            "GET",
+            &format!("/repos/{REPOSITORY}/pulls/1"),
+            200,
+            &pull_request(commit, BASE, "closed", true),
+        );
+    }
+
+    pub fn script_close_unmerged(&self, commit: &str) {
+        self.forge.replace_route(
+            "GET",
+            &format!("/repos/{REPOSITORY}/pulls/1"),
+            200,
+            &pull_request(commit, BASE, "closed", false),
+        );
+    }
+
+    pub fn script_merge_endpoint(&self) {
+        self.forge.replace_route(
+            "PUT",
+            &format!("/repos/{REPOSITORY}/pulls/1/merge"),
+            200,
+            "{\"sha\":\"merged\",\"merged\":true,\"message\":\"Pull Request successfully merged\"}",
+        );
+    }
+
+    pub fn script_merge_endpoint_refused(&self) {
+        self.forge.replace_route(
+            "PUT",
+            &format!("/repos/{REPOSITORY}/pulls/1/merge"),
+            405,
+            "{\"message\":\"Pull Request is not mergeable\"}",
+        );
+    }
+
+    pub fn merge_requests(&self) -> usize {
+        self.forge
+            .requests()
+            .into_iter()
+            .filter(|request| request.method == "PUT")
+            .count()
     }
 
     pub fn pull_requests_opened(&self) -> usize {
@@ -609,13 +702,13 @@ fn check_runs() -> String {
         .to_string()
 }
 
-fn pull_request(commit: &str, state: &str, merged: bool) -> String {
+fn pull_request(commit: &str, base: &str, state: &str, merged: bool) -> String {
     let merged = if state == "closed" {
         format!("\"merged\":{merged},")
     } else {
         String::new()
     };
     format!(
-        "{{\"number\":1,\"html_url\":\"https://forge.test/{REPOSITORY}/pull/1\",\"title\":\"Wire the store\",\"state\":\"{state}\",{merged}\"head\":{{\"sha\":\"{commit}\"}}}}"
+        "{{\"number\":1,\"html_url\":\"https://forge.test/{REPOSITORY}/pull/1\",\"title\":\"Wire the store\",\"state\":\"{state}\",{merged}\"head\":{{\"sha\":\"{commit}\"}},\"base\":{{\"sha\":\"{base}\"}}}}"
     )
 }

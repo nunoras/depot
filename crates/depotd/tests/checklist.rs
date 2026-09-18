@@ -139,6 +139,7 @@ fn the_checklist_states_what_each_task_waits_on() {
         fallback_profiles: Vec::new(),
         limits: Limits::default(),
         always_relay_questions: false,
+        auto_merge: false,
     });
 
     for expected in [
@@ -179,6 +180,7 @@ fn an_empty_project_renders_a_checklist_with_no_tasks() {
         fallback_profiles: Vec::new(),
         limits: Limits::default(),
         always_relay_questions: false,
+        auto_merge: false,
     });
 
     assert_eq!(

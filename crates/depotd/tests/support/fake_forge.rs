@@ -85,10 +85,21 @@ impl FakeForge {
 
     #[allow(dead_code)]
     pub fn replace_route(&self, method: &str, path: &str, status: u16, body: &str) {
+        self.replace_route_query(method, path, None, status, body);
+    }
+
+    pub fn replace_route_query(
+        &self,
+        method: &str,
+        path: &str,
+        query: Option<&str>,
+        status: u16,
+        body: &str,
+    ) {
         let mut routes = self.routes.lock().expect("the routes are readable");
-        let route = routes
-            .iter_mut()
-            .find(|route| route.method == method && route.path == path);
+        let route = routes.iter_mut().find(|route| {
+            route.method == method && route.path == path && route.query.as_deref() == query
+        });
         match route {
             Some(route) => {
                 route.status = status;
@@ -97,7 +108,7 @@ impl FakeForge {
             None => routes.push(Route {
                 method: method.to_owned(),
                 path: path.to_owned(),
-                query: None,
+                query: query.map(str::to_owned),
                 status,
                 body: body.to_owned(),
             }),

@@ -49,6 +49,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                         artifacts: Vec::new(),
                         links: Vec::new(),
                         branch_head: None,
+                        merge_refused: None,
                         retry: None,
                         created_at: fact.at,
                         updated_at: fact.at,
@@ -78,6 +79,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                 let stopped = close_attempt(task, AttemptOutcome::Stopped, fact.at);
                 task.state = TaskState::Cancelled;
                 task.retry = None;
+                task.merge_refused = None;
                 task.updated_at = fact.at;
                 changed = true;
                 if stopped {
@@ -513,8 +515,23 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             }
         }
 
-        FactKind::PullRequestMerged { task, .. } => {
-            if publication_blocked(&next, task) {
+        FactKind::PullRequestMerged { task, commit } => {
+            let merged_head_mismatch = next.tasks.get(task).is_some_and(|task| {
+                task.state == TaskState::PrOpen && task.validated_commit() != Some(commit)
+            });
+            if let Some(task) = next.tasks.get_mut(task)
+                && task.merge_refused.take().is_some()
+            {
+                changed = true;
+            }
+            if merged_head_mismatch {
+                if let Some(task) = next.tasks.get_mut(task) {
+                    task.state = TaskState::Failed;
+                    task.updated_at = fact.at;
+                }
+                changed = true;
+                actions.push(Action::HoldForUser { task: task.clone() });
+            } else if publication_blocked(&next, task) {
                 if next.tasks.contains_key(task) {
                     changed = true;
                     actions.push(Action::HoldForUser { task: task.clone() });
@@ -550,6 +567,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                 let stopped = close_attempt(task, AttemptOutcome::Stopped, fact.at);
                 task.state = TaskState::Cancelled;
                 task.retry = None;
+                task.merge_refused = None;
                 task.updated_at = fact.at;
                 changed = true;
                 if stopped {
@@ -698,6 +716,16 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             }
         }
 
+        FactKind::PullRequestMergeRefused { task, reason, .. } => {
+            if let Some(task) = next.tasks.get_mut(task)
+                && task.merge_refused.as_deref() != Some(reason.as_str())
+            {
+                task.merge_refused = Some(reason.clone());
+                task.updated_at = fact.at;
+                changed = true;
+            }
+        }
+
         FactKind::Polled => {}
     }
 
@@ -821,6 +849,16 @@ fn base_dependency_is_valid(dependencies: &[Dependency], base_dependency: &Optio
             .iter()
             .any(|dependency| &dependency.task == base),
     }
+}
+
+pub fn auto_merge_due(state: &ProjectState, task: &Task, head: &CommitId) -> bool {
+    state.auto_merge
+        && task.state == TaskState::PrOpen
+        && !publication_blocked(state, &task.id)
+        && task
+            .pull_request()
+            .is_some_and(|(_, _, checks)| checks == Checks::Passing)
+        && task.validated_commit() == Some(head)
 }
 
 pub fn publication_blocked(state: &ProjectState, task: &TaskId) -> bool {

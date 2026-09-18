@@ -80,7 +80,7 @@ impl Store {
 }
 
 const TASK_COLUMNS: &str = "project_id, id, title, intent, role, state, base_dependency, \
-     branch_head, retry_profile, retry_not_before, submission_summary, created_at, updated_at, dispatch_profile";
+     branch_head, retry_profile, retry_not_before, submission_summary, merge_refused, created_at, updated_at, dispatch_profile";
 
 struct RawTask {
     project_id: String,
@@ -95,6 +95,7 @@ struct RawTask {
     retry_profile: Option<String>,
     retry_not_before: Option<i64>,
     submission_summary: Option<String>,
+    merge_refused: Option<String>,
     created_at: i64,
     updated_at: i64,
 }
@@ -114,6 +115,7 @@ impl RawTask {
             retry_profile: row.get("retry_profile")?,
             retry_not_before: row.get("retry_not_before")?,
             submission_summary: row.get("submission_summary")?,
+            merge_refused: row.get("merge_refused")?,
             created_at: row.get("created_at")?,
             updated_at: row.get("updated_at")?,
         })
@@ -165,6 +167,7 @@ impl RawTask {
             artifacts: store.artifacts(&project, &self.id)?,
             links: store.links(&project, &self.id)?,
             branch_head: self.branch_head.map(CommitId::new),
+            merge_refused: self.merge_refused,
             retry,
             created_at: millis(self.created_at)?,
             updated_at: millis(self.updated_at)?,
@@ -410,8 +413,8 @@ pub(super) fn write_task(transaction: &Transaction<'_>, task: &Task) -> Result<(
     transaction.execute(
         "INSERT INTO tasks (
                 project_id, id, title, intent, role, state, base_dependency, branch_head,
-                retry_profile, retry_not_before, submission_summary, created_at, updated_at, dispatch_profile
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                retry_profile, retry_not_before, submission_summary, merge_refused, created_at, updated_at, dispatch_profile
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
         params![
             task.project.as_str(),
             task.id.as_str(),
@@ -428,6 +431,7 @@ pub(super) fn write_task(transaction: &Transaction<'_>, task: &Task) -> Result<(
             task.submission
                 .as_ref()
                 .map(|submission| submission.summary.as_str()),
+            task.merge_refused.as_deref(),
             task.created_at.millis() as i64,
             task.updated_at.millis() as i64,
             task.dispatch_profile.as_ref().map(ProfileId::as_str),

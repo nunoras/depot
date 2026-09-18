@@ -68,6 +68,7 @@ fn task(id: &str, state: TaskState) -> Task {
         artifacts: Vec::new(),
         links: Vec::new(),
         branch_head: None,
+        merge_refused: None,
         retry: None,
         created_at: at(0),
         updated_at: at(0),
@@ -161,6 +162,7 @@ fn base() -> ProjectState {
         fallback_profiles: Vec::new(),
         limits: Limits::default(),
         always_relay_questions: false,
+        auto_merge: false,
     }
 }
 
@@ -1191,17 +1193,13 @@ fn rule_11_a_landed_task_releases_its_worktree_and_renders() {
     run(vec![
         case(
             "the merge releases the lease and renders the checklist",
-            state(vec![with_pull_request(
-                with_attempt(
-                    task("t1", TaskState::PrOpen),
-                    Attempt {
-                        outcome: AttemptOutcome::Submitted,
-                        worktree: Some(lease("w1")),
-                        ..attempt(BUILD)
-                    },
-                ),
-                42,
-                Checks::Passing,
+            state(vec![with_attempt(
+                pr_open("t1", "merge-commit", 42),
+                Attempt {
+                    outcome: AttemptOutcome::Submitted,
+                    worktree: Some(lease("w1")),
+                    ..attempt(BUILD)
+                },
             )]),
             vec![fact(1_000, merged("t1"))],
         )
@@ -1369,6 +1367,28 @@ fn with_pull_request(mut task: Task, number: u64, checks: Checks) -> Task {
         checks,
     });
     task
+}
+
+fn pr_open(id: &str, commit_id: &str, number: u64) -> Task {
+    let mut task = with_pull_request(validated(id, commit_id), number, Checks::Passing);
+    task.state = TaskState::PrOpen;
+    task.branch_head = Some(commit(commit_id));
+    task
+}
+
+fn with_refusal(mut task: Task, reason: &str) -> Task {
+    task.merge_refused = Some(reason.to_owned());
+    task
+}
+
+fn refused_merge(task: &str, reason: &str) -> FactKind {
+    FactKind::PullRequestMergeRefused {
+        task: task_id(task),
+        commit: commit("c1"),
+        base: commit("b1"),
+        checks: Checks::Passing,
+        reason: reason.to_owned(),
+    }
 }
 
 fn with_retry(mut task: Task, profile_id: &str, not_before: Timestamp) -> Task {
@@ -1547,17 +1567,13 @@ fn merge_is_blocked_while_dependency_pins_are_stale() {
             "a merged pr with a stale pin stays open and holds for the user",
             state(vec![
                 depending_on(
-                    with_pull_request(
-                        with_attempt(
-                            task("t1", TaskState::PrOpen),
-                            Attempt {
-                                outcome: AttemptOutcome::Submitted,
-                                worktree: Some(lease("w1")),
-                                ..attempt(BUILD)
-                            },
-                        ),
-                        7,
-                        Checks::Passing,
+                    with_attempt(
+                        pr_open("t1", "merge-commit", 7),
+                        Attempt {
+                            outcome: AttemptOutcome::Submitted,
+                            worktree: Some(lease("w1")),
+                            ..attempt(BUILD)
+                        },
                     ),
                     "t0",
                     "c1",
@@ -1994,18 +2010,14 @@ fn stale_pr_open_can_rework_revalidate_and_land() {
             "a held pr-open dependent reworks against the new pin and lands",
             state(vec![
                 depending_on(
-                    with_pull_request(
-                        with_attempt(
-                            task("t1", TaskState::PrOpen),
-                            Attempt {
-                                outcome: AttemptOutcome::Submitted,
-                                worktree: Some(lease("w1")),
-                                finished_at: Some(at(0)),
-                                ..attempt(BUILD)
-                            },
-                        ),
-                        7,
-                        Checks::Passing,
+                    with_attempt(
+                        pr_open("t1", "merge-commit", 7),
+                        Attempt {
+                            outcome: AttemptOutcome::Submitted,
+                            worktree: Some(lease("w1")),
+                            finished_at: Some(at(0)),
+                            ..attempt(BUILD)
+                        },
                     ),
                     "t0",
                     "c1",
@@ -2031,7 +2043,20 @@ fn stale_pr_open_can_rework_revalidate_and_land() {
                 ),
                 fact(4_000, submitted("t1", "cb2")),
                 fact(5_000, passed("t1", "cb2")),
-                fact(6_000, merged("t1")),
+                fact(
+                    5_500,
+                    FactKind::BranchPushed {
+                        task: task_id("t1"),
+                        commit: commit("cb2"),
+                    },
+                ),
+                fact(
+                    6_000,
+                    FactKind::PullRequestMerged {
+                        task: task_id("t1"),
+                        commit: commit("cb2"),
+                    },
+                ),
             ],
         )
         .when(
@@ -2169,18 +2194,14 @@ fn landing_clears_the_attempt_lease_and_is_idempotent() {
     run(vec![
         case(
             "a second merge after landing does not release again",
-            state(vec![with_pull_request(
-                with_attempt(
-                    task("t1", TaskState::PrOpen),
-                    Attempt {
-                        outcome: AttemptOutcome::Submitted,
-                        worktree: Some(lease("w1")),
-                        finished_at: Some(at(0)),
-                        ..attempt(BUILD)
-                    },
-                ),
-                42,
-                Checks::Passing,
+            state(vec![with_attempt(
+                pr_open("t1", "merge-commit", 42),
+                Attempt {
+                    outcome: AttemptOutcome::Submitted,
+                    worktree: Some(lease("w1")),
+                    finished_at: Some(at(0)),
+                    ..attempt(BUILD)
+                },
             )]),
             vec![fact(1_000, merged("t1")), fact(2_000, merged("t1"))],
         )
@@ -2316,6 +2337,245 @@ fn relayed_questions_do_not_leave_validating_or_terminal_states() {
         )
         .when("t1", TaskState::Validated, vec![Action::RenderChecklist])
         .checking(|state| subject(state, "t1").questions.len() == 1),
+    ]);
+}
+
+#[test]
+fn auto_merge_waits_for_the_project_to_opt_in_and_for_the_validated_head() {
+    let head = commit("c1");
+    let mut state = state(vec![pr_open("t1", "c1", 42)]);
+
+    assert!(
+        !auto_merge_due(&state, subject(&state, "t1"), &head),
+        "a project that did not opt in is never merged automatically"
+    );
+
+    state.auto_merge = true;
+    assert!(auto_merge_due(&state, subject(&state, "t1"), &head));
+    assert!(
+        !auto_merge_due(&state, subject(&state, "t1"), &commit("c2")),
+        "a head depot never validated is never merged automatically"
+    );
+
+    let mut failing = state.clone();
+    let task = failing.tasks.get_mut(&task_id("t1")).expect("subject task");
+    task.links = vec![Link::PullRequest {
+        number: 42,
+        url: "https://github.com/nunoras/depot/pull/42".to_owned(),
+        checks: Checks::Failing,
+    }];
+    assert!(
+        !auto_merge_due(&failing, subject(&failing, "t1"), &head),
+        "failing checks are never merged automatically"
+    );
+
+    let mut prerequisite = validated("t0", "c9");
+    prerequisite.branch_head = Some(commit("c9"));
+    let mut blocked = state.clone();
+    blocked.tasks.insert(task_id("t0"), prerequisite);
+    blocked
+        .tasks
+        .get_mut(&task_id("t1"))
+        .expect("subject task")
+        .dependencies = vec![Dependency {
+        task: task_id("t0"),
+        commit: commit("c1"),
+    }];
+    assert!(
+        !auto_merge_due(&blocked, subject(&blocked, "t1"), &head),
+        "a stale dependency pin is never merged automatically"
+    );
+}
+
+#[test]
+fn a_refused_auto_merge_is_noted_on_the_task_and_forgotten_once_the_pull_request_leaves_it() {
+    run(vec![
+        case(
+            "a refused merge is noted on the task",
+            state(vec![pr_open("t1", "c1", 42)]),
+            vec![fact(
+                1_000,
+                refused_merge("t1", "the forge refused the merge"),
+            )],
+        )
+        .when("t1", TaskState::PrOpen, vec![Action::RenderChecklist])
+        .checking(|state| {
+            subject(state, "t1").merge_refused.as_deref() == Some("the forge refused the merge")
+        }),
+        case(
+            "a new head keeps the last refusal until the next attempt",
+            state(vec![with_refusal(
+                pr_open("t1", "c1", 42),
+                "the forge refused the merge",
+            )]),
+            vec![fact(
+                3_000,
+                FactKind::BranchPushed {
+                    task: task_id("t1"),
+                    commit: commit("c2"),
+                },
+            )],
+        )
+        .when("t1", TaskState::PrOpen, vec![Action::RenderChecklist])
+        .checking(|state| {
+            subject(state, "t1").merge_refused.as_deref() == Some("the forge refused the merge")
+        }),
+        case(
+            "a closed pull request forgets the refusal",
+            state(vec![with_refusal(
+                pr_open("t1", "c1", 42),
+                "the forge refused the merge",
+            )]),
+            vec![fact(
+                4_000,
+                FactKind::PullRequestClosedUnmerged {
+                    task: task_id("t1"),
+                },
+            )],
+        )
+        .when(
+            "t1",
+            TaskState::Cancelled,
+            vec![hold("t1"), Action::RenderChecklist],
+        )
+        .checking(|state| subject(state, "t1").merge_refused.is_none()),
+        case(
+            "a landed task forgets the refusal",
+            state(vec![with_refusal(
+                pr_open("t1", "c1", 42),
+                "the forge refused the merge",
+            )]),
+            vec![fact(
+                5_000,
+                FactKind::PullRequestMerged {
+                    task: task_id("t1"),
+                    commit: commit("c1"),
+                },
+            )],
+        )
+        .when("t1", TaskState::Landed, vec![Action::RenderChecklist])
+        .checking(|state| subject(state, "t1").merge_refused.is_none()),
+        case(
+            "a stopped task forgets the refusal",
+            state(vec![with_refusal(
+                pr_open("t1", "c1", 42),
+                "the forge refused the merge",
+            )]),
+            vec![fact(
+                6_000,
+                FactKind::TaskCancelled {
+                    task: task_id("t1"),
+                },
+            )],
+        )
+        .when("t1", TaskState::Cancelled, vec![Action::RenderChecklist])
+        .checking(|state| subject(state, "t1").merge_refused.is_none()),
+    ]);
+}
+
+#[test]
+fn a_branch_behind_the_validated_commit_owes_the_push() {
+    let mut task = pr_open("t1", "c1", 42);
+    assert_eq!(task.push_owed(), None, "a pushed branch owes no push");
+
+    task.validations.push(ValidationRecord {
+        command: "cargo test".to_owned(),
+        commit: commit("c2"),
+        exit_code: 0,
+        duration: Duration::from_secs(5),
+        output_tail: "ok".to_owned(),
+    });
+    assert_eq!(
+        task.push_owed(),
+        Some(&commit("c2")),
+        "a branch behind its newest passing validation owes that push"
+    );
+    assert_eq!(
+        task.validated_commit(),
+        None,
+        "the branch has not caught up to the validated commit"
+    );
+
+    let unpushed = validated("t1", "c1");
+    assert_eq!(unpushed.push_owed(), Some(&commit("c1")));
+    assert_eq!(unpushed.validated_commit(), Some(&commit("c1")));
+}
+
+#[test]
+fn a_merge_with_no_validated_revision_to_match_is_held_rather_than_landed() {
+    run(vec![
+        case(
+            "a merged fact for a task with no passing validation is held for a person",
+            state(vec![with_attempt(
+                with_pull_request(task("t1", TaskState::PrOpen), 42, Checks::Passing),
+                Attempt {
+                    outcome: AttemptOutcome::Submitted,
+                    worktree: Some(lease("w1")),
+                    finished_at: Some(at(0)),
+                    ..attempt(BUILD)
+                },
+            )]),
+            vec![fact(
+                1_000,
+                FactKind::PullRequestMerged {
+                    task: task_id("t1"),
+                    commit: commit("c1"),
+                },
+            )],
+        )
+        .when(
+            "t1",
+            TaskState::Failed,
+            vec![hold("t1"), Action::RenderChecklist],
+        )
+        .checking(|state| {
+            subject(state, "t1").validated_commit().is_none()
+                && subject(state, "t1")
+                    .attempts
+                    .last()
+                    .and_then(|attempt| attempt.worktree.clone())
+                    == Some(lease("w1"))
+        }),
+    ]);
+}
+
+#[test]
+fn a_merge_of_an_unvalidated_revision_is_held_rather_than_landed() {
+    let mut task = with_pull_request(validated("t1", "c1"), 42, Checks::Passing);
+    task.state = TaskState::PrOpen;
+    task.branch_head = Some(commit("c1"));
+    run(vec![
+        case(
+            "a merged head that is not the validated commit is held for a person",
+            state(vec![with_attempt(
+                task,
+                Attempt {
+                    outcome: AttemptOutcome::Submitted,
+                    worktree: Some(lease("w1")),
+                    finished_at: Some(at(0)),
+                    ..attempt(BUILD)
+                },
+            )]),
+            vec![fact(
+                1_000,
+                FactKind::PullRequestMerged {
+                    task: task_id("t1"),
+                    commit: commit("c2"),
+                },
+            )],
+        )
+        .when(
+            "t1",
+            TaskState::Failed,
+            vec![hold("t1"), Action::RenderChecklist],
+        )
+        .checking(|state| {
+            subject(state, "t1")
+                .attempts
+                .last()
+                .and_then(|attempt| attempt.worktree.clone())
+                == Some(lease("w1"))
+        }),
     ]);
 }
 
@@ -2628,18 +2888,14 @@ fn merge_closes_an_open_attempt_before_landing() {
     run(vec![
         case(
             "landing stops a lingering open session on the pr",
-            state(vec![with_pull_request(
-                with_attempt(
-                    task("t1", TaskState::PrOpen),
-                    Attempt {
-                        outcome: AttemptOutcome::InFlight,
-                        session: Some(session("s1")),
-                        worktree: Some(lease("w1")),
-                        ..attempt(BUILD)
-                    },
-                ),
-                42,
-                Checks::Passing,
+            state(vec![with_attempt(
+                pr_open("t1", "merge-commit", 42),
+                Attempt {
+                    outcome: AttemptOutcome::InFlight,
+                    session: Some(session("s1")),
+                    worktree: Some(lease("w1")),
+                    ..attempt(BUILD)
+                },
             )]),
             vec![fact(1_000, merged("t1"))],
         )

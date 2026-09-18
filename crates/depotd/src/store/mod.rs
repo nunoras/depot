@@ -118,6 +118,7 @@ impl Store {
             fallback_profiles: settings.profile_fallbacks(),
             limits: settings.limits(),
             always_relay_questions: config.questions.always_relay,
+            auto_merge: config.pull_request.auto_merge,
         })
     }
 

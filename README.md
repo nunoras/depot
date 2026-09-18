@@ -193,6 +193,9 @@ Polling interval is controlled by the `poll_interval_seconds` setting in the dep
 Every tick reconciles the records before it acts: a task whose attempt holds no worktree is leased one, an attempt without a session is launched, an answer a worker has not been told about is resumed, a submitted commit is validated, a validated commit is published, and a task with an open pull request is observed at the forge.
 Each pass is derived from the stored records rather than from the actions a fact produced, so a fact the coordinator's CLI wrote reaches its end without that process executing anything; `docs/adr/0003-reconciliation-derives-pending-work.md` records why.
 
+`[pull_request] auto_merge` in `.depot.toml` is opt-in: with it set, the daemon merges a validated pull request itself once its checks pass and no dependency pin is stale, which lands the task, releases its worktree and drops it from the checklist.
+A merge of any other revision is held for a person instead of landing, and a merge the forge refuses is named on the task and in `depot inbox`.
+
 On startup, the daemon performs recovery: tasks with an in-flight attempt are transitioned to `Unknown` state, allowing them to be restarted or reworked.
 
 ## The pure core
@@ -244,7 +247,7 @@ The fakes live in `crates/depotd/tests/support/`: a scripted program on disk for
 `crates/depot/tests/golden_path.rs` is the end-to-end suite, and it is the check to run before believing depot works.
 It drives the real `depot` binary against a real git repository with a real remote, a scripted worker, a fake boxr child process whose recorded invocations are asserted, a local fake forge endpoint and a local fake Typesafe endpoint, with the daemon loop run tick by tick over the same adapters the daemon binary builds.
 Its fake boxr is the `fake_boxr` test target beside it, so a plain `cargo test` builds it before the suite runs.
-Scenarios cover the whole journey, a worker question, a failed validation and a restart with a task in flight, plus the recovery edges each reconcile pass relies on and the dispatch path from a model-matched rule through to a pinned profile; each asserts the rendered checklist, the task's state history, the commands the daemon issued and the exit codes it saw.
+Scenarios cover the whole journey, a worker question, a failed validation and a restart with a task in flight, plus the recovery edges each reconcile pass relies on, the forge half of the loop from the idle depot to the opted-in merge, and the dispatch path from a model-matched rule through to a pinned profile; each asserts the rendered checklist, the task's state history, the commands the daemon issued and the exit codes it saw.
 `crates/depot/tests/support/` holds the fixture and includes the fakes under `crates/depotd/tests/support/` rather than duplicating them.
 It reaches no external network, so it runs anywhere.
 

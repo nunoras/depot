@@ -124,6 +124,13 @@ pub enum FactKind {
     PullRequestClosedUnmerged {
         task: TaskId,
     },
+    PullRequestMergeRefused {
+        task: TaskId,
+        commit: CommitId,
+        base: CommitId,
+        checks: Checks,
+        reason: String,
+    },
     RunDurationExceeded {
         task: TaskId,
     },

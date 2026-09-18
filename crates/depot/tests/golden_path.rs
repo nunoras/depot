@@ -2,11 +2,14 @@
 mod dispatch;
 mod support;
 
-use depot_core::{AttemptOutcome, CommitId, ProfileId, SessionId, TaskState, WorktreeLease};
+use depot_core::{
+    AttemptOutcome, Checks, CommitId, Dependency, ProfileId, SessionId, TaskId, TaskState,
+    ValidationRecord, WorktreeLease,
+};
 use depotd::InstanceLock;
 use support::git;
 use support::{
-    ACCOUNT, BRANCH, Golden, HARNESS, LEASE, MODEL, PROFILE, SESSION, SLUG, TASK, Validation,
+    ACCOUNT, BASE, BRANCH, Golden, HARNESS, LEASE, MODEL, PROFILE, SESSION, SLUG, TASK, Validation,
     calls_to,
 };
 
@@ -26,6 +29,8 @@ const PUSHED: &str = "branch_pushed";
 const OPENED: &str = "pull_request_opened";
 const CHECKS: &str = "pull_request_checks_changed";
 const MERGED: &str = "pull_request_merged";
+const CLOSED_UNMERGED: &str = "pull_request_closed_unmerged";
+const MERGE_REFUSED: &str = "pull_request_merge_refused";
 const RESTARTED: &str = "daemon_restarted";
 
 #[test]
@@ -1072,6 +1077,539 @@ fn a_restart_with_a_task_in_flight_marks_it_unknown_and_launches_no_replacement(
     assert!(running.contains("Running (1)"), "{running}");
     assert!(!running.contains("Blocked"), "{running}");
     assert_eq!(running, golden.checklist());
+}
+
+#[test]
+fn an_idle_depot_issues_no_forge_calls() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+
+    daemon.tick().expect("an empty project ticks");
+    assert!(
+        golden.forge.requests().is_empty(),
+        "an idle depot polls nothing: {:?}",
+        golden.forge.requests()
+    );
+
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    assert_eq!(golden.task().state, TaskState::Running);
+    assert!(
+        golden.forge.requests().is_empty(),
+        "a task without a pull request is never polled: {:?}",
+        golden.forge.requests()
+    );
+}
+
+#[test]
+fn a_poll_that_observes_no_change_produces_no_fact_and_takes_no_action() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_submits();
+    let commit = golden.head();
+    golden.script_pull_request(&commit);
+    daemon
+        .tick()
+        .expect("the daemon validates and opens the pull request");
+    assert_eq!(golden.task().state, TaskState::PrOpen);
+    assert_eq!(
+        golden.task().pull_request().map(|(_, _, checks)| checks),
+        Some(Checks::Passing)
+    );
+
+    let facts = forge_facts(&golden);
+    let events = golden.events().len();
+    let opened = golden.pull_requests_opened();
+    let acquired = calls_to(&golden.treehouse.calls(), "get").len();
+    let returns = calls_to(&golden.treehouse.calls(), "return").len();
+    let forge_calls = golden.forge.requests().len();
+
+    daemon
+        .tick()
+        .expect("a second poll observes the same pull request");
+
+    let unchanged = golden.task();
+    assert_eq!(unchanged.state, TaskState::PrOpen);
+    assert_eq!(
+        unchanged.pull_request().map(|(_, _, checks)| checks),
+        Some(Checks::Passing)
+    );
+    assert_eq!(
+        golden.events().len(),
+        events + 1,
+        "only the tick's own polled marker is recorded"
+    );
+    assert_eq!(
+        forge_facts(&golden),
+        facts,
+        "a poll that observes no change records no forge fact"
+    );
+    assert!(
+        golden.forge.requests().len() > forge_calls,
+        "the daemon still polls the open pull request"
+    );
+    assert_eq!(
+        golden.pull_requests_opened(),
+        opened,
+        "no second pull request"
+    );
+    assert_eq!(
+        golden.merge_requests(),
+        0,
+        "a project that did not opt in is never merged automatically"
+    );
+    assert_eq!(
+        calls_to(&golden.treehouse.calls(), "get").len(),
+        acquired,
+        "an unchanged poll acquires no worktree"
+    );
+    assert_eq!(
+        calls_to(&golden.treehouse.calls(), "return").len(),
+        returns,
+        "an unchanged poll releases no worktree"
+    );
+}
+
+#[test]
+fn a_project_that_did_not_opt_in_never_merges_itself() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_submits();
+    let commit = golden.head();
+    golden.script_pull_request(&commit);
+    daemon
+        .tick()
+        .expect("the daemon validates and opens the pull request");
+    assert_eq!(golden.task().state, TaskState::PrOpen);
+
+    for _ in 0..3 {
+        daemon
+            .tick()
+            .expect("the daemon polls the open pull request");
+    }
+
+    assert_eq!(golden.task().state, TaskState::PrOpen);
+    assert_eq!(
+        golden.merge_requests(),
+        0,
+        "automatic merging stays off until the project enables it"
+    );
+    assert!(calls_to(&golden.treehouse.calls(), "return").is_empty());
+}
+
+#[test]
+fn a_project_that_opts_in_merges_the_validated_pull_request_itself() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.set_auto_merge(true);
+    golden.script_merge_endpoint();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_submits();
+    let commit = golden.head();
+    golden.script_pull_request(&commit);
+    daemon
+        .tick()
+        .expect("the daemon validates, opens and then merges the pull request");
+
+    let landed = golden.task();
+    assert_eq!(landed.state, TaskState::Landed);
+    assert_eq!(
+        golden.merge_requests(),
+        1,
+        "the opted-in project merges the validated revision once"
+    );
+    assert!(golden.history(TASK).contains(&MERGED.to_string()));
+    assert_eq!(
+        calls_to(&golden.treehouse.calls(), "return").len(),
+        1,
+        "landing the task returns its worktree once"
+    );
+    assert!(calls_to(&golden.treehouse.calls(), "get").len() == 1);
+
+    let checklist = golden.status();
+    assert!(checklist.contains("Landed (1)"), "{checklist}");
+    assert!(!checklist.contains("Pull request open"), "{checklist}");
+    assert_eq!(checklist, golden.checklist());
+}
+
+#[test]
+fn a_pull_request_closed_unmerged_is_left_for_review() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_submits();
+    let commit = golden.head();
+    golden.script_pull_request(&commit);
+    daemon
+        .tick()
+        .expect("the daemon validates and opens the pull request");
+    assert_eq!(golden.task().state, TaskState::PrOpen);
+
+    golden.script_close_unmerged(&commit);
+    daemon
+        .tick()
+        .expect("the daemon observes the pull request closed unmerged");
+
+    let held = golden.task();
+    assert_eq!(held.state, TaskState::Cancelled);
+    assert_ne!(
+        held.state,
+        TaskState::Landed,
+        "a closed pull request never lands the task"
+    );
+    assert!(
+        golden.history(TASK).contains(&CLOSED_UNMERGED.to_string()),
+        "the close is recorded"
+    );
+    assert!(
+        calls_to(&golden.treehouse.calls(), "return").is_empty(),
+        "review keeps the worktree"
+    );
+
+    let checklist = golden.status();
+    assert!(checklist.contains("Cancelled (1)"), "{checklist}");
+    assert!(!checklist.contains("Landed"), "{checklist}");
+    assert_eq!(checklist, golden.checklist());
+}
+
+#[test]
+fn a_merge_of_a_revision_depot_never_validated_is_not_landed() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_submits();
+    let commit = golden.head();
+    golden.script_pull_request(&commit);
+    daemon
+        .tick()
+        .expect("the daemon validates and opens the pull request");
+    assert_eq!(golden.task().state, TaskState::PrOpen);
+
+    let other = "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f";
+    golden.script_merge(other);
+    daemon
+        .tick()
+        .expect("the daemon observes the merge of another revision");
+
+    let held = golden.task();
+    assert_ne!(
+        held.state,
+        TaskState::Landed,
+        "a merge of a revision depot never validated is never recorded as landed"
+    );
+    assert_eq!(held.state, TaskState::Failed);
+    assert_eq!(
+        held.validated_commit(),
+        Some(&CommitId::new(commit.clone()))
+    );
+    assert!(
+        calls_to(&golden.treehouse.calls(), "return").is_empty(),
+        "the unvalidated merge keeps the worktree for review"
+    );
+
+    let checklist = golden.status();
+    assert!(
+        checklist.contains("Blocked - needs a person (1)"),
+        "{checklist}"
+    );
+    assert!(!checklist.contains("Landed"), "{checklist}");
+    assert_eq!(checklist, golden.checklist());
+}
+
+#[test]
+fn an_open_pull_request_depot_did_not_open_is_adopted_rather_than_duplicated() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_submits();
+    let commit = golden.head();
+    golden.script_existing_pull_request(&commit);
+    daemon
+        .tick()
+        .expect("the daemon validates, pushes and adopts the existing pull request");
+
+    let opened = golden.task();
+    assert_eq!(opened.state, TaskState::PrOpen);
+    assert_eq!(opened.pull_request().map(|(number, _, _)| number), Some(1));
+    assert!(
+        golden.history(TASK).contains(&OPENED.to_string()),
+        "the poll records the pull request it found"
+    );
+    assert_eq!(
+        golden.pull_requests_opened(),
+        0,
+        "an already open pull request is never opened again"
+    );
+    let checklist = golden.status();
+    assert!(checklist.contains("Pull request open (1)"), "{checklist}");
+    assert_eq!(checklist, golden.checklist());
+}
+
+#[test]
+fn a_pull_request_branch_that_lags_the_validated_commit_is_pushed_forward() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_submits();
+    let commit = golden.head();
+    golden.script_pull_request(&commit);
+    daemon
+        .tick()
+        .expect("the daemon validates, pushes and opens the pull request");
+    assert_eq!(golden.task().state, TaskState::PrOpen);
+    assert_eq!(
+        git::git(
+            &golden.origin,
+            &["rev-parse", &format!("refs/heads/{BRANCH}")]
+        )
+        .trim(),
+        commit
+    );
+
+    let reworked = golden.commit_in_lease("rework.txt", "the rework\n");
+    let mut task = golden.task();
+    task.validations.push(ValidationRecord {
+        command: "cargo test".to_owned(),
+        commit: CommitId::new(reworked.clone()),
+        exit_code: 0,
+        duration: std::time::Duration::from_secs(5),
+        output_tail: "ok".to_owned(),
+    });
+    golden
+        .store
+        .put_task(&task)
+        .expect("the revalidation the lost push left behind is recorded");
+
+    daemon
+        .tick()
+        .expect("the daemon derives the push the records still owe");
+
+    assert_eq!(
+        git::git(
+            &golden.origin,
+            &["rev-parse", &format!("refs/heads/{BRANCH}")]
+        )
+        .trim(),
+        reworked,
+        "the branch catches up to the commit depot validated"
+    );
+    let caught_up = golden.task();
+    assert_eq!(caught_up.state, TaskState::PrOpen);
+    assert_eq!(caught_up.branch_head, Some(CommitId::new(reworked.clone())));
+    assert_eq!(
+        caught_up.validated_commit(),
+        Some(&CommitId::new(reworked.clone()))
+    );
+    assert_eq!(
+        golden.pull_requests_opened(),
+        1,
+        "catching the branch up opens no second pull request"
+    );
+}
+
+#[test]
+fn an_opted_in_project_does_not_merge_while_a_dependency_pin_is_stale() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_submits();
+    let commit = golden.head();
+    golden.script_pull_request(&commit);
+    daemon
+        .tick()
+        .expect("the daemon validates and opens the pull request");
+    assert_eq!(golden.task().state, TaskState::PrOpen);
+
+    let mut prerequisite = golden.task();
+    prerequisite.id = TaskId::new("t-9");
+    prerequisite.state = TaskState::Landed;
+    prerequisite.dependencies = Vec::new();
+    prerequisite.branch_head = Some(CommitId::new("9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f"));
+    prerequisite.validations = vec![ValidationRecord {
+        command: "cargo test".to_owned(),
+        commit: CommitId::new("9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f"),
+        exit_code: 0,
+        duration: std::time::Duration::from_secs(5),
+        output_tail: "ok".to_owned(),
+    }];
+    golden
+        .store
+        .put_task(&prerequisite)
+        .expect("the dependency the task was pinned to is recorded");
+
+    let mut dependent = golden.task();
+    dependent.dependencies = vec![Dependency {
+        task: TaskId::new("t-9"),
+        commit: CommitId::new(commit.clone()),
+    }];
+    golden
+        .store
+        .put_task(&dependent)
+        .expect("the stale pin is recorded on the task");
+
+    golden.set_auto_merge(true);
+    golden.script_merge_endpoint();
+    daemon
+        .tick()
+        .expect("the daemon polls the open pull request with a stale pin");
+
+    assert_eq!(
+        golden.merge_requests(),
+        0,
+        "a stale dependency pin keeps the merge away even when the project opted in"
+    );
+    assert_eq!(golden.task().state, TaskState::PrOpen);
+    assert!(
+        calls_to(&golden.treehouse.calls(), "return").is_empty(),
+        "a held task keeps its worktree"
+    );
+}
+
+#[test]
+fn a_refused_auto_merge_is_retried_only_when_the_observation_changes() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.set_auto_merge(true);
+    golden.script_merge_endpoint_refused();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_submits();
+    let commit = golden.head();
+    golden.script_pull_request(&commit);
+    daemon
+        .tick()
+        .expect("the daemon validates, opens the pull request and is refused the merge");
+
+    assert_eq!(golden.task().state, TaskState::PrOpen);
+    assert_eq!(
+        golden.merge_requests(),
+        1,
+        "the opted-in project asks the forge to merge once"
+    );
+    assert_eq!(
+        refusals(&golden),
+        1,
+        "the refused merge is recorded exactly once"
+    );
+    let held = golden.status();
+    assert!(
+        held.contains("auto-merge refused: ") && held.contains("405"),
+        "the checklist names the refusal and its reason: {held}"
+    );
+    assert_eq!(held, golden.checklist());
+
+    let facts = forge_facts(&golden);
+    let events = golden.events().len();
+    let returns = calls_to(&golden.treehouse.calls(), "return").len();
+    daemon.tick().expect("an unchanged poll repeats nothing");
+
+    assert_eq!(
+        golden.merge_requests(),
+        1,
+        "an unchanged observation is never merged again"
+    );
+    assert_eq!(
+        golden.events().len(),
+        events + 1,
+        "only the tick's own polled marker is recorded"
+    );
+    assert_eq!(
+        forge_facts(&golden),
+        facts,
+        "an unchanged poll records no forge fact"
+    );
+    assert_eq!(golden.task().state, TaskState::PrOpen);
+    assert_eq!(
+        calls_to(&golden.treehouse.calls(), "return").len(),
+        returns,
+        "a refused merge keeps the worktree"
+    );
+
+    golden.script_pull_request_base(&commit, "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f");
+    daemon.tick().expect("a moved base earns the next attempt");
+
+    assert_eq!(
+        golden.merge_requests(),
+        2,
+        "a changed observation earns exactly one more attempt"
+    );
+    assert_eq!(refusals(&golden), 2, "the second refusal is recorded");
+    assert_eq!(golden.task().state, TaskState::PrOpen);
+
+    golden.script_pull_request_base(&commit, BASE);
+    daemon
+        .tick()
+        .expect("a base that returns to an earlier shape is a change too");
+
+    assert_eq!(
+        golden.merge_requests(),
+        3,
+        "a value returning to an earlier refused shape earns the next attempt"
+    );
+    assert_eq!(refusals(&golden), 3, "the third refusal is recorded");
+
+    let facts = forge_facts(&golden);
+    let events = golden.events().len();
+    daemon.tick().expect("an unchanged poll repeats nothing");
+
+    assert_eq!(
+        golden.merge_requests(),
+        3,
+        "an observation identical to the last attempt is never merged again"
+    );
+    assert_eq!(
+        golden.events().len(),
+        events + 1,
+        "only the tick's own polled marker is recorded"
+    );
+    assert_eq!(forge_facts(&golden), facts);
+
+    let inbox = golden.depot_ok(&["inbox", "--project", SLUG]);
+    assert!(
+        inbox.contains("the forge refused to merge pull request #1"),
+        "the coordinator sees the refusal: {inbox}"
+    );
+    assert!(inbox.contains("405"), "the reason is in the inbox: {inbox}");
+
+    golden.script_close_unmerged(&commit);
+    daemon
+        .tick()
+        .expect("the daemon observes the pull request closed unmerged");
+
+    let closed = golden.status();
+    assert_eq!(golden.task().state, TaskState::Cancelled);
+    assert!(
+        !closed.contains("auto-merge refused"),
+        "a closed pull request forgets the refusal: {closed}"
+    );
+    assert_eq!(closed, golden.checklist());
+}
+
+fn refusals(golden: &Golden) -> usize {
+    golden
+        .history(TASK)
+        .iter()
+        .filter(|kind| kind.as_str() == MERGE_REFUSED)
+        .count()
+}
+
+fn forge_facts(golden: &Golden) -> Vec<String> {
+    golden
+        .events()
+        .into_iter()
+        .filter(|event| event.kind.starts_with("pull_request_"))
+        .map(|event| event.kind)
+        .collect()
 }
 
 fn acquire_released_lock(home: &depotd::DepotHome) -> InstanceLock {

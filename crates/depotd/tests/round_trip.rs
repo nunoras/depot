@@ -88,6 +88,7 @@ fn a_project_state_round_trips_through_the_configuration_split() {
             ..Limits::default()
         },
         always_relay_questions: true,
+        auto_merge: false,
     };
 
     assert_eq!(

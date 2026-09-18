@@ -12,9 +12,16 @@ const PROJECT_KEYS: [&str; 5] = [
     "questions",
 ];
 
-const PROJECT_ONLY_KEYS: [&str; 4] = ["base_branch", "validation", "pull_request", "questions"];
+const PROJECT_ONLY_KEYS: [&str; 5] = [
+    "base_branch",
+    "validation",
+    "pull_request",
+    "questions",
+    "dispatch",
+];
 
-const MACHINE_LOCAL_ONLY_KEYS: [&str; 7] = [
+const MACHINE_LOCAL_ONLY_KEYS: [&str; 8] = [
+    "typesafe_base_url",
     "concurrency",
     "run_duration_minutes",
     "poll_interval_seconds",
@@ -24,7 +31,8 @@ const MACHINE_LOCAL_ONLY_KEYS: [&str; 7] = [
     "credentials",
 ];
 
-const MACHINE_LOCAL_KEYS: [&str; 8] = [
+const MACHINE_LOCAL_KEYS: [&str; 9] = [
+    "typesafe_base_url",
     "concurrency",
     "run_duration_minutes",
     "poll_interval_seconds",
@@ -100,6 +108,7 @@ fn registering_a_project_never_writes_machine_local_settings_into_the_repository
     fixture
         .home
         .write_settings(&Settings {
+            typesafe_base_url: depotd::adapters::typesafe::DEFAULT_API_BASE.into(),
             concurrency: 12,
             run_duration_minutes: 90,
             poll_interval_seconds: 5,

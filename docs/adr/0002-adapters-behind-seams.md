@@ -2,8 +2,9 @@
 
 Depot talks to four things it does not own: boxr for sessions, treehouse for worktrees, GitHub for the forge, and project configuration for role profiles.
 Each gets one thin adapter: a trait with the operations depot performs, an implementation that speaks the real protocol at the edge, and a fake in the tests that reproduces that protocol.
+`docs/adr/0004-model-matched-rules-resolve-in-code.md` added a fifth on the same terms: Typesafe, the dispatch matcher.
 
-The rule that shapes all four is that an adapter holds no policy.
+The rule that shapes all of them is that an adapter holds no policy.
 Whether a task may launch, when a lease returns to the pool, which profile a role falls back to and what a failed validation means are lifecycle rules, and they live in `depot-core` where they are table-tested without processes, filesystem or network.
 An adapter turns a decision already made into a command, and turns the answer back into something deterministic.
 When an adapter starts deciding, the same rule exists in two places and the pure core stops being the whole story of a task.

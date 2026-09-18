@@ -160,6 +160,7 @@ const MIGRATIONS: &[&str] = &[
     EVENTS_PROJECT_KEY_V3,
     EVENT_TASK_V4,
     TASK_SUBMISSION_V5,
+    "ALTER TABLE tasks ADD COLUMN dispatch_profile TEXT;",
 ];
 
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;

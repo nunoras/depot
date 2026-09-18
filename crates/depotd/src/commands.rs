@@ -24,12 +24,24 @@ pub struct TaskRequest {
 pub fn add_task(home: &DepotHome, selection: Option<&str>, request: &TaskRequest) -> Result<Task> {
     let store = Store::open(home)?;
     let project = select_project(&store, selection)?;
-    let role = parse_role(&request.role)?;
-    ensure_role_is_mapped(&store, &project, role)?;
+    let explicit_role = if request.role.is_empty() {
+        None
+    } else {
+        let role = parse_role(&request.role)?;
+        ensure_role_is_mapped(&store, &project, role)?;
+        Some(role)
+    };
     let dependencies = parse_dependencies(&request.dependencies)?;
     let base_dependency =
         resolve_base_dependency(request.base_dependency.as_deref(), &dependencies)?;
     let id = store.next_task_id(&project.id)?;
+    let (role, dispatch_profile, judgement) = match explicit_role {
+        Some(role) => (role, None, None),
+        None => {
+            let (resolution, judgement) = crate::dispatch::judge(&store, &project, &id, request)?;
+            (resolution.role, Some(resolution.profile), Some(judgement))
+        }
+    };
 
     let fact = Fact {
         at: now(),
@@ -38,11 +50,21 @@ pub fn add_task(home: &DepotHome, selection: Option<&str>, request: &TaskRequest
             title: request.title.clone(),
             intent: request.intent.clone(),
             role,
+            dispatch_profile,
             dependencies,
             base_dependency,
         },
     };
-    apply(&store, &project, &["task_proposed", id.as_str()], &fact)?;
+    let mut facts = Vec::new();
+    if let Some(judgement) = judgement {
+        facts.push((event_key(&["task_dispatch_judged", id.as_str()]), judgement));
+    }
+    facts.push((event_key(&["task_proposed", id.as_str()]), fact));
+    if store.apply_facts(&project, &facts)?.outcome == crate::EventOutcome::Duplicate {
+        return Err(Error::Project(
+            "another task was created concurrently; retry task creation".into(),
+        ));
+    }
     task(&store, &project, &id)
 }
 

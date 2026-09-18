@@ -1,4 +1,8 @@
 mod action;
+mod dispatch;
+pub use dispatch::{
+    Confidence, DispatchRefusal, DispatchResolution, DispatchRule, resolve_dispatch,
+};
 mod fact;
 mod model;
 mod reduce;

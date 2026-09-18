@@ -27,7 +27,7 @@ pub struct WorkerLaunch {
     pub prompt: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CoordinatorContext {
     pub project: Project,
     pub home: ProjectHome,

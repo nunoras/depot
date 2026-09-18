@@ -4,6 +4,8 @@
 pub mod fake_forge;
 #[path = "../../../depotd/tests/support/fake_program.rs"]
 pub mod fake_program;
+#[path = "../../../depotd/tests/support/fake_typesafe.rs"]
+pub mod fake_typesafe;
 #[path = "../../../depotd/tests/support/git.rs"]
 pub mod git;
 

@@ -464,22 +464,31 @@ where
         }
         let config = self.store.project_config(&self.project)?;
         let settings = self.store.home().load_settings()?;
-        let profiles = settings.configured_profiles(&config)?;
-        let resolved = profiles
-            .resolve(task_record.role)
-            .map_err(|error| Error::Config(error.to_string()))?;
-        let spec = if resolved.primary.profile == profile {
-            resolved.primary
+        let spec = if let Some(pinned) = &task_record.dispatch_profile {
+            if &profile != pinned && !settings.profile_fallbacks().contains(&profile) {
+                return Err(Error::Config(format!(
+                    "profile `{profile}` is not authorized for task `{task}`"
+                )));
+            }
+            settings.profile_spec(profile.clone())?
         } else {
-            resolved
-                .fallbacks
-                .into_iter()
-                .find(|candidate| candidate.profile == profile)
-                .ok_or_else(|| {
-                    Error::Config(format!(
-                        "profile `{profile}` is not configured for task `{task}`"
-                    ))
-                })?
+            let profiles = settings.configured_profiles(&config)?;
+            let resolved = profiles
+                .resolve(task_record.role)
+                .map_err(|error| Error::Config(error.to_string()))?;
+            if resolved.primary.profile == profile {
+                resolved.primary
+            } else {
+                resolved
+                    .fallbacks
+                    .into_iter()
+                    .find(|candidate| candidate.profile == profile)
+                    .ok_or_else(|| {
+                        Error::Config(format!(
+                            "profile `{profile}` is not configured for task `{task}`"
+                        ))
+                    })?
+            }
         };
         let brief = self
             .store
@@ -1143,6 +1152,7 @@ mod tests {
             title: "test".to_owned(),
             intent: "test validation".to_owned(),
             role: depot_core::Role::Build,
+            dispatch_profile: None,
             state: depot_core::TaskState::Proposed,
             dependencies: Vec::new(),
             base_dependency: None,

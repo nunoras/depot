@@ -10,7 +10,7 @@ use crate::vocabulary::{ROLE_NAMES, role_from_name};
 
 pub const PROJECT_CONFIG_FILE_NAME: &str = ".depot.toml";
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ProjectConfig {
     pub base_branch: String,
@@ -18,6 +18,55 @@ pub struct ProjectConfig {
     pub validation: ValidationConfig,
     pub pull_request: PullRequestConfig,
     pub questions: QuestionsConfig,
+    pub dispatch: Option<toml::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DispatchConfig {
+    #[serde(default = "default_confidence_floor")]
+    pub confidence_floor: f64,
+    pub rules: Vec<DispatchRuleConfig>,
+}
+
+pub fn default_confidence_floor() -> f64 {
+    0.8
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DispatchRuleConfig {
+    pub when: String,
+    pub role: String,
+    #[serde(default)]
+    pub candidates: Vec<String>,
+}
+
+impl DispatchConfig {
+    pub fn validated_rules(&self) -> Result<Vec<depot_core::DispatchRule>> {
+        if depot_core::Confidence::new(self.confidence_floor).is_none() {
+            return Err(Error::Config(
+                ".depot.toml dispatch.confidence_floor must be between 0 and 1".into(),
+            ));
+        }
+        if self.rules.is_empty() {
+            return Err(Error::Config(
+                ".depot.toml dispatch.rules is empty; configure at least one rule or supply --role"
+                    .into(),
+            ));
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        self.rules.iter().map(|rule| {
+            if rule.when.trim().is_empty() || rule.when == crate::adapters::typesafe::NO_MATCH || !seen.insert(&rule.when) {
+                return Err(Error::Config(".depot.toml dispatch.rules requires unique, nonempty when strings distinct from the neutral option".into()));
+            }
+            let role = role_from_name(&rule.role).ok_or_else(|| Error::Config(format!("unknown dispatch rule role `{}` in .depot.toml", rule.role)))?;
+            if rule.candidates.iter().any(|candidate| candidate.trim().is_empty()) {
+                return Err(Error::Config(".depot.toml dispatch rule contains an empty candidate profile".into()));
+            }
+            Ok(depot_core::DispatchRule { when: rule.when.clone(), role, candidates: rule.candidates.iter().map(ProfileId::new).collect() })
+        }).collect()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -47,6 +96,7 @@ impl Default for ProjectConfig {
             validation: ValidationConfig::default(),
             pull_request: PullRequestConfig::default(),
             questions: QuestionsConfig::default(),
+            dispatch: None,
         }
     }
 }

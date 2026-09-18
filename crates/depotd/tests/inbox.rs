@@ -35,6 +35,7 @@ fn proposed(id: &str, title: &str) -> FactKind {
         title: title.to_string(),
         intent: format!("intent for {id}"),
         role: depot_core::Role::Build,
+        dispatch_profile: None,
         dependencies: Vec::new(),
         base_dependency: None,
     }

@@ -78,6 +78,7 @@ pub fn simple_task(project: &ProjectId, id: &str, state: TaskState, created_at: 
         title: format!("task {id}"),
         intent: format!("intent for {id}"),
         role: Role::Build,
+        dispatch_profile: None,
         state,
         dependencies: Vec::new(),
         base_dependency: None,
@@ -101,6 +102,7 @@ pub fn full_task(project: &ProjectId, id: &str) -> Task {
         title: format!("task {id}"),
         intent: format!("intent for {id}"),
         role: Role::Review,
+        dispatch_profile: None,
         state: TaskState::WaitingOnQuestion,
         dependencies: vec![
             Dependency {

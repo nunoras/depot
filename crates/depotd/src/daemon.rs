@@ -132,7 +132,7 @@ impl<F> ForgeDelivery<F> {
 }
 
 impl<F: Forge> Delivery for ForgeDelivery<F> {
-    fn push(&self, _task: &Task, worktree: &Path, commit: &CommitId) -> Result<()> {
+    fn push(&self, task: &Task, worktree: &Path, commit: &CommitId) -> Result<()> {
         let head = git_output(worktree, &["rev-parse", "HEAD"])?;
         if head.trim() != commit.as_str() {
             return Err(Error::Project(format!(
@@ -140,14 +140,7 @@ impl<F: Forge> Delivery for ForgeDelivery<F> {
                 worktree.display()
             )));
         }
-        let branch = git_output(worktree, &["branch", "--show-current"])?;
-        let branch = branch.trim();
-        if branch.is_empty() {
-            return Err(Error::Project(format!(
-                "worktree {} has no branch for delivery",
-                worktree.display()
-            )));
-        }
+        let branch = delivery_branch(worktree, task)?;
         git_output(
             worktree,
             &["push", "origin", &format!("HEAD:refs/heads/{branch}")],
@@ -164,8 +157,7 @@ impl<F: Forge> Delivery for ForgeDelivery<F> {
     ) -> Result<(u64, String)> {
         let remote = git_output(worktree, &["remote", "get-url", "origin"])?;
         let repo = repo_slug(remote.trim())?;
-        let head = git_output(worktree, &["branch", "--show-current"])?;
-        let head = head.trim().to_owned();
+        let head = delivery_branch(worktree, task)?;
         let opened = match self
             .forge
             .find_open_pull_request(&repo, &head)
@@ -242,6 +234,17 @@ fn shell(command: &str, worktree: &Path) -> Result<std::process::Output> {
         process
     };
     process.current_dir(worktree).output().map_err(Error::Io)
+}
+
+fn delivery_branch(worktree: &Path, task: &Task) -> Result<String> {
+    let current = git_output(worktree, &["branch", "--show-current"])?;
+    let current = current.trim();
+    if !current.is_empty() {
+        return Ok(current.to_owned());
+    }
+    let branch = format!("depot-{}", task.id);
+    git_output(worktree, &["checkout", "-B", &branch])?;
+    Ok(branch)
 }
 
 fn git_output(worktree: &Path, args: &[&str]) -> Result<String> {
@@ -526,17 +529,22 @@ where
                 kind: FactKind::WorkerTurnLaunchRequested { task: task.clone() },
             },
         )?;
+        let account = spec.account.trim();
         let session = self
             .sessions
             .launch(&LaunchRequest {
                 directory: worktree.path,
                 profile: SessionProfile {
-                    account: spec.account.into(),
+                    account: if account.is_empty() {
+                        None
+                    } else {
+                        Some(account.into())
+                    },
                     harness: spec.harness,
                     model: spec.model,
                     effort: spec.effort,
                 },
-                kind: Some("worker".to_string()),
+                kind: Some(crate::vocabulary::role_name(task_record.role).to_owned()),
                 prompt: brief,
             })
             .map_err(|error| Error::Project(error.to_string()))?;

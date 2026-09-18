@@ -61,7 +61,7 @@ fn request(directory: &Path) -> LaunchRequest {
     LaunchRequest {
         directory: directory.to_owned(),
         profile: SessionProfile {
-            account: ProfileId::new("work"),
+            account: Some(ProfileId::new("work")),
             harness: "claude".to_owned(),
             model: "opus".to_owned(),
             effort: "high".to_owned(),
@@ -164,6 +164,28 @@ fn accepts_a_bare_session_id_on_stdout() {
 }
 
 #[test]
+fn omits_account_when_the_profile_has_none() {
+    let dir = TempDir::new("sessions-no-account");
+    let worktree = dir.path().join("worktree");
+    std::fs::create_dir_all(&worktree).expect("the worktree directory is created");
+    let fake = FakeProgram::new(dir.path(), "boxr");
+    fake.respond("--harness", "session: 4f2a91\n", "", 0);
+
+    let mut launch = request(&worktree);
+    launch.profile.account = None;
+    let session = adapter(&fake)
+        .launch(&launch)
+        .expect("a launch without an account succeeds");
+    assert_eq!(session, SessionId::new("4f2a91"));
+    assert_eq!(
+        fake.calls(),
+        vec![
+            "--harness claude --model opus --effort high --kind build --detach fix the login redirect"
+        ]
+    );
+}
+
+#[test]
 fn names_every_missing_capability_and_the_minimum_version() {
     let dir = TempDir::new("sessions-missing-capability");
     let fake = FakeProgram::new(dir.path(), "boxr");
@@ -234,6 +256,47 @@ fn never_guesses_a_session_id() {
         .launch(&request(dir.path()))
         .expect_err("unreadable output is refused");
     assert!(error.to_string().contains("cannot read"), "{error}");
+}
+
+#[test]
+fn reads_nested_boxr_status_wait_and_launch_fields() {
+    let dir = TempDir::new("sessions-nested-toon");
+    let worktree = dir.path().join("worktree");
+    std::fs::create_dir_all(&worktree).expect("the worktree directory is created");
+    let fake = FakeProgram::new(dir.path(), "boxr");
+    fake.respond(
+        "--harness",
+        "session:\n  id: s-4f2a91\n  status: running\n  harness: pi\n  model: xai/grok-4.5\n",
+        "",
+        0,
+    );
+    fake.respond(
+        "status",
+        "session:\n  id: s-4f2a91\n  status: ok\n  state: finished\n  harness: pi\n",
+        "",
+        0,
+    );
+    fake.respond(
+        "wait",
+        "session:\n  id: s-4f2a91\n  status: ok\n  state: finished\nhelp[1]:\n  done\n",
+        "",
+        0,
+    );
+
+    let boxr = adapter(&fake);
+    let session = boxr
+        .launch(&request(&worktree))
+        .expect("nested launch id is read");
+    assert_eq!(session, SessionId::new("s-4f2a91"));
+    assert_eq!(
+        boxr.status(&session).expect("nested status state is read"),
+        SessionState::Finished
+    );
+    assert_eq!(
+        boxr.wait(&session, None)
+            .expect("nested wait status is read"),
+        TurnOutcome::Completed
+    );
 }
 
 #[test]

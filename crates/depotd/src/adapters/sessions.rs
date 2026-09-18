@@ -13,7 +13,7 @@ pub const REQUIRED_BOXR_FLAGS: [&str; 1] = ["--detach"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionProfile {
-    pub account: ProfileId,
+    pub account: Option<ProfileId>,
     pub harness: String,
     pub model: String,
     pub effort: String,
@@ -154,9 +154,14 @@ impl Sessions for Boxr {
             request.profile.model.clone(),
             "--effort".to_owned(),
             request.profile.effort.clone(),
-            "--account".to_owned(),
-            request.profile.account.as_str().to_owned(),
         ];
+        if let Some(account) = &request.profile.account {
+            let account = account.as_str();
+            if !account.is_empty() {
+                args.push("--account".to_owned());
+                args.push(account.to_owned());
+            }
+        }
         if let Some(kind) = &request.kind {
             args.push("--kind".to_owned());
             args.push(kind.clone());

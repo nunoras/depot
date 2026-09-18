@@ -104,7 +104,6 @@ impl Settings {
             ("harness", profile.harness.as_str()),
             ("model", profile.model.as_str()),
             ("effort", profile.effort.as_str()),
-            ("account", profile.account.as_str()),
         ];
         if let Some((field, _)) = fields.iter().find(|(_, value)| value.trim().is_empty()) {
             return Err(Error::Config(format!(

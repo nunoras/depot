@@ -109,14 +109,17 @@ github = "gh-cli"
 harness = "pi"
 model = "glm-5.3"
 effort = "high"
-account = "work"
+account = ""
 
 [profiles."gpt-5.5"]
-harness = "pi"
-model = "gpt-5.5"
+harness = "claude"
+model = "opus"
 effort = "high"
-account = "personal"
+account = "work"
 ```
+
+`account` may be empty: depot then omits `--account` on the boxr launch.
+pi has no isolated account directory, so a pi profile leaves it blank and uses the host credentials.
 
 Neither file accepts a key from the other side of the split, and registering a project never writes a machine-local setting into the repository.
 `crates/depotd/tests/config_split.rs` is the guard.
@@ -224,7 +227,9 @@ An adapter holds no policy: the lifecycle rules stay in `depot-core`, and the ad
 | profiles | `profiles.rs` | the project's role to profile map |
 | dispatch | `typesafe.rs` | the Typesafe Choice API over HTTP, with a configurable base URL and an owner-only key file |
 
-What depot requires of boxr, command by command and field by field, is recorded in [`docs/boxr-contract.md`](docs/boxr-contract.md), because detached sessions and resume are not built yet.
+What depot requires of boxr, command by command and field by field, is recorded in [`docs/boxr-contract.md`](docs/boxr-contract.md). boxr 0.2.0 ships the detached session, status, wait, ps and resume surface depot calls.
+To open depot as the daily driver on a real project, see [`docs/daily-driver.md`](docs/daily-driver.md).
+The first end-to-end run against boxr is summarized in [`docs/first-real-project-report.md`](docs/first-real-project-report.md).
 A missing capability fails loudly, naming the command.
 
 ## Tests

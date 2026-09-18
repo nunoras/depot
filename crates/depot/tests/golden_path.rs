@@ -109,7 +109,7 @@ fn the_whole_journey_runs_from_proposal_to_a_released_worktree() {
             "--account",
             ACCOUNT,
             "--kind",
-            "worker",
+            "build",
             "--detach",
             &brief,
         ],

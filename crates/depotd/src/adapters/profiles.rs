@@ -94,9 +94,6 @@ fn missing_field(spec: &ProfileSpec) -> Option<&'static str> {
     if spec.effort.trim().is_empty() {
         return Some("effort");
     }
-    if spec.account.trim().is_empty() {
-        return Some("account");
-    }
     None
 }
 

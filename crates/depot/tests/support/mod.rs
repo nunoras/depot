@@ -419,6 +419,13 @@ impl Golden {
         git::head(&self.lease)
     }
 
+    pub fn commit_in_lease(&self, file: &str, contents: &str) -> String {
+        fs::write(self.lease.join(file), contents).expect("the file is written in the lease");
+        git::git(&self.lease, &["add", file]);
+        git::git(&self.lease, &["commit", "-m", "the rework"]);
+        git::head(&self.lease)
+    }
+
     pub fn checklist(&self) -> String {
         fs::read_to_string(self.home.project_home(&self.project.slug).checklist_path())
             .expect("the checklist is written by depot")

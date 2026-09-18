@@ -3,7 +3,8 @@ mod dispatch;
 mod support;
 
 use depot_core::{
-    AttemptOutcome, Checks, CommitId, ProfileId, SessionId, TaskState, WorktreeLease,
+    AttemptOutcome, Checks, CommitId, Dependency, ProfileId, SessionId, TaskId, TaskState,
+    ValidationRecord, WorktreeLease,
 };
 use depotd::InstanceLock;
 use support::git;
@@ -1349,6 +1350,128 @@ fn an_open_pull_request_depot_did_not_open_is_adopted_rather_than_duplicated() {
     let checklist = golden.status();
     assert!(checklist.contains("Pull request open (1)"), "{checklist}");
     assert_eq!(checklist, golden.checklist());
+}
+
+#[test]
+fn a_pull_request_branch_that_lags_the_validated_commit_is_pushed_forward() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_submits();
+    let commit = golden.head();
+    golden.script_pull_request(&commit);
+    daemon
+        .tick()
+        .expect("the daemon validates, pushes and opens the pull request");
+    assert_eq!(golden.task().state, TaskState::PrOpen);
+    assert_eq!(
+        git::git(
+            &golden.origin,
+            &["rev-parse", &format!("refs/heads/{BRANCH}")]
+        )
+        .trim(),
+        commit
+    );
+
+    let reworked = golden.commit_in_lease("rework.txt", "the rework\n");
+    let mut task = golden.task();
+    task.validations.push(ValidationRecord {
+        command: "cargo test".to_owned(),
+        commit: CommitId::new(reworked.clone()),
+        exit_code: 0,
+        duration: std::time::Duration::from_secs(5),
+        output_tail: "ok".to_owned(),
+    });
+    golden
+        .store
+        .put_task(&task)
+        .expect("the revalidation the lost push left behind is recorded");
+
+    daemon
+        .tick()
+        .expect("the daemon derives the push the records still owe");
+
+    assert_eq!(
+        git::git(
+            &golden.origin,
+            &["rev-parse", &format!("refs/heads/{BRANCH}")]
+        )
+        .trim(),
+        reworked,
+        "the branch catches up to the commit depot validated"
+    );
+    let caught_up = golden.task();
+    assert_eq!(caught_up.state, TaskState::PrOpen);
+    assert_eq!(caught_up.branch_head, Some(CommitId::new(reworked.clone())));
+    assert_eq!(
+        caught_up.validated_commit(),
+        Some(&CommitId::new(reworked.clone()))
+    );
+    assert_eq!(
+        golden.pull_requests_opened(),
+        1,
+        "catching the branch up opens no second pull request"
+    );
+}
+
+#[test]
+fn an_opted_in_project_does_not_merge_while_a_dependency_pin_is_stale() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_submits();
+    let commit = golden.head();
+    golden.script_pull_request(&commit);
+    daemon
+        .tick()
+        .expect("the daemon validates and opens the pull request");
+    assert_eq!(golden.task().state, TaskState::PrOpen);
+
+    let mut prerequisite = golden.task();
+    prerequisite.id = TaskId::new("t-9");
+    prerequisite.state = TaskState::Landed;
+    prerequisite.dependencies = Vec::new();
+    prerequisite.branch_head = Some(CommitId::new("9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f"));
+    prerequisite.validations = vec![ValidationRecord {
+        command: "cargo test".to_owned(),
+        commit: CommitId::new("9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f"),
+        exit_code: 0,
+        duration: std::time::Duration::from_secs(5),
+        output_tail: "ok".to_owned(),
+    }];
+    golden
+        .store
+        .put_task(&prerequisite)
+        .expect("the dependency the task was pinned to is recorded");
+
+    let mut dependent = golden.task();
+    dependent.dependencies = vec![Dependency {
+        task: TaskId::new("t-9"),
+        commit: CommitId::new(commit.clone()),
+    }];
+    golden
+        .store
+        .put_task(&dependent)
+        .expect("the stale pin is recorded on the task");
+
+    golden.set_auto_merge(true);
+    golden.script_merge_endpoint();
+    daemon
+        .tick()
+        .expect("the daemon polls the open pull request with a stale pin");
+
+    assert_eq!(
+        golden.merge_requests(),
+        0,
+        "a stale dependency pin keeps the merge away even when the project opted in"
+    );
+    assert_eq!(golden.task().state, TaskState::PrOpen);
+    assert!(
+        calls_to(&golden.treehouse.calls(), "return").is_empty(),
+        "a held task keeps its worktree"
+    );
 }
 
 fn forge_facts(golden: &Golden) -> Vec<String> {

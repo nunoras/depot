@@ -232,11 +232,20 @@ pub struct Task {
 
 impl Task {
     pub fn validated_commit(&self) -> Option<&CommitId> {
-        let record = self.validations.iter().rev().find(|r| r.exit_code == 0)?;
+        let record = self.newest_passing_validation()?;
         match &self.branch_head {
             Some(head) if head != &record.commit => None,
             _ => Some(&record.commit),
         }
+    }
+
+    pub fn push_owed(&self) -> Option<&CommitId> {
+        let record = self.newest_passing_validation()?;
+        (self.branch_head.as_ref() != Some(&record.commit)).then_some(&record.commit)
+    }
+
+    fn newest_passing_validation(&self) -> Option<&ValidationRecord> {
+        self.validations.iter().rev().find(|r| r.exit_code == 0)
     }
 
     pub fn unanswered_question(&mut self) -> Option<&mut Question> {

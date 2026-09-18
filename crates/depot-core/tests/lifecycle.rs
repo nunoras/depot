@@ -1192,17 +1192,13 @@ fn rule_11_a_landed_task_releases_its_worktree_and_renders() {
     run(vec![
         case(
             "the merge releases the lease and renders the checklist",
-            state(vec![with_pull_request(
-                with_attempt(
-                    task("t1", TaskState::PrOpen),
-                    Attempt {
-                        outcome: AttemptOutcome::Submitted,
-                        worktree: Some(lease("w1")),
-                        ..attempt(BUILD)
-                    },
-                ),
-                42,
-                Checks::Passing,
+            state(vec![with_attempt(
+                pr_open("t1", "merge-commit", 42),
+                Attempt {
+                    outcome: AttemptOutcome::Submitted,
+                    worktree: Some(lease("w1")),
+                    ..attempt(BUILD)
+                },
             )]),
             vec![fact(1_000, merged("t1"))],
         )
@@ -1369,6 +1365,13 @@ fn with_pull_request(mut task: Task, number: u64, checks: Checks) -> Task {
         url: format!("https://github.com/nunoras/depot/pull/{number}"),
         checks,
     });
+    task
+}
+
+fn pr_open(id: &str, commit_id: &str, number: u64) -> Task {
+    let mut task = with_pull_request(validated(id, commit_id), number, Checks::Passing);
+    task.state = TaskState::PrOpen;
+    task.branch_head = Some(commit(commit_id));
     task
 }
 
@@ -1548,17 +1551,13 @@ fn merge_is_blocked_while_dependency_pins_are_stale() {
             "a merged pr with a stale pin stays open and holds for the user",
             state(vec![
                 depending_on(
-                    with_pull_request(
-                        with_attempt(
-                            task("t1", TaskState::PrOpen),
-                            Attempt {
-                                outcome: AttemptOutcome::Submitted,
-                                worktree: Some(lease("w1")),
-                                ..attempt(BUILD)
-                            },
-                        ),
-                        7,
-                        Checks::Passing,
+                    with_attempt(
+                        pr_open("t1", "merge-commit", 7),
+                        Attempt {
+                            outcome: AttemptOutcome::Submitted,
+                            worktree: Some(lease("w1")),
+                            ..attempt(BUILD)
+                        },
                     ),
                     "t0",
                     "c1",
@@ -1995,18 +1994,14 @@ fn stale_pr_open_can_rework_revalidate_and_land() {
             "a held pr-open dependent reworks against the new pin and lands",
             state(vec![
                 depending_on(
-                    with_pull_request(
-                        with_attempt(
-                            task("t1", TaskState::PrOpen),
-                            Attempt {
-                                outcome: AttemptOutcome::Submitted,
-                                worktree: Some(lease("w1")),
-                                finished_at: Some(at(0)),
-                                ..attempt(BUILD)
-                            },
-                        ),
-                        7,
-                        Checks::Passing,
+                    with_attempt(
+                        pr_open("t1", "merge-commit", 7),
+                        Attempt {
+                            outcome: AttemptOutcome::Submitted,
+                            worktree: Some(lease("w1")),
+                            finished_at: Some(at(0)),
+                            ..attempt(BUILD)
+                        },
                     ),
                     "t0",
                     "c1",
@@ -2032,6 +2027,13 @@ fn stale_pr_open_can_rework_revalidate_and_land() {
                 ),
                 fact(4_000, submitted("t1", "cb2")),
                 fact(5_000, passed("t1", "cb2")),
+                fact(
+                    5_500,
+                    FactKind::BranchPushed {
+                        task: task_id("t1"),
+                        commit: commit("cb2"),
+                    },
+                ),
                 fact(
                     6_000,
                     FactKind::PullRequestMerged {
@@ -2176,18 +2178,14 @@ fn landing_clears_the_attempt_lease_and_is_idempotent() {
     run(vec![
         case(
             "a second merge after landing does not release again",
-            state(vec![with_pull_request(
-                with_attempt(
-                    task("t1", TaskState::PrOpen),
-                    Attempt {
-                        outcome: AttemptOutcome::Submitted,
-                        worktree: Some(lease("w1")),
-                        finished_at: Some(at(0)),
-                        ..attempt(BUILD)
-                    },
-                ),
-                42,
-                Checks::Passing,
+            state(vec![with_attempt(
+                pr_open("t1", "merge-commit", 42),
+                Attempt {
+                    outcome: AttemptOutcome::Submitted,
+                    worktree: Some(lease("w1")),
+                    finished_at: Some(at(0)),
+                    ..attempt(BUILD)
+                },
             )]),
             vec![fact(1_000, merged("t1")), fact(2_000, merged("t1"))],
         )
@@ -2329,10 +2327,7 @@ fn relayed_questions_do_not_leave_validating_or_terminal_states() {
 #[test]
 fn auto_merge_waits_for_the_project_to_opt_in_and_for_the_validated_head() {
     let head = commit("c1");
-    let mut opted_out = with_pull_request(validated("t1", "c1"), 42, Checks::Passing);
-    opted_out.state = TaskState::PrOpen;
-    opted_out.branch_head = Some(head.clone());
-    let mut state = state(vec![opted_out]);
+    let mut state = state(vec![pr_open("t1", "c1", 42)]);
 
     assert!(
         !auto_merge_due(&state, subject(&state, "t1"), &head),
@@ -2357,6 +2352,89 @@ fn auto_merge_waits_for_the_project_to_opt_in_and_for_the_validated_head() {
         !auto_merge_due(&failing, subject(&failing, "t1"), &head),
         "failing checks are never merged automatically"
     );
+
+    let mut prerequisite = validated("t0", "c9");
+    prerequisite.branch_head = Some(commit("c9"));
+    let mut blocked = state.clone();
+    blocked.tasks.insert(task_id("t0"), prerequisite);
+    blocked
+        .tasks
+        .get_mut(&task_id("t1"))
+        .expect("subject task")
+        .dependencies = vec![Dependency {
+        task: task_id("t0"),
+        commit: commit("c1"),
+    }];
+    assert!(
+        !auto_merge_due(&blocked, subject(&blocked, "t1"), &head),
+        "a stale dependency pin is never merged automatically"
+    );
+}
+
+#[test]
+fn a_branch_behind_the_validated_commit_owes_the_push() {
+    let mut task = pr_open("t1", "c1", 42);
+    assert_eq!(task.push_owed(), None, "a pushed branch owes no push");
+
+    task.validations.push(ValidationRecord {
+        command: "cargo test".to_owned(),
+        commit: commit("c2"),
+        exit_code: 0,
+        duration: Duration::from_secs(5),
+        output_tail: "ok".to_owned(),
+    });
+    assert_eq!(
+        task.push_owed(),
+        Some(&commit("c2")),
+        "a branch behind its newest passing validation owes that push"
+    );
+    assert_eq!(
+        task.validated_commit(),
+        None,
+        "the branch has not caught up to the validated commit"
+    );
+
+    let mut unpushed = validated("t1", "c1");
+    assert_eq!(unpushed.push_owed(), Some(&commit("c1")));
+    assert_eq!(unpushed.validated_commit(), Some(&commit("c1")));
+}
+
+#[test]
+fn a_merge_with_no_validated_revision_to_match_is_held_rather_than_landed() {
+    run(vec![
+        case(
+            "a merged fact for a task with no passing validation is held for a person",
+            state(vec![with_attempt(
+                with_pull_request(task("t1", TaskState::PrOpen), 42, Checks::Passing),
+                Attempt {
+                    outcome: AttemptOutcome::Submitted,
+                    worktree: Some(lease("w1")),
+                    finished_at: Some(at(0)),
+                    ..attempt(BUILD)
+                },
+            )]),
+            vec![fact(
+                1_000,
+                FactKind::PullRequestMerged {
+                    task: task_id("t1"),
+                    commit: commit("c1"),
+                },
+            )],
+        )
+        .when(
+            "t1",
+            TaskState::Failed,
+            vec![hold("t1"), Action::RenderChecklist],
+        )
+        .checking(|state| {
+            subject(state, "t1").validated_commit().is_none()
+                && subject(state, "t1")
+                    .attempts
+                    .last()
+                    .and_then(|attempt| attempt.worktree.clone())
+                    == Some(lease("w1"))
+        }),
+    ]);
 }
 
 #[test]
@@ -2708,18 +2786,14 @@ fn merge_closes_an_open_attempt_before_landing() {
     run(vec![
         case(
             "landing stops a lingering open session on the pr",
-            state(vec![with_pull_request(
-                with_attempt(
-                    task("t1", TaskState::PrOpen),
-                    Attempt {
-                        outcome: AttemptOutcome::InFlight,
-                        session: Some(session("s1")),
-                        worktree: Some(lease("w1")),
-                        ..attempt(BUILD)
-                    },
-                ),
-                42,
-                Checks::Passing,
+            state(vec![with_attempt(
+                pr_open("t1", "merge-commit", 42),
+                Attempt {
+                    outcome: AttemptOutcome::InFlight,
+                    session: Some(session("s1")),
+                    worktree: Some(lease("w1")),
+                    ..attempt(BUILD)
+                },
             )]),
             vec![fact(1_000, merged("t1"))],
         )

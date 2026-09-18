@@ -515,10 +515,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
 
         FactKind::PullRequestMerged { task, commit } => {
             let merged_head_mismatch = next.tasks.get(task).is_some_and(|task| {
-                task.state == TaskState::PrOpen
-                    && task
-                        .validated_commit()
-                        .is_some_and(|validated| validated != commit)
+                task.state == TaskState::PrOpen && task.validated_commit() != Some(commit)
             });
             if merged_head_mismatch {
                 if let Some(task) = next.tasks.get_mut(task) {
@@ -839,6 +836,7 @@ fn base_dependency_is_valid(dependencies: &[Dependency], base_dependency: &Optio
 pub fn auto_merge_due(state: &ProjectState, task: &Task, head: &CommitId) -> bool {
     state.auto_merge
         && task.state == TaskState::PrOpen
+        && !publication_blocked(state, &task.id)
         && task
             .pull_request()
             .is_some_and(|(_, _, checks)| checks == Checks::Passing)

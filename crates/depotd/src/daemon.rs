@@ -942,17 +942,25 @@ where
     fn reconcile_delivery(&self) -> Result<()> {
         let state = self.store.project_state(&self.project)?;
         for task in state.tasks.values() {
-            if task.state != TaskState::Validated
-                || task.pull_request().is_some()
-                || depot_core::publication_blocked(&state, &task.id)
-            {
+            if depot_core::publication_blocked(&state, &task.id) {
                 continue;
             }
-            let Some(commit) = task.validated_commit().cloned() else {
-                continue;
-            };
-            self.push(task.id.clone(), commit.clone())?;
-            self.open_pull_request(task.id.clone(), commit)?;
+            match task.state {
+                TaskState::Validated if task.pull_request().is_none() => {
+                    let Some(commit) = task.validated_commit().cloned() else {
+                        continue;
+                    };
+                    self.push(task.id.clone(), commit.clone())?;
+                    self.open_pull_request(task.id.clone(), commit)?;
+                }
+                TaskState::PrOpen => {
+                    let Some(commit) = task.push_owed().cloned() else {
+                        continue;
+                    };
+                    self.push(task.id.clone(), commit)?;
+                }
+                _ => {}
+            }
         }
         Ok(())
     }

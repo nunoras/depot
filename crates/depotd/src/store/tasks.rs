@@ -80,7 +80,7 @@ impl Store {
 }
 
 const TASK_COLUMNS: &str = "project_id, id, title, intent, role, state, base_dependency, \
-     branch_head, retry_profile, retry_not_before, submission_summary, created_at, updated_at";
+     branch_head, retry_profile, retry_not_before, submission_summary, created_at, updated_at, dispatch_profile";
 
 struct RawTask {
     project_id: String,
@@ -88,6 +88,7 @@ struct RawTask {
     title: String,
     intent: String,
     role: String,
+    dispatch_profile: Option<String>,
     state: String,
     base_dependency: Option<String>,
     branch_head: Option<String>,
@@ -106,6 +107,7 @@ impl RawTask {
             title: row.get("title")?,
             intent: row.get("intent")?,
             role: row.get("role")?,
+            dispatch_profile: row.get("dispatch_profile")?,
             state: row.get("state")?,
             base_dependency: row.get("base_dependency")?,
             branch_head: row.get("branch_head")?,
@@ -145,6 +147,7 @@ impl RawTask {
             title: self.title,
             intent: self.intent,
             role,
+            dispatch_profile: self.dispatch_profile.map(ProfileId::new),
             state: state_from_name(&self.state)?,
             dependencies: store.dependencies(&project, &self.id)?,
             base_dependency: self.base_dependency.map(TaskId::new),
@@ -407,8 +410,8 @@ pub(super) fn write_task(transaction: &Transaction<'_>, task: &Task) -> Result<(
     transaction.execute(
         "INSERT INTO tasks (
                 project_id, id, title, intent, role, state, base_dependency, branch_head,
-                retry_profile, retry_not_before, submission_summary, created_at, updated_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                retry_profile, retry_not_before, submission_summary, created_at, updated_at, dispatch_profile
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
         params![
             task.project.as_str(),
             task.id.as_str(),
@@ -427,6 +430,7 @@ pub(super) fn write_task(transaction: &Transaction<'_>, task: &Task) -> Result<(
                 .map(|submission| submission.summary.as_str()),
             task.created_at.millis() as i64,
             task.updated_at.millis() as i64,
+            task.dispatch_profile.as_ref().map(ProfileId::as_str),
         ],
     )?;
 

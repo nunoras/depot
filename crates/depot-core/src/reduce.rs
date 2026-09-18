@@ -16,11 +16,13 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
     let mut approved: Vec<TaskId> = Vec::new();
 
     match &fact.kind {
+        FactKind::TaskDispatchJudged { .. } => {}
         FactKind::TaskProposed {
             task,
             title,
             intent,
             role,
+            dispatch_profile,
             dependencies,
             base_dependency,
         } => {
@@ -36,6 +38,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                         title: title.clone(),
                         intent: intent.clone(),
                         role: *role,
+                        dispatch_profile: dispatch_profile.clone(),
                         state: TaskState::Proposed,
                         dependencies: dependencies.clone(),
                         base_dependency: base_dependency.clone(),
@@ -785,6 +788,7 @@ fn next_startable(state: &ProjectState, at: Timestamp) -> Option<(TaskId, Profil
             .retry
             .as_ref()
             .map(|retry| retry.profile.clone())
+            .or_else(|| task.dispatch_profile.clone())
             .or_else(|| state.profiles.get(&task.role).cloned())?;
         Some((task.id.clone(), profile, worktree_baseline(task)))
     })

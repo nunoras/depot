@@ -12,7 +12,7 @@ depot - coordinate a project's agent work
 USAGE
   depot project add <path-or-url>
   depot status [--project <name>] [--all]
-  depot task add --title <title> --intent <intent> --role <plan|build|review|fix>
+  depot task add --title <title> --intent <intent> [--role <plan|build|review|fix>]
                  [--depends-on <task>@<commit>]...
                  [--base-dependency <task-id>] [--project <name>]
   depot task approve <task-id>... [--project <name>]
@@ -168,7 +168,7 @@ fn task_add(arguments: &[String]) -> Result<String, Failure> {
     let request = TaskRequest {
         title: flags.required("title")?.to_string(),
         intent: flags.required("intent")?.to_string(),
-        role: flags.required("role")?.to_string(),
+        role: flags.value("role").unwrap_or_default().to_string(),
         dependencies: flags.all("depends-on"),
         base_dependency: flags.value("base-dependency").map(str::to_string),
     };

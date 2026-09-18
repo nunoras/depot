@@ -13,7 +13,7 @@ The destination is the published spec at [nunoras/depot#30](https://github.com/n
 | crate | what it holds |
 |---|---|
 | `crates/depot-core` | The domain model and the whole task lifecycle as one pure reduce step. |
-| `crates/depotd` | The daemon: everything with a side effect, including the four adapters depot talks to, the store, the depot home, configuration, and the coordinator's artifacts. |
+| `crates/depotd` | The daemon: everything with a side effect, including the five adapters depot talks to, the store, the depot home, configuration, and the coordinator's artifacts. |
 | `crates/depot` | The command line the coordinator and the user drive. |
 
 
@@ -70,7 +70,24 @@ auto_merge = false
 
 [questions]
 always_relay = false
+
+[dispatch]
+confidence_floor = 0.8
+
+[[dispatch.rules]]
+when = "Implement or repair software"
+role = "build"
+candidates = ["glm-5.3", "gpt-5.5"]
+
+[[dispatch.rules]]
+when = "Review a change"
+role = "review"
 ```
+
+A rule's `candidates` is an optional ordered list of profiles, and only its first entry is read today: it is the profile the matching task is pinned to.
+The rest of the list is carried for the ticket that ranks candidates by quota, which is the ticket that will choose among them, so the order is not a fallback chain.
+Failover is unchanged: it still comes from the machine-local `fallback_profiles` in the depot home, the same list the retry path already used.
+A candidate that names no machine-local profile refuses task creation by name rather than failing at launch.
 
 Machine-local settings stay in the depot home and never travel to another host.
 
@@ -83,17 +100,18 @@ poll_interval_seconds = 30
 pool_root = "/home/me/.treehouse"
 fallback_profiles = ["gpt-5.5"]
 coordinator_context_tokens = 120000
+typesafe_base_url = "https://api.typesafe.ai"
 
 [credentials]
 github = "gh-cli"
 
-[profiles.glm-5-3]
+[profiles."glm-5.3"]
 harness = "pi"
 model = "glm-5.3"
 effort = "high"
 account = "work"
 
-[profiles.gpt-5-5]
+[profiles."gpt-5.5"]
 harness = "pi"
 model = "gpt-5.5"
 effort = "high"
@@ -102,6 +120,19 @@ account = "personal"
 
 Neither file accepts a key from the other side of the split, and registering a project never writes a machine-local setting into the repository.
 `crates/depotd/tests/config_split.rs` is the guard.
+
+### Dispatch rules
+
+`depot task add` no longer requires `--role`.
+Without one, depot asks Typesafe which of the project's `dispatch.rules` matches the task, and the matching rule supplies the role.
+A rule's `when` is the natural-language condition it matches, `role` is the role a matching task gets, and `candidates` is an optional ordered list of profiles; nothing but the `when` strings reaches the model.
+A rule with no candidates resolves its role through `[profiles]`.
+
+`confidence_floor` defaults to `0.8` when a project sets nothing, and an answer below it refuses task creation rather than guessing a profile.
+A task that matches no rule, an absent or malformed rules table, a missing Typesafe key and an API error each refuse with their own reason, and `--role` is always the override.
+Without a `typesafe-key` file in the depot home the layer is off, no request is made, and `--role` behaves as it always has.
+The decision is recorded as `task_dispatch_judged` before the task's proposal fact, marked `model_judgement`, and carrying the chosen rule, the confidence, the model id and version and a hash of the rule set.
+`docs/adr/0004-model-matched-rules-resolve-in-code.md` records why the model picks the rule and never the profile.
 
 ## The coordinator contract
 
@@ -126,7 +157,7 @@ The verbs a coordinator drives:
 
 | verb | what it does |
 |---|---|
-| `depot task add --title <title> --intent <intent> --role <role> [--depends-on <task>@<commit>]... [--base-dependency <task-id>]` | records a task with its dependencies. Multiple dependencies need a base. It lands held, and that is the proposal. |
+| `depot task add --title <title> --intent <intent> [--role <role>] [--depends-on <task>@<commit>]... [--base-dependency <task-id>]` | records a task with its dependencies. Multiple dependencies need a base. It lands held, and that is the proposal. Without `--role` depot resolves the role from the project's dispatch rules. |
 | `depot task approve <task-id>...` | the user's go, for one task or several in one message. |
 | `depot task answer <task-id> --text <answer> [--by coordinator\|user]` | records an answer and resumes the worker. |
 | `depot task stop <task-id>` | stops a task. |
@@ -179,7 +210,7 @@ That is what makes the lifecycle table-testable and what keeps a model's prose o
 
 ## The adapters
 
-Depot owns none of the four things it talks to, so each one sits behind a thin trait in `crates/depotd/src/adapters/`, with an implementation that speaks the real protocol at the edge.
+Depot owns none of the five things it talks to, so each one sits behind a thin trait in `crates/depotd/src/adapters/`, with an implementation that speaks the real protocol at the edge.
 An adapter holds no policy: the lifecycle rules stay in `depot-core`, and the adapter only turns a decision into a command and the answer back into a fact.
 
 | boundary | adapter | the dependency |
@@ -188,6 +219,7 @@ An adapter holds no policy: the lifecycle rules stay in `depot-core`, and the ad
 | worktrees | `worktrees.rs` | `treehouse`, the worktree pool, plus git for the safety check |
 | forge | `forge.rs` | the GitHub API over HTTP, with a configurable base URL |
 | profiles | `profiles.rs` | the project's role to profile map |
+| dispatch | `typesafe.rs` | the Typesafe Choice API over HTTP, with a configurable base URL and an owner-only key file |
 
 What depot requires of boxr, command by command and field by field, is recorded in [`docs/boxr-contract.md`](docs/boxr-contract.md), because detached sessions and resume are not built yet.
 A missing capability fails loudly, naming the command.
@@ -204,15 +236,15 @@ cargo fmt --all --check
 The rules are numbered in the ticket that built this skeleton: [nunoras/depot#31](https://github.com/nunoras/depot/issues/31).
 `crates/depot-core/tests/purity.rs` keeps the core dependency-free, `crates/depotd/tests/` covers the store, home, config split and checklist, `crates/depotd/tests/coordinator.rs` covers the policy prompt, the kickoff, rotation and the brief, `crates/depotd/tests/inbox.rs` covers the payload from a seeded store, and `crates/depot/tests/cli.rs` drives the real binary.
 
-`crates/depotd/tests/` holds one contract test per adapter: `sessions.rs`, `worktrees.rs`, `forge.rs` and `profiles.rs`.
+`crates/depotd/tests/` holds one contract test per adapter: `sessions.rs`, `worktrees.rs`, `forge.rs`, `profiles.rs` and `typesafe.rs`.
 Each drives the real implementation against a fake of the dependency, covering success, failure and malformed output, and each asserts the exact command depot issued.
-The fakes live in `crates/depotd/tests/support/`: a scripted program on disk for boxr, treehouse and `gh`, a local HTTP endpoint for GitHub, and a real git repository with a real remote for the worktree safety check.
+The fakes live in `crates/depotd/tests/support/`: a scripted program on disk for boxr, treehouse and `gh`, a local HTTP endpoint for GitHub and for Typesafe, and a real git repository with a real remote for the worktree safety check.
 `crates/depotd/tests/toon.rs` covers the TOON reader the session adapter parses boxr's output with.
 
 `crates/depot/tests/golden_path.rs` is the end-to-end suite, and it is the check to run before believing depot works.
-It drives the real `depot` binary against a real git repository with a real remote, a scripted worker, a fake boxr child process whose recorded invocations are asserted, and a local fake forge endpoint, with the daemon loop run tick by tick over the same adapters the daemon binary builds.
+It drives the real `depot` binary against a real git repository with a real remote, a scripted worker, a fake boxr child process whose recorded invocations are asserted, a local fake forge endpoint and a local fake Typesafe endpoint, with the daemon loop run tick by tick over the same adapters the daemon binary builds.
 Its fake boxr is the `fake_boxr` test target beside it, so a plain `cargo test` builds it before the suite runs.
-Scenarios cover the whole journey, a worker question, a failed validation and a restart with a task in flight, plus the recovery edges each reconcile pass relies on; each asserts the rendered checklist, the task's state history, the commands the daemon issued and the exit codes it saw.
+Scenarios cover the whole journey, a worker question, a failed validation and a restart with a task in flight, plus the recovery edges each reconcile pass relies on and the dispatch path from a model-matched rule through to a pinned profile; each asserts the rendered checklist, the task's state history, the commands the daemon issued and the exit codes it saw.
 `crates/depot/tests/support/` holds the fixture and includes the fakes under `crates/depotd/tests/support/` rather than duplicating them.
 It reaches no external network, so it runs anywhere.
 

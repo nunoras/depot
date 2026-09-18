@@ -11,11 +11,30 @@ pub fn kind_name(kind: &FactKind) -> &'static str {
 
 pub fn encode_payload(kind: &FactKind) -> String {
     match kind {
+        FactKind::TaskDispatchJudged {
+            task,
+            chosen_rule,
+            confidence,
+            model,
+            model_version,
+            rules_hash,
+            rules_snapshot,
+            resolution,
+        } => {
+            let outcome = serde_json::json!({"role": role_name(resolution.role), "profile": resolution.profile.as_str()});
+            serde_json::json!({
+                "task": task.as_str(), "source": "model_judgement", "chosen_rule": chosen_rule,
+                "confidence": confidence.value(), "model": model, "model_version": model_version,
+                "rules_hash": rules_hash, "rules_snapshot": rules_snapshot, "resolution": outcome
+            })
+            .to_string()
+        }
         FactKind::TaskProposed {
             task,
             title,
             intent,
             role,
+            dispatch_profile,
             dependencies,
             base_dependency,
         } => object(vec![
@@ -23,6 +42,14 @@ pub fn encode_payload(kind: &FactKind) -> String {
             ("title", quoted(title)),
             ("intent", quoted(intent)),
             ("role", quoted(role_name(*role))),
+            (
+                "dispatch_profile",
+                optional(
+                    dispatch_profile
+                        .as_ref()
+                        .map(|profile| quoted(profile.as_str())),
+                ),
+            ),
             (
                 "dependencies",
                 array(

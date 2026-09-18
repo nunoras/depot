@@ -15,15 +15,28 @@ pub struct Applied {
 
 impl Store {
     pub fn apply_fact(&self, project: &Project, key: &str, fact: &Fact) -> Result<Applied> {
-        let state = self.project_state(project)?;
-        let (next, actions) = depot_core::reduce(&state, fact);
+        self.apply_facts(project, &[(key.to_owned(), fact.clone())])
+    }
 
+    pub fn apply_facts(&self, project: &Project, facts: &[(String, Fact)]) -> Result<Applied> {
+        let transaction = self.connection().unchecked_transaction()?;
+        let state = self.project_state(project)?;
+        let mut next = state.clone();
+        let mut actions = Vec::new();
+        for (key, fact) in facts {
+            if write_event(&transaction, &project.id, key, fact)? == 0 {
+                transaction.rollback()?;
+                return Ok(Applied {
+                    outcome: EventOutcome::Duplicate,
+                    actions: Vec::new(),
+                });
+            }
+            let (reduced, intended) = depot_core::reduce(&next, fact);
+            next = reduced;
+            actions.extend(intended);
+        }
         let project_home = self.home().project_home(&project.slug);
         project_home.ensure()?;
-        let checklist = render_checklist(&next);
-        let checklist_path = project_home.checklist_path();
-
-        let transaction = self.connection().unchecked_transaction()?;
         for (id, task) in &next.tasks {
             if state.tasks.get(id) != Some(task) {
                 write_task(&transaction, task)?;
@@ -35,14 +48,7 @@ impl Store {
                 None => clear_session(&transaction, &project.id)?,
             }
         }
-        if write_event(&transaction, &project.id, key, fact)? == 0 {
-            transaction.rollback()?;
-            return Ok(Applied {
-                outcome: EventOutcome::Duplicate,
-                actions: Vec::new(),
-            });
-        }
-        std::fs::write(&checklist_path, checklist)?;
+        std::fs::write(project_home.checklist_path(), render_checklist(&next))?;
         transaction.commit()?;
         Ok(Applied {
             outcome: EventOutcome::Recorded,

@@ -24,7 +24,7 @@ fn pull_request(number: u64, sha: &str, state: &str, merged: Option<bool>) -> St
         None => String::new(),
     };
     format!(
-        "{{\"number\":{number},\"html_url\":\"https://github.com/acme/widget/pull/{number}\",\"title\":\"the work\",\"state\":\"{state}\",{merged}\"head\":{{\"sha\":\"{sha}\"}}}}"
+        "{{\"number\":{number},\"html_url\":\"https://github.com/acme/widget/pull/{number}\",\"title\":\"the work\",\"state\":\"{state}\",{merged}\"head\":{{\"sha\":\"{sha}\"}},\"base\":{{\"sha\":\"ba5eba11\"}}}}"
     )
 }
 
@@ -85,6 +85,8 @@ fn distinguishes_a_merged_pull_request_from_an_unmerged_one() {
     assert_eq!(merged.state, PrState::Merged);
     assert_eq!(merged.checks, Checks::Passing);
     assert_eq!(merged.url, "https://github.com/acme/widget/pull/7");
+    assert_eq!(merged.head, CommitId::new("aaa111"));
+    assert_eq!(merged.base, CommitId::new("ba5eba11"));
 
     let closed = github.pull_request(&repo(), 8).expect("the PR is read");
     assert_eq!(closed.state, PrState::Closed);

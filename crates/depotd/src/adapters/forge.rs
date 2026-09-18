@@ -50,6 +50,7 @@ pub struct PullRequest {
     pub state: PrState,
     pub checks: Checks,
     pub head: CommitId,
+    pub base: CommitId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -325,6 +326,15 @@ impl Forge for GitHub {
                 url: url.clone(),
                 detail: format!("no head commit in {}", truncated(&body)),
             })?;
+        let base = value
+            .get("base")
+            .and_then(|base| base.get("sha"))
+            .and_then(Value::as_str)
+            .filter(|sha| !sha.is_empty())
+            .ok_or_else(|| ForgeError::Malformed {
+                url: url.clone(),
+                detail: format!("no base commit in {}", truncated(&body)),
+            })?;
 
         let state = match state.as_str() {
             "open" => PrState::Open,
@@ -360,6 +370,7 @@ impl Forge for GitHub {
             state,
             checks,
             head: CommitId::new(head),
+            base: CommitId::new(base),
         })
     }
 

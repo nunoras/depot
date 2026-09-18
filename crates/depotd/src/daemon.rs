@@ -86,6 +86,7 @@ pub struct ObservedPullRequest {
     pub state: PrState,
     pub checks: Checks,
     pub commit: CommitId,
+    pub base: CommitId,
 }
 
 pub struct ShellValidation;
@@ -201,6 +202,7 @@ impl<F: Forge> Delivery for ForgeDelivery<F> {
             state: observed.state,
             checks: observed.checks,
             commit: observed.head,
+            base: observed.base,
         }))
     }
 
@@ -967,7 +969,7 @@ where
 
     fn reconcile_forge(&self) -> Result<()> {
         let state = self.store.project_state(&self.project)?;
-        let mut observed_open: Vec<(TaskId, u64, CommitId)> = Vec::new();
+        let mut observed_open: Vec<(TaskId, u64, ObservedPullRequest)> = Vec::new();
         for task in state.tasks.values() {
             if task.state != TaskState::PrOpen {
                 continue;
@@ -1035,43 +1037,54 @@ where
                             },
                         )?;
                     }
-                    observed_open.push((task.id.clone(), number, observed.commit));
+                    observed_open.push((task.id.clone(), number, observed));
                 }
             }
         }
         self.auto_merge(observed_open)
     }
 
-    fn auto_merge(&self, observed_open: Vec<(TaskId, u64, CommitId)>) -> Result<()> {
+    fn auto_merge(&self, observed_open: Vec<(TaskId, u64, ObservedPullRequest)>) -> Result<()> {
         let state = self.store.project_state(&self.project)?;
-        for (id, number, head) in observed_open {
+        for (id, number, observed) in observed_open {
             let Some(task) = state.tasks.get(&id) else {
                 continue;
             };
-            if !depot_core::auto_merge_due(&state, task, &head) {
+            if !depot_core::auto_merge_due(&state, task, &observed.commit) {
                 continue;
             }
-            let repo = match self.project_repo() {
-                Ok(repo) => repo,
-                Err(error) => {
-                    log("auto_merge_failed", &error.to_string());
-                    continue;
-                }
-            };
-            match self.delivery.merge_pull_request(task, &repo, number, &head) {
-                Ok(()) => {}
-                Err(error) => {
-                    log("auto_merge_failed", &error.to_string());
-                    continue;
-                }
+            let key = merge_refusal_key(&id, &observed);
+            if self.store.event(&self.project.id, &key)?.is_some() {
+                continue;
+            }
+            let attempt = self.project_repo().and_then(|repo| {
+                self.delivery
+                    .merge_pull_request(task, &repo, number, &observed.commit)
+            });
+            if let Err(error) = attempt {
+                log("auto_merge_failed", &error.to_string());
+                self.record(
+                    &key,
+                    Fact {
+                        at: now(),
+                        kind: FactKind::PullRequestMergeRefused {
+                            task: id.clone(),
+                            commit: observed.commit.clone(),
+                            base: observed.base.clone(),
+                            checks: observed.checks,
+                            reason: error.to_string(),
+                        },
+                    },
+                )?;
+                continue;
             }
             self.record(
-                &event_key(&["pull_request_merged", id.as_str(), head.as_str()]),
+                &event_key(&["pull_request_merged", id.as_str(), observed.commit.as_str()]),
                 Fact {
                     at: now(),
                     kind: FactKind::PullRequestMerged {
                         task: id.clone(),
-                        commit: head.clone(),
+                        commit: observed.commit.clone(),
                     },
                 },
             )?;
@@ -1176,6 +1189,16 @@ pub fn pull_request_body(task: &Task, commit: &CommitId) -> String {
     )
 }
 
+fn merge_refusal_key(task: &TaskId, observed: &ObservedPullRequest) -> String {
+    event_key(&[
+        "pull_request_merge_refused",
+        task.as_str(),
+        observed.commit.as_str(),
+        observed.base.as_str(),
+        checks_name(observed.checks),
+    ])
+}
+
 fn log(kind: &str, value: &str) {
     eprintln!("{{\"kind\":\"{}\",\"value\":{:?}}}", kind, value);
 }
@@ -1229,6 +1252,7 @@ mod tests {
             artifacts: Vec::new(),
             links: Vec::new(),
             branch_head: None,
+            merge_refused: None,
             retry: None,
             created_at: depot_core::Timestamp::from_millis(0),
             updated_at: depot_core::Timestamp::from_millis(0),

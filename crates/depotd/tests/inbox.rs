@@ -1,6 +1,8 @@
 mod support;
 
-use depot_core::{CommitId, Fact, FactKind, ProjectId, SessionId, TaskId, Timestamp};
+use depot_core::{
+    Checks, CommitId, Fact, FactKind, ProjectId, SessionId, TaskId, TaskState, Timestamp,
+};
 use depotd::{Store, read_inbox};
 
 const BUILD_ONLY: &str = "base_branch = \"main\"\n\n\
@@ -352,5 +354,44 @@ fn a_question_answered_since_the_fact_was_recorded_needs_nobody() {
     assert!(
         section(&payload, "No action").contains("answered"),
         "the answer still shows in the record of the turn, got\n{payload}"
+    );
+}
+
+#[test]
+fn a_refused_auto_merge_reaches_the_user_from_the_inbox() {
+    let fixture = support::fixture();
+    let added = support::register_with_config(&fixture, "example", BUILD_ONLY);
+    let store = Store::open(&fixture.home).expect("store");
+    let project = &added.project.id;
+
+    let mut task = support::full_task(project, "t-1");
+    task.state = TaskState::PrOpen;
+    store.put_task(&task).expect("the task is stored");
+
+    apply(
+        &store,
+        project,
+        "pull_request_merge_refused:t-1:ccc333:bbb222:passing",
+        1_000,
+        FactKind::PullRequestMergeRefused {
+            task: TaskId::new("t-1"),
+            commit: CommitId::new("ccc333"),
+            base: CommitId::new("bbb222"),
+            checks: Checks::Passing,
+            reason: "GitHub refused to merge and answered 409: {\"message\":\"Head branch was modified\"}"
+                .to_string(),
+        },
+    );
+
+    let payload = read_inbox(&fixture.home, Some("example")).expect("inbox");
+
+    let user = section(&payload, "For the user");
+    assert!(
+        user.contains("the forge refused to merge pull request #7"),
+        "a refusal depot could not carry out is the user's to see, got\n{payload}"
+    );
+    assert!(
+        user.contains("Head branch was modified"),
+        "the refusal carries the reason the forge gave, got\n{payload}"
     );
 }

@@ -30,6 +30,7 @@ const OPENED: &str = "pull_request_opened";
 const CHECKS: &str = "pull_request_checks_changed";
 const MERGED: &str = "pull_request_merged";
 const CLOSED_UNMERGED: &str = "pull_request_closed_unmerged";
+const MERGE_REFUSED: &str = "pull_request_merge_refused";
 const RESTARTED: &str = "daemon_restarted";
 
 #[test]
@@ -1472,6 +1473,106 @@ fn an_opted_in_project_does_not_merge_while_a_dependency_pin_is_stale() {
         calls_to(&golden.treehouse.calls(), "return").is_empty(),
         "a held task keeps its worktree"
     );
+}
+
+#[test]
+fn a_refused_auto_merge_is_recorded_once_and_retried_only_on_a_change() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.set_auto_merge(true);
+    golden.script_merge_endpoint_refused();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_submits();
+    let commit = golden.head();
+    golden.script_pull_request(&commit);
+    daemon
+        .tick()
+        .expect("the daemon validates, opens the pull request and is refused the merge");
+
+    assert_eq!(golden.task().state, TaskState::PrOpen);
+    assert_eq!(
+        golden.merge_requests(),
+        1,
+        "the opted-in project asks the forge to merge once"
+    );
+    assert_eq!(
+        refusals(&golden),
+        1,
+        "the refused merge is recorded exactly once"
+    );
+    let held = golden.status();
+    assert!(
+        held.contains("auto-merge refused: ") && held.contains("405"),
+        "the checklist names the refusal and its reason: {held}"
+    );
+    assert_eq!(held, golden.checklist());
+
+    let facts = forge_facts(&golden);
+    let events = golden.events().len();
+    let returns = calls_to(&golden.treehouse.calls(), "return").len();
+    daemon.tick().expect("an unchanged poll repeats nothing");
+
+    assert_eq!(
+        golden.merge_requests(),
+        1,
+        "an unchanged observation is never merged again"
+    );
+    assert_eq!(
+        golden.events().len(),
+        events + 1,
+        "only the tick's own polled marker is recorded"
+    );
+    assert_eq!(
+        forge_facts(&golden),
+        facts,
+        "an unchanged poll records no forge fact"
+    );
+    assert_eq!(golden.task().state, TaskState::PrOpen);
+    assert_eq!(
+        calls_to(&golden.treehouse.calls(), "return").len(),
+        returns,
+        "a refused merge keeps the worktree"
+    );
+
+    golden.script_pull_request_base(&commit, "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f");
+    daemon.tick().expect("a moved base earns the next attempt");
+
+    assert_eq!(
+        golden.merge_requests(),
+        2,
+        "a changed observation earns exactly one more attempt"
+    );
+    assert_eq!(refusals(&golden), 2, "the second refusal is recorded");
+    assert_eq!(golden.task().state, TaskState::PrOpen);
+
+    let inbox = golden.depot_ok(&["inbox", "--project", SLUG]);
+    assert!(
+        inbox.contains("the forge refused to merge pull request #1"),
+        "the coordinator sees the refusal: {inbox}"
+    );
+    assert!(inbox.contains("405"), "the reason is in the inbox: {inbox}");
+
+    golden.script_close_unmerged(&commit);
+    daemon
+        .tick()
+        .expect("the daemon observes the pull request closed unmerged");
+
+    let closed = golden.status();
+    assert_eq!(golden.task().state, TaskState::Cancelled);
+    assert!(
+        !closed.contains("auto-merge refused"),
+        "a closed pull request forgets the refusal: {closed}"
+    );
+    assert_eq!(closed, golden.checklist());
+}
+
+fn refusals(golden: &Golden) -> usize {
+    golden
+        .history(TASK)
+        .iter()
+        .filter(|kind| kind.as_str() == MERGE_REFUSED)
+        .count()
 }
 
 fn forge_facts(golden: &Golden) -> Vec<String> {

@@ -49,6 +49,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                         artifacts: Vec::new(),
                         links: Vec::new(),
                         branch_head: None,
+                        merge_refused: None,
                         retry: None,
                         created_at: fact.at,
                         updated_at: fact.at,
@@ -78,6 +79,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                 let stopped = close_attempt(task, AttemptOutcome::Stopped, fact.at);
                 task.state = TaskState::Cancelled;
                 task.retry = None;
+                task.merge_refused = None;
                 task.updated_at = fact.at;
                 changed = true;
                 if stopped {
@@ -517,6 +519,11 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             let merged_head_mismatch = next.tasks.get(task).is_some_and(|task| {
                 task.state == TaskState::PrOpen && task.validated_commit() != Some(commit)
             });
+            if let Some(task) = next.tasks.get_mut(task)
+                && task.merge_refused.take().is_some()
+            {
+                changed = true;
+            }
             if merged_head_mismatch {
                 if let Some(task) = next.tasks.get_mut(task) {
                     task.state = TaskState::Failed;
@@ -560,6 +567,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                 let stopped = close_attempt(task, AttemptOutcome::Stopped, fact.at);
                 task.state = TaskState::Cancelled;
                 task.retry = None;
+                task.merge_refused = None;
                 task.updated_at = fact.at;
                 changed = true;
                 if stopped {
@@ -705,6 +713,16 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                     attempt.outcome = AttemptOutcome::Unknown;
                     changed = true;
                 }
+            }
+        }
+
+        FactKind::PullRequestMergeRefused { task, reason, .. } => {
+            if let Some(task) = next.tasks.get_mut(task)
+                && task.merge_refused.as_deref() != Some(reason.as_str())
+            {
+                task.merge_refused = Some(reason.clone());
+                task.updated_at = fact.at;
+                changed = true;
             }
         }
 

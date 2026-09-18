@@ -91,6 +91,10 @@ fn render_task(out: &mut String, state: &ProjectState, task: &Task) {
         ));
     }
 
+    if let Some(reason) = &task.merge_refused {
+        out.push_str(&format!("  - auto-merge refused: {}\n", one_line(reason)));
+    }
+
     if let Some(question) = unanswered(task) {
         out.push_str(&format!("  - question: {}\n", one_line(&question.text)));
     }

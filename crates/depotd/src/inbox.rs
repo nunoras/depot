@@ -97,6 +97,10 @@ fn need_for(tag: FactTag, task: Option<&Task>) -> Need {
             Some(TaskState::Failed) | Some(TaskState::Cancelled) => Need::User,
             _ => Need::Nothing,
         },
+        FactTag::PullRequestMergeRefused => match state {
+            Some(TaskState::PrOpen) => Need::User,
+            _ => Need::Nothing,
+        },
         FactTag::TaskDispatchJudged
         | FactTag::TaskProposed
         | FactTag::TaskApproved
@@ -182,6 +186,16 @@ fn headline(tag: FactTag, event: &RecordedEvent, task: Option<&Task>) -> Result<
         FactTag::PullRequestChecksChanged => "pull request checks changed".to_string(),
         FactTag::PullRequestMerged => "the pull request merged".to_string(),
         FactTag::PullRequestClosedUnmerged => "the pull request closed unmerged".to_string(),
+        FactTag::PullRequestMergeRefused => {
+            let reason = payload_field(&event.payload, "reason")?;
+            match task.and_then(|task| task.pull_request()) {
+                Some((number, _, _)) => format!(
+                    "the forge refused to merge pull request #{number}: {}",
+                    one_line(&reason)
+                ),
+                None => format!("the forge refused to merge: {}", one_line(&reason)),
+            }
+        }
         FactTag::RunDurationExceeded => "ran past its run duration".to_string(),
         FactTag::RetryExhausted => "ran out of retries".to_string(),
         FactTag::ProviderRateLimited => "hit a provider rate limit".to_string(),

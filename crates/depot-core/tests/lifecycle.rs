@@ -68,6 +68,7 @@ fn task(id: &str, state: TaskState) -> Task {
         artifacts: Vec::new(),
         links: Vec::new(),
         branch_head: None,
+        merge_refused: None,
         retry: None,
         created_at: at(0),
         updated_at: at(0),
@@ -1375,6 +1376,21 @@ fn pr_open(id: &str, commit_id: &str, number: u64) -> Task {
     task
 }
 
+fn with_refusal(mut task: Task, reason: &str) -> Task {
+    task.merge_refused = Some(reason.to_owned());
+    task
+}
+
+fn refused_merge(task: &str, reason: &str) -> FactKind {
+    FactKind::PullRequestMergeRefused {
+        task: task_id(task),
+        commit: commit("c1"),
+        base: commit("b1"),
+        checks: Checks::Passing,
+        reason: reason.to_owned(),
+    }
+}
+
 fn with_retry(mut task: Task, profile_id: &str, not_before: Timestamp) -> Task {
     task.attempts.push(spent(BUILD));
     task.retry = Some(Retry {
@@ -2372,6 +2388,92 @@ fn auto_merge_waits_for_the_project_to_opt_in_and_for_the_validated_head() {
 }
 
 #[test]
+fn a_refused_auto_merge_is_noted_on_the_task_and_forgotten_once_the_pull_request_leaves_it() {
+    run(vec![
+        case(
+            "a refused merge is noted on the task",
+            state(vec![pr_open("t1", "c1", 42)]),
+            vec![fact(
+                1_000,
+                refused_merge("t1", "the forge refused the merge"),
+            )],
+        )
+        .when("t1", TaskState::PrOpen, vec![Action::RenderChecklist])
+        .checking(|state| {
+            subject(state, "t1").merge_refused.as_deref() == Some("the forge refused the merge")
+        }),
+        case(
+            "a new head keeps the last refusal until the next attempt",
+            state(vec![with_refusal(
+                pr_open("t1", "c1", 42),
+                "the forge refused the merge",
+            )]),
+            vec![fact(
+                3_000,
+                FactKind::BranchPushed {
+                    task: task_id("t1"),
+                    commit: commit("c2"),
+                },
+            )],
+        )
+        .when("t1", TaskState::PrOpen, vec![Action::RenderChecklist])
+        .checking(|state| {
+            subject(state, "t1").merge_refused.as_deref() == Some("the forge refused the merge")
+        }),
+        case(
+            "a closed pull request forgets the refusal",
+            state(vec![with_refusal(
+                pr_open("t1", "c1", 42),
+                "the forge refused the merge",
+            )]),
+            vec![fact(
+                4_000,
+                FactKind::PullRequestClosedUnmerged {
+                    task: task_id("t1"),
+                },
+            )],
+        )
+        .when(
+            "t1",
+            TaskState::Cancelled,
+            vec![hold("t1"), Action::RenderChecklist],
+        )
+        .checking(|state| subject(state, "t1").merge_refused.is_none()),
+        case(
+            "a landed task forgets the refusal",
+            state(vec![with_refusal(
+                pr_open("t1", "c1", 42),
+                "the forge refused the merge",
+            )]),
+            vec![fact(
+                5_000,
+                FactKind::PullRequestMerged {
+                    task: task_id("t1"),
+                    commit: commit("c1"),
+                },
+            )],
+        )
+        .when("t1", TaskState::Landed, vec![Action::RenderChecklist])
+        .checking(|state| subject(state, "t1").merge_refused.is_none()),
+        case(
+            "a stopped task forgets the refusal",
+            state(vec![with_refusal(
+                pr_open("t1", "c1", 42),
+                "the forge refused the merge",
+            )]),
+            vec![fact(
+                6_000,
+                FactKind::TaskCancelled {
+                    task: task_id("t1"),
+                },
+            )],
+        )
+        .when("t1", TaskState::Cancelled, vec![Action::RenderChecklist])
+        .checking(|state| subject(state, "t1").merge_refused.is_none()),
+    ]);
+}
+
+#[test]
 fn a_branch_behind_the_validated_commit_owes_the_push() {
     let mut task = pr_open("t1", "c1", 42);
     assert_eq!(task.push_owed(), None, "a pushed branch owes no push");
@@ -2394,7 +2496,7 @@ fn a_branch_behind_the_validated_commit_owes_the_push() {
         "the branch has not caught up to the validated commit"
     );
 
-    let mut unpushed = validated("t1", "c1");
+    let unpushed = validated("t1", "c1");
     assert_eq!(unpushed.push_owed(), Some(&commit("c1")));
     assert_eq!(unpushed.validated_commit(), Some(&commit("c1")));
 }

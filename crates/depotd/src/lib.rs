@@ -31,7 +31,8 @@ pub use coordinator::{
 };
 pub use daemon::{
     DAEMON_LOCK_FILE_NAME, Daemon, Delivery, ForgeDelivery, InstanceLock, Notifier,
-    ShellValidation, StderrNotifier, ValidationResult, ValidationRunner, pull_request_body,
+    ObservedPullRequest, ShellValidation, StderrNotifier, ValidationResult, ValidationRunner,
+    pull_request_body, resume_prompt,
 };
 pub use documents::{document_path, write_document};
 pub use error::{Error, Result};

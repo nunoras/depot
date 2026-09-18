@@ -159,6 +159,9 @@ depotd --project <project>
 The daemon acquires an exclusive lock on `$DEPOT_HOME/depotd.lock` to prevent multiple daemon instances.
 Polling interval is controlled by the `poll_interval_seconds` setting in the depot home's `config.toml`.
 
+Every tick reconciles the records before it acts: a task whose attempt holds no worktree is leased one, an attempt without a session is launched, an answer a worker has not been told about is resumed, a submitted commit is validated, a validated commit is published, and a task with an open pull request is observed at the forge.
+Each pass is derived from the stored records rather than from the actions a fact produced, so a fact the coordinator's CLI wrote reaches its end without that process executing anything; `docs/adr/0003-reconciliation-derives-pending-work.md` records why.
+
 On startup, the daemon performs recovery: tasks with an in-flight attempt are transitioned to `Unknown` state, allowing them to be restarted or reworked.
 
 ## The pure core
@@ -205,6 +208,13 @@ The rules are numbered in the ticket that built this skeleton: [nunoras/depot#31
 Each drives the real implementation against a fake of the dependency, covering success, failure and malformed output, and each asserts the exact command depot issued.
 The fakes live in `crates/depotd/tests/support/`: a scripted program on disk for boxr, treehouse and `gh`, a local HTTP endpoint for GitHub, and a real git repository with a real remote for the worktree safety check.
 `crates/depotd/tests/toon.rs` covers the TOON reader the session adapter parses boxr's output with.
+
+`crates/depot/tests/golden_path.rs` is the end-to-end suite, and it is the check to run before believing depot works.
+It drives the real `depot` binary against a real git repository with a real remote, a scripted worker, a fake boxr child process whose recorded invocations are asserted, and a local fake forge endpoint, with the daemon loop run tick by tick over the same adapters the daemon binary builds.
+Its fake boxr is the `fake_boxr` test target beside it, so a plain `cargo test` builds it before the suite runs.
+Scenarios cover the whole journey, a worker question, a failed validation and a restart with a task in flight, plus the recovery edges each reconcile pass relies on; each asserts the rendered checklist, the task's state history, the commands the daemon issued and the exit codes it saw.
+`crates/depot/tests/support/` holds the fixture and includes the fakes under `crates/depotd/tests/support/` rather than duplicating them.
+It reaches no external network, so it runs anywhere.
 
 ## Where to read next
 

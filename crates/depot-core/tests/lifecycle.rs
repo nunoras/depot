@@ -112,6 +112,16 @@ fn running_with_session(id: &str, session_id: &str, lease_id: &str) -> Task {
     )
 }
 
+fn running_with_lease(id: &str, lease_id: &str) -> Task {
+    with_attempt(
+        task(id, TaskState::Running),
+        Attempt {
+            worktree: Some(lease(lease_id)),
+            ..attempt(BUILD)
+        },
+    )
+}
+
 fn validating(id: &str) -> Task {
     with_attempt(task(id, TaskState::Validating), attempt(BUILD))
 }
@@ -1122,6 +1132,56 @@ fn rule_10_restart_reconciliation_prefers_unknown_over_a_guess() {
         )
         .when("t1", TaskState::Running, vec![Action::RenderChecklist])
         .checking(|state| holds(state, "t1", AttemptOutcome::InFlight)),
+        case(
+            "a session gone while the task waits on a question stays paused",
+            state(vec![with_question(
+                running_with_session("t1", "s1", "w1"),
+                TaskState::WaitingOnQuestion,
+                "which database?",
+            )]),
+            vec![fact(
+                7_000,
+                FactKind::WorkerLivenessChanged {
+                    task: task_id("t1"),
+                    liveness: Liveness::Gone,
+                },
+            )],
+        )
+        .when("t1", TaskState::WaitingOnQuestion, Vec::new())
+        .checking(|state| holds(state, "t1", AttemptOutcome::InFlight)),
+        case(
+            "a session gone after a settled question stays paused",
+            state(vec![with_question(
+                running_with_session("t1", "s1", "w1"),
+                TaskState::Running,
+                "which database?",
+            )]),
+            vec![fact(
+                8_000,
+                FactKind::WorkerLivenessChanged {
+                    task: task_id("t1"),
+                    liveness: Liveness::Gone,
+                },
+            )],
+        )
+        .when("t1", TaskState::Running, Vec::new())
+        .checking(|state| holds(state, "t1", AttemptOutcome::InFlight)),
+        case(
+            "a worker turn that cannot be resolved is held for a person",
+            state(vec![running_with_lease("t1", "w1")]),
+            vec![fact(
+                9_000,
+                FactKind::WorkerTurnUnresolved {
+                    task: task_id("t1"),
+                },
+            )],
+        )
+        .when(
+            "t1",
+            TaskState::Failed,
+            vec![hold("t1"), Action::RenderChecklist],
+        )
+        .checking(|state| holds(state, "t1", AttemptOutcome::Failed)),
     ]);
 }
 

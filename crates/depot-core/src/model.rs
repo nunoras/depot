@@ -104,6 +104,12 @@ pub enum AttemptOutcome {
     Unknown,
 }
 
+impl AttemptOutcome {
+    pub fn is_open(self) -> bool {
+        matches!(self, AttemptOutcome::InFlight | AttemptOutcome::Unknown)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum AnsweredBy {
     Coordinator,
@@ -234,6 +240,10 @@ impl Task {
 
     pub fn unanswered_question(&mut self) -> Option<&mut Question> {
         self.questions.iter_mut().rev().find(|q| q.answer.is_none())
+    }
+
+    pub fn has_unanswered_question(&self) -> bool {
+        self.questions.iter().any(|q| q.answer.is_none())
     }
 
     pub fn pull_request(&self) -> Option<(u64, &str, Checks)> {

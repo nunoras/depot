@@ -6,7 +6,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use depot_core::{
-    Action, Baseline, Checks, CommitId, Fact, FactKind, Liveness, SessionId, Task, TaskId,
+    Action, Baseline, Checks, CommitId, Fact, FactKind, Liveness, Role, SessionId, Task, TaskId,
     TaskState, WorktreeLease,
 };
 
@@ -141,10 +141,13 @@ impl<F: Forge> Delivery for ForgeDelivery<F> {
             )));
         }
         let branch = delivery_branch(worktree, task)?;
-        git_output(
-            worktree,
-            &["push", "origin", &format!("HEAD:refs/heads/{branch}")],
-        )?;
+        let mut args = vec!["push".to_owned(), "origin".to_owned()];
+        if task.role == Role::Fix {
+            args.push("--force-with-lease".to_owned());
+        }
+        args.push(format!("HEAD:refs/heads/{branch}"));
+        let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        git_output(worktree, &arg_refs)?;
         Ok(())
     }
 
@@ -734,7 +737,21 @@ where
     fn push(&self, task: TaskId, commit: CommitId) -> Result<()> {
         let task_record = self.task(&task)?;
         let worktree = self.lease_for(&task_record)?.path;
-        self.delivery.push(&task_record, &worktree, &commit)?;
+        if let Err(error) = self.delivery.push(&task_record, &worktree, &commit) {
+            let reason = error.to_string();
+            log("push-failed", &reason);
+            return self.record(
+                &event_key(&["push_failed", task.as_str(), commit.as_str()]),
+                Fact {
+                    at: now(),
+                    kind: FactKind::PushFailed {
+                        task,
+                        commit,
+                        reason,
+                    },
+                },
+            );
+        }
         self.record(
             &event_key(&["branch_pushed", task.as_str(), commit.as_str()]),
             Fact {

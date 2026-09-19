@@ -93,6 +93,7 @@ fn need_for(tag: FactTag, task: Option<&Task>) -> Need {
         FactTag::ValidationFinished
         | FactTag::WorkerLivenessChanged
         | FactTag::WorkerTurnUnresolved
+        | FactTag::PushFailed
         | FactTag::RunDurationExceeded
         | FactTag::RetryExhausted
         | FactTag::ProviderRateLimited
@@ -201,6 +202,10 @@ fn headline(tag: FactTag, event: &RecordedEvent, task: Option<&Task>) -> Result<
                 ),
                 None => format!("the forge refused to merge: {}", one_line(&reason)),
             }
+        }
+        FactTag::PushFailed => {
+            let reason = payload_field(&event.payload, "reason")?;
+            format!("the push was rejected: {}", one_line(&reason))
         }
         FactTag::RunDurationExceeded => "ran past its run duration".to_string(),
         FactTag::RetryExhausted => "ran out of retries".to_string(),

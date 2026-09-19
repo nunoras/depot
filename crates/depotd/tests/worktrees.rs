@@ -49,10 +49,13 @@ fn pool_status_json(leased_path: &Path) -> String {
     .to_string()
 }
 
+const BRANCH: &str = "feat/repair-leases";
+
 fn request(repo: &std::path::Path, baseline: Baseline) -> AcquireRequest {
     AcquireRequest {
         repo: repo.to_owned(),
         holder: "task-7".to_owned(),
+        branch: BRANCH.to_owned(),
         baseline,
     }
 }
@@ -81,8 +84,8 @@ fn acquires_releases_and_reads_the_pool() {
     assert_eq!(lease.acquired_at, "2026-09-16T05:56:43Z");
     assert_eq!(
         git::git(&fixture.lease, &["branch", "--show-current"]),
-        "task-7\n",
-        "default baseline still lands on a delivery branch"
+        format!("{BRANCH}\n"),
+        "default baseline still lands on the asked-for delivery branch"
     );
 
     treehouse
@@ -220,7 +223,7 @@ fn pins_a_lease_to_the_dependency_commit_it_was_asked_for() {
     assert_eq!(git::head(&fixture.lease), fixture.first_commit);
     assert_eq!(
         git::git(&fixture.lease, &["branch", "--show-current"]),
-        "task-7\n"
+        format!("{BRANCH}\n")
     );
 }
 
@@ -339,4 +342,25 @@ fn keeps_a_lease_that_is_still_held_by_somebody_else_out_of_release() {
     let message = error.to_string();
     assert!(message.contains("another holder"), "{message}");
     assert!(message.contains("--if-lease-id 7c1d0a5e"), "{message}");
+}
+
+#[test]
+fn reads_the_branch_names_the_repository_already_carries() {
+    let dir = TempDir::new("worktrees-branches");
+    let fixture = git::repo_with_remote(dir.path());
+    git::git(&fixture.repo, &["branch", "carried"]);
+
+    let branches = Treehouse::new(FakeProgram::new(dir.path(), "treehouse").program())
+        .branches(&fixture.repo)
+        .expect("the branch names are read");
+
+    assert!(branches.iter().any(|name| name == "main"), "{branches:?}");
+    assert!(
+        branches.iter().any(|name| name == "carried"),
+        "{branches:?}"
+    );
+    assert!(
+        branches.iter().any(|name| name == "origin/main"),
+        "{branches:?}"
+    );
 }

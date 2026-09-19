@@ -19,6 +19,7 @@ pub struct TaskRequest {
     pub role: String,
     pub dependencies: Vec<String>,
     pub base_dependency: Option<String>,
+    pub hold_pr: bool,
 }
 
 pub fn add_task(home: &DepotHome, selection: Option<&str>, request: &TaskRequest) -> Result<Task> {
@@ -53,6 +54,7 @@ pub fn add_task(home: &DepotHome, selection: Option<&str>, request: &TaskRequest
             dispatch_profile,
             dependencies,
             base_dependency,
+            hold_pr: request.hold_pr,
         },
     };
     let mut facts = Vec::new();
@@ -263,6 +265,27 @@ pub fn redirect_task(
         &event_key(&["worker_redirected", id.as_str(), &at.millis().to_string()]),
         &fact,
     )?;
+    task(&store, &project, &id)
+}
+
+pub fn release_task(home: &DepotHome, selection: Option<&str>, id: &str) -> Result<Task> {
+    let store = Store::open(home)?;
+    let project = select_project(&store, selection)?;
+    let id = TaskId::new(id);
+    let current = task(&store, &project, &id)?;
+    if !current.hold_pr && matches!(current.state, TaskState::PrOpen | TaskState::Landed) {
+        return Ok(current);
+    }
+    if current.state != TaskState::Validated || !current.hold_pr {
+        return Err(transition_refused(&current, "released"));
+    }
+    if current.hold_pr {
+        let fact = Fact {
+            at: now(),
+            kind: FactKind::TaskReleased { task: id.clone() },
+        };
+        apply(&store, &project, &["task_released", id.as_str()], &fact)?;
+    }
     task(&store, &project, &id)
 }
 

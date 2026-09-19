@@ -107,6 +107,10 @@ fn render_task(out: &mut String, state: &ProjectState, task: &Task) {
         ));
     }
 
+    if task.hold_pr {
+        out.push_str("  - pull request held until `depot task release`\n");
+    }
+
     if let Some(reason) = &task.merge_refused {
         out.push_str(&format!("  - auto-merge refused: {}\n", one_line(reason)));
     }
@@ -153,7 +157,13 @@ fn waiting_on(state: &ProjectState, task: &Task) -> String {
             None => "an answer".to_string(),
         },
         TaskState::Validating => "validation".to_string(),
-        TaskState::Validated => "a pull request".to_string(),
+        TaskState::Validated => {
+            if task.hold_pr {
+                "a person to release the pull request".to_string()
+            } else {
+                "a pull request".to_string()
+            }
+        }
         TaskState::PrOpen => match task.pull_request() {
             Some((number, _, Checks::Passing)) => {
                 format!("the merge of pull request #{number}")

@@ -21,7 +21,8 @@ mod vocabulary;
 pub use checklist::{format_timestamp, render_checklist};
 pub use commands::{
     TaskRequest, acknowledge_task, add_task, answer_question, approve_tasks, ask_question,
-    ensure_profiles_resolve, read_inbox, redirect_task, stop_task, submit_task, write_narrative,
+    ensure_profiles_resolve, read_inbox, redirect_task, release_task, stop_task, submit_task,
+    write_narrative,
 };
 pub use config::{
     PROJECT_CONFIG_FILE_NAME, ProjectConfig, PullRequestConfig, QuestionsConfig, ValidationConfig,

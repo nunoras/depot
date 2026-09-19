@@ -18,6 +18,23 @@ use crate::project::{LocationKind, Project};
 pub use apply::Applied;
 pub use migrations::SCHEMA_VERSION;
 
+const BUSY_TIMEOUT: Duration = Duration::from_secs(30);
+const LOCK_RETRY_ATTEMPTS: u32 = 5;
+const LOCK_RETRY_BACKOFF: Duration = Duration::from_millis(100);
+
+pub(crate) fn with_lock_retry<T>(operation: impl Fn() -> Result<T>) -> Result<T> {
+    for attempt in 1..LOCK_RETRY_ATTEMPTS {
+        match operation() {
+            Ok(value) => return Ok(value),
+            Err(error) if error.is_lock_contention() => {
+                std::thread::sleep(LOCK_RETRY_BACKOFF * attempt);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    operation()
+}
+
 pub struct Store {
     connection: Connection,
     home: DepotHome,
@@ -27,7 +44,7 @@ impl Store {
     pub fn open(home: &DepotHome) -> Result<Self> {
         home.ensure()?;
         let connection = Connection::open(home.database_path())?;
-        connection.busy_timeout(Duration::from_secs(5))?;
+        connection.busy_timeout(BUSY_TIMEOUT)?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
         connection.query_row("PRAGMA journal_mode = WAL", [], |row| {
             row.get::<_, String>(0)
@@ -301,5 +318,63 @@ impl RawEvent {
             payload: self.payload,
             task: self.task_id.map(depot_core::TaskId::new),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+
+    use super::with_lock_retry;
+    use crate::error::Error;
+
+    fn busy() -> Error {
+        Error::Database(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+            None,
+        ))
+    }
+
+    #[test]
+    fn a_busy_error_is_lock_contention() {
+        assert!(busy().is_lock_contention());
+        assert!(!Error::NotFound("no".to_string()).is_lock_contention());
+    }
+
+    #[test]
+    fn lock_contention_is_retried_until_the_operation_succeeds() {
+        let attempts = Cell::new(0);
+        let result = with_lock_retry(|| {
+            attempts.set(attempts.get() + 1);
+            if attempts.get() < 3 {
+                Err(busy())
+            } else {
+                Ok(42)
+            }
+        })
+        .expect("retry succeeds");
+        assert_eq!(result, 42);
+        assert_eq!(attempts.get(), 3);
+    }
+
+    #[test]
+    fn a_busy_error_that_outlasts_the_retries_is_returned() {
+        assert!(
+            with_lock_retry(|| -> crate::error::Result<()> { Err(busy()) })
+                .expect_err("busy is returned")
+                .is_lock_contention()
+        );
+    }
+
+    #[test]
+    fn a_non_lock_error_is_returned_without_retrying() {
+        let attempts = Cell::new(0);
+        let error = with_lock_retry(|| {
+            attempts.set(attempts.get() + 1);
+            Err::<(), _>(Error::NotFound("no".to_string()))
+        })
+        .expect_err("other errors surface");
+        assert_eq!(error.to_string(), "no");
+        assert_eq!(attempts.get(), 1);
     }
 }

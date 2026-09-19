@@ -48,7 +48,13 @@ fn run() -> depotd::Result<()> {
     );
     daemon.recover()?;
     loop {
-        daemon.tick()?;
+        if let Err(error) = daemon.tick() {
+            if error.is_lock_contention() {
+                eprintln!("depotd: {error}; continuing");
+            } else {
+                return Err(error);
+            }
+        }
         thread::sleep(home.load_settings()?.poll_interval());
     }
 }

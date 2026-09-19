@@ -7,6 +7,7 @@ repository.workspace = true
 description = "The depot command line"
 
 [dependencies]
+crossterm = "0.29"
 depotd = { version = "0.1.0", path = "../depotd" }
 
 [dev-dependencies]

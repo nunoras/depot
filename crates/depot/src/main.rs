@@ -1,5 +1,7 @@
 use std::io::Read;
 
+mod tui;
+
 use depotd::{
     DepotHome, Error, StatusSelection, TaskRequest, add_project, add_task, answer_question,
     approve_tasks, ask_question, read_inbox, render_status, stop_task, submit_task,
@@ -11,7 +13,7 @@ depot - coordinate a project's agent work
 
 USAGE
   depot project add <path-or-url>
-  depot status [--project <name>] [--all]
+  depot status [--project <name>] [--all] [--tui]
   depot task add --title <title> --intent <intent> [--role <plan|build|review|fix>]
                  [--depends-on <task>@<commit>]...
                  [--base-dependency <task-id>] [--project <name>]
@@ -302,8 +304,8 @@ fn inbox_command(arguments: &[String]) -> Result<String, Failure> {
 }
 
 fn status_command(arguments: &[String]) -> Result<String, Failure> {
-    let flags = Flags::parse(arguments, &["all"])?;
-    flags.reject_unknown(&["all", "project"])?;
+    let flags = Flags::parse(arguments, &["all", "tui"])?;
+    flags.reject_unknown(&["all", "project", "tui"])?;
     flags.reject_positionals()?;
 
     let selection = match (flags.has("all"), flags.value("project")) {
@@ -318,6 +320,10 @@ fn status_command(arguments: &[String]) -> Result<String, Failure> {
     };
 
     let home = DepotHome::resolve()?;
+    if flags.has("tui") {
+        tui::run(&home, &selection)?;
+        return Ok(String::new());
+    }
     Ok(render_status(&home, &selection)?)
 }
 

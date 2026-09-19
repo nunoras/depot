@@ -123,6 +123,7 @@ pub enum FactTag {
     PullRequestMerged,
     PullRequestClosedUnmerged,
     PullRequestMergeRefused,
+    RebaseScheduled,
     RunDurationExceeded,
     RetryExhausted,
     ProviderRateLimited,
@@ -160,6 +161,7 @@ pub fn fact_tag(kind: &FactKind) -> FactTag {
         FactKind::PullRequestMerged { .. } => FactTag::PullRequestMerged,
         FactKind::PullRequestClosedUnmerged { .. } => FactTag::PullRequestClosedUnmerged,
         FactKind::PullRequestMergeRefused { .. } => FactTag::PullRequestMergeRefused,
+        FactKind::RebaseScheduled { .. } => FactTag::RebaseScheduled,
         FactKind::RunDurationExceeded { .. } => FactTag::RunDurationExceeded,
         FactKind::RetryExhausted { .. } => FactTag::RetryExhausted,
         FactKind::ProviderRateLimited { .. } => FactTag::ProviderRateLimited,
@@ -198,6 +200,7 @@ pub fn fact_tag_name(tag: FactTag) -> &'static str {
         FactTag::PullRequestMerged => "pull_request_merged",
         FactTag::PullRequestClosedUnmerged => "pull_request_closed_unmerged",
         FactTag::PullRequestMergeRefused => "pull_request_merge_refused",
+        FactTag::RebaseScheduled => "rebase_scheduled",
         FactTag::RunDurationExceeded => "run_duration_exceeded",
         FactTag::RetryExhausted => "retry_exhausted",
         FactTag::ProviderRateLimited => "provider_rate_limited",
@@ -236,6 +239,7 @@ pub fn fact_tag_from_name(name: &str) -> Result<FactTag> {
         "pull_request_merged" => FactTag::PullRequestMerged,
         "pull_request_closed_unmerged" => FactTag::PullRequestClosedUnmerged,
         "pull_request_merge_refused" => FactTag::PullRequestMergeRefused,
+        "rebase_scheduled" => FactTag::RebaseScheduled,
         "run_duration_exceeded" => FactTag::RunDurationExceeded,
         "retry_exhausted" => FactTag::RetryExhausted,
         "provider_rate_limited" => FactTag::ProviderRateLimited,
@@ -278,6 +282,7 @@ pub fn fact_task(kind: &FactKind) -> Option<TaskId> {
         | FactKind::PullRequestMerged { task, .. }
         | FactKind::PullRequestMergeRefused { task, .. }
         | FactKind::PullRequestClosedUnmerged { task }
+        | FactKind::RebaseScheduled { task, .. }
         | FactKind::RunDurationExceeded { task }
         | FactKind::RetryExhausted { task }
         | FactKind::ProviderRateLimited { task, .. }

@@ -24,7 +24,7 @@ fn pull_request(number: u64, sha: &str, state: &str, merged: Option<bool>) -> St
         None => String::new(),
     };
     format!(
-        "{{\"number\":{number},\"html_url\":\"https://github.com/acme/widget/pull/{number}\",\"title\":\"the work\",\"state\":\"{state}\",{merged}\"head\":{{\"sha\":\"{sha}\"}},\"base\":{{\"sha\":\"ba5eba11\"}}}}"
+        "{{\"number\":{number},\"html_url\":\"https://github.com/acme/widget/pull/{number}\",\"title\":\"the work\",\"state\":\"{state}\",{merged}\"mergeable\":true,\"head\":{{\"sha\":\"{sha}\",\"ref\":\"fm/task-7\"}},\"base\":{{\"sha\":\"ba5eba11\"}}}}"
     )
 }
 
@@ -95,6 +95,8 @@ fn distinguishes_a_merged_pull_request_from_an_unmerged_one() {
     let open = github.pull_request(&repo(), 9).expect("the PR is read");
     assert_eq!(open.state, PrState::Open);
     assert_eq!(open.checks, Checks::Pending);
+    assert_eq!(open.mergeable, Some(true));
+    assert_eq!(open.head_ref, "fm/task-7");
 
     let recorded = forge_endpoint.request_to("/repos/acme/widget/pulls/7");
     assert_eq!(recorded.method, "GET");
@@ -589,3 +591,37 @@ fn owner_only(path: &std::path::Path) {
 
 #[cfg(not(any(unix, windows)))]
 fn owner_only(_path: &std::path::Path) {}
+
+#[test]
+fn deletes_a_branch_after_a_merge() {
+    let forge_endpoint = FakeForge::start();
+    forge_endpoint.route(
+        "DELETE",
+        "/repos/acme/widget/git/refs/heads/fm/task-7",
+        204,
+        "",
+    );
+
+    GitHub::new(forge_endpoint.base_url(), "token-1")
+        .delete_branch(&repo(), "fm/task-7")
+        .expect("the branch is deleted");
+
+    let recorded = forge_endpoint.request_to("/repos/acme/widget/git/refs/heads/fm/task-7");
+    assert_eq!(recorded.method, "DELETE");
+}
+
+#[test]
+fn surfaces_a_refused_branch_delete() {
+    let forge_endpoint = FakeForge::start();
+    forge_endpoint.route(
+        "DELETE",
+        "/repos/acme/widget/git/refs/heads/fm/task-7",
+        422,
+        "{\"message\":\"Reference does not exist\"}",
+    );
+
+    let error = GitHub::new(forge_endpoint.base_url(), "token-1")
+        .delete_branch(&repo(), "fm/task-7")
+        .expect_err("a refused delete is an error");
+    assert!(error.to_string().contains("refused"), "{error}");
+}

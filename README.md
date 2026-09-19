@@ -219,8 +219,10 @@ Polling interval is controlled by the `poll_interval_seconds` setting in the dep
 Every tick reconciles the records before it acts: a task whose attempt holds no worktree is leased one, an attempt without a session is launched, an answer a worker has not been told about is resumed, a submitted commit is validated, a validated commit is published, and a task with an open pull request is observed at the forge.
 Each pass is derived from the stored records rather than from the actions a fact produced, so a fact the coordinator's CLI wrote reaches its end without that process executing anything; `docs/adr/0003-reconciliation-derives-pending-work.md` records why.
 
-`[pull_request] auto_merge` in `.depot.toml` is opt-in: with it set, the daemon merges a validated pull request itself once its checks pass and no dependency pin is stale, which lands the task, releases its worktree and drops it from the checklist.
+`[pull_request] auto_merge` in `.depot.toml` is opt-in: with it set, the daemon merges a validated pull request itself once its checks pass and no dependency pin is stale, which lands the task, releases its worktree, deletes the delivery branch at the forge and drops it from the checklist.
 A merge of any other revision is held for a person instead of landing, and a merge the forge refuses is named on the task and in `depot inbox`.
+When a forge observation reports an open pull request as conflicting, the daemon schedules one rebase attempt on the same task with the fix role's profile: the rebase worker rebases the delivery branch onto the base branch and submits, and the usual validation, push and merge path lands it.
+Only one rebase is in flight per project at a time, a task past its attempt limit gets no more, and a project without a fix profile keeps today's behavior.
 
 On startup, the daemon performs recovery: tasks with an in-flight attempt are transitioned to `Unknown` state, allowing them to be restarted or reworked.
 

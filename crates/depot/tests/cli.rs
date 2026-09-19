@@ -799,6 +799,7 @@ fn worker_ask_records_a_relayed_question_from_explicit_context() {
         started_at: depot_core::Timestamp::from_millis(1),
         finished_at: None,
         outcome: depot_core::AttemptOutcome::InFlight,
+        rebase: false,
     });
     store.put_task(&seeded).expect("seeded task");
 
@@ -838,6 +839,7 @@ fn worker_commentary_does_not_change_task_state() {
         started_at: depot_core::Timestamp::from_millis(1),
         finished_at: None,
         outcome: depot_core::AttemptOutcome::InFlight,
+        rebase: false,
     });
     store.put_task(&seeded).expect("seeded task");
 
@@ -882,6 +884,7 @@ fn worker_context_refuses_coordinator_state_commands() {
         started_at: depot_core::Timestamp::from_millis(1),
         finished_at: None,
         outcome: depot_core::AttemptOutcome::InFlight,
+        rebase: false,
     });
     store.put_task(&seeded).expect("seeded task");
 
@@ -924,6 +927,7 @@ fn worker_submit_records_its_summary_artifacts_and_starts_validation() {
         started_at: depot_core::Timestamp::from_millis(1),
         finished_at: None,
         outcome: depot_core::AttemptOutcome::InFlight,
+        rebase: false,
     });
     store.put_task(&seeded).expect("seeded task");
 

@@ -134,6 +134,12 @@ pub enum FactKind {
         checks: Checks,
         reason: String,
     },
+    RebaseScheduled {
+        task: TaskId,
+        profile: ProfileId,
+        commit: CommitId,
+        base: CommitId,
+    },
     RunDurationExceeded {
         task: TaskId,
     },

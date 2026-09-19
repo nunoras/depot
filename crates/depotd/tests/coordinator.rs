@@ -276,6 +276,7 @@ fn a_brief_for_a_build_task_names_its_worktree_as_the_output_destination() {
         started_at: at(1_000),
         finished_at: None,
         outcome: depot_core::AttemptOutcome::InFlight,
+        rebase: false,
     });
 
     let brief = context.brief(&task).expect("brief");

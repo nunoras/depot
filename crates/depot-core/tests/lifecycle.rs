@@ -70,6 +70,7 @@ fn task(id: &str, state: TaskState) -> Task {
         branch_head: None,
         merge_refused: None,
         acknowledged_at: None,
+        hold_pr: false,
         retry: None,
         created_at: at(0),
         updated_at: at(0),
@@ -1284,6 +1285,7 @@ fn a_proposed_task_is_recorded_once() {
             dispatch_profile: None,
             dependencies: Vec::new(),
             base_dependency: None,
+            hold_pr: false,
         },
     );
     let (recorded, actions) = reduce(&before, &proposed);
@@ -2684,6 +2686,7 @@ fn multi_dependency_tasks_require_a_declared_base() {
             dispatch_profile: None,
             dependencies: edges.clone(),
             base_dependency: None,
+            hold_pr: false,
         },
     );
     let (next, actions) = reduce(&base(), &refused);
@@ -2700,6 +2703,7 @@ fn multi_dependency_tasks_require_a_declared_base() {
             dispatch_profile: None,
             dependencies: edges,
             base_dependency: Some(task_id("b")),
+            hold_pr: false,
         },
     );
     let (next, actions) = reduce(&base(), &accepted);
@@ -3421,5 +3425,105 @@ fn rule_16_a_failed_or_cancelled_task_fades_when_superseded_or_acknowledged() {
         )
         .when("t1", TaskState::Failed, vec![Action::RenderChecklist])
         .checking(faded(true)),
+    ]);
+}
+
+fn held(mut task: Task) -> Task {
+    task.hold_pr = true;
+    task
+}
+
+fn push(task: &str, commit_id: &str) -> Action {
+    Action::Push {
+        task: task_id(task),
+        commit: commit(commit_id),
+    }
+}
+
+fn open_pull_request(task: &str, commit_id: &str) -> Action {
+    Action::OpenPullRequest {
+        task: task_id(task),
+        commit: commit(commit_id),
+    }
+}
+
+fn released(task: &str) -> FactKind {
+    FactKind::TaskReleased {
+        task: task_id(task),
+    }
+}
+
+#[test]
+fn rule_17_a_held_task_parks_its_branch_until_release() {
+    run(vec![
+        case(
+            "a held task's passing validation pushes but opens no pull request",
+            state(vec![held(validating("t1"))]),
+            vec![fact(1_000, passed("t1", "c1"))],
+        )
+        .when(
+            "t1",
+            TaskState::Validated,
+            vec![push("t1", "c1"), hold("t1"), Action::RenderChecklist],
+        )
+        .checking(|state| subject(state, "t1").hold_pr),
+        case(
+            "an unheld task's passing validation still opens a pull request",
+            state(vec![validating("t1")]),
+            vec![fact(2_000, passed("t1", "c1"))],
+        )
+        .when(
+            "t1",
+            TaskState::Validated,
+            vec![
+                push("t1", "c1"),
+                open_pull_request("t1", "c1"),
+                Action::RenderChecklist,
+            ],
+        )
+        .checking(|state| !subject(state, "t1").hold_pr),
+    ]);
+
+    let start = {
+        let mut task = held(validated("t1", "c1"));
+        task.branch_head = Some(commit("c1"));
+        state(vec![task])
+    };
+    run(vec![
+        case(
+            "releasing a held task asks for the push and the pull request",
+            start,
+            vec![fact(3_000, released("t1"))],
+        )
+        .when(
+            "t1",
+            TaskState::Validated,
+            vec![
+                push("t1", "c1"),
+                open_pull_request("t1", "c1"),
+                Action::RenderChecklist,
+            ],
+        )
+        .checking(|state| !subject(state, "t1").hold_pr),
+    ]);
+
+    let unheld = {
+        let mut task = validated("t1", "c1");
+        task.branch_head = Some(commit("c1"));
+        state(vec![task])
+    };
+    run(vec![
+        case(
+            "releasing a task with no hold changes nothing",
+            unheld,
+            vec![fact(4_000, released("t1"))],
+        )
+        .when("t1", TaskState::Validated, vec![]),
+        case(
+            "releasing a task still in flight is refused",
+            state(vec![held(validating("t1"))]),
+            vec![fact(5_000, released("t1"))],
+        )
+        .when("t1", TaskState::Validating, vec![]),
     ]);
 }

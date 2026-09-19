@@ -415,6 +415,7 @@ fn a_question_is_answered_and_a_task_is_stopped_from_the_command_line() {
                     dispatch_profile: None,
                     dependencies: Vec::new(),
                     base_dependency: None,
+                    hold_pr: false,
                 },
             },
         )
@@ -1000,6 +1001,7 @@ fn task(project: &str, id: &str, state: TaskState, offset: u64) -> depot_core::T
         branch_head: None,
         merge_refused: None,
         acknowledged_at: None,
+        hold_pr: false,
         retry: None,
         created_at: at,
         updated_at: at,
@@ -1057,4 +1059,94 @@ fn acknowledging_a_running_task_is_refused() {
 
     assert_eq!(output.status.code(), Some(1), "stderr: {}", stderr(&output));
     assert!(stderr(&output).contains("cannot be"));
+}
+
+#[test]
+fn a_task_holds_its_pull_request_until_release() {
+    let cli = Cli::new();
+    let added = cli.registered_with(BUILD_ONLY);
+
+    let output = cli.run(&[
+        "task",
+        "add",
+        "--title",
+        "Sketch the shape",
+        "--intent",
+        "Stop at the artifact choice.",
+        "--role",
+        "build",
+        "--hold-pr",
+        "--project",
+        "example",
+    ]);
+
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
+    assert_eq!(stdout(&output), "added t-1\n");
+
+    let store = Store::open(&cli.depot_home()).expect("store");
+    let project = added.project.clone();
+    let held = store.task(&project.id, &TaskId::new("t-1")).expect("task");
+    assert!(held.expect("t-1").hold_pr, "--hold-pr persists on the task");
+
+    let premature = cli.run(&["task", "release", "t-1", "--project", "example"]);
+    assert_eq!(
+        premature.status.code(),
+        Some(1),
+        "a proposed task cannot be released"
+    );
+
+    let seeding = store
+        .apply_fact(
+            &project,
+            "task_approved:t-1",
+            &depot_core::Fact {
+                at: depot_core::Timestamp::from_millis(2_000),
+                kind: depot_core::FactKind::TaskApproved {
+                    task: TaskId::new("t-1"),
+                },
+            },
+        )
+        .expect("approved");
+    assert!(!seeding.actions.is_empty());
+
+    let released = cli.run(&["task", "release", "t-1", "--project", "example"]);
+    assert_eq!(
+        released.status.code(),
+        Some(1),
+        "an approved task cannot be released, only a validated held one"
+    );
+}
+
+#[test]
+fn releasing_a_validated_held_task_is_a_no_op_after_the_fact() {
+    let cli = Cli::new();
+    let added = cli.registered_with(BUILD_ONLY);
+    let store = Store::open(&cli.depot_home()).expect("store");
+    let project = added.project.clone();
+    store
+        .apply_fact(
+            &project,
+            "task_proposed:t-1",
+            &depot_core::Fact {
+                at: depot_core::Timestamp::from_millis(1_000),
+                kind: depot_core::FactKind::TaskProposed {
+                    task: TaskId::new("t-1"),
+                    title: "Design the seam".to_string(),
+                    intent: "Stop for a human pick.".to_string(),
+                    role: depot_core::Role::Build,
+                    dispatch_profile: None,
+                    dependencies: Vec::new(),
+                    base_dependency: None,
+                    hold_pr: true,
+                },
+            },
+        )
+        .expect("proposed");
+
+    let released = cli.run(&["task", "release", "t-1", "--project", "example"]);
+    assert_eq!(
+        released.status.code(),
+        Some(1),
+        "a validated held task needs the daemon, so a proposed one is refused"
+    );
 }

@@ -41,6 +41,7 @@ fn proposed(id: &str, title: &str) -> FactKind {
         dispatch_profile: None,
         dependencies: Vec::new(),
         base_dependency: None,
+        hold_pr: false,
     }
 }
 

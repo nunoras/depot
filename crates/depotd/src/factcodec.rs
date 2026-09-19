@@ -37,6 +37,7 @@ pub fn encode_payload(kind: &FactKind) -> String {
             dispatch_profile,
             dependencies,
             base_dependency,
+            hold_pr,
         } => object(vec![
             ("task", quoted(task.as_str())),
             ("title", quoted(title)),
@@ -68,7 +69,9 @@ pub fn encode_payload(kind: &FactKind) -> String {
                 "base_dependency",
                 optional(base_dependency.as_ref().map(|task| quoted(task.as_str()))),
             ),
+            ("hold_pr", boolean(*hold_pr)),
         ]),
+        FactKind::TaskReleased { task } => task_field(task.as_str()),
         FactKind::TaskApproved { task } => task_field(task.as_str()),
         FactKind::TaskCancelled { task } => task_field(task.as_str()),
         FactKind::TaskAcknowledged { task } => task_field(task.as_str()),

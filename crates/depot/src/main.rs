@@ -4,8 +4,8 @@ mod tui;
 
 use depotd::{
     DepotHome, Error, StatusSelection, TaskRequest, acknowledge_task, add_project, add_task,
-    answer_question, approve_tasks, ask_question, read_inbox, render_status, stop_task,
-    submit_task, write_narrative,
+    answer_question, approve_tasks, ask_question, read_inbox, redirect_task, render_status,
+    stop_task, submit_task, write_narrative,
 };
 
 const USAGE: &str = "\
@@ -21,6 +21,7 @@ USAGE
   depot task answer <task-id> --text <answer> [--by <coordinator|user>] [--project <name>]
   depot task stop <task-id> [--project <name>]
   depot task acknowledge <task-id> [--project <name>]
+  depot task redirect <task-id> --text <direction> [--project <name>]
   depot ask --task <task-id> --project <name> [--relay] <question>
   depot submit --task <task-id> --project <name>
   depot inbox [--project <name>]
@@ -37,6 +38,8 @@ NOTES
   `--content -` reads a document from standard input.
   Failed and cancelled tasks fade from the default status once a live task
   depends on them or they are acknowledged; `--history` shows them.
+  `task redirect` queues a new direction for a running worker; the daemon delivers it when the
+  worker's current turn ends.
 ";
 
 fn main() {
@@ -152,9 +155,10 @@ fn task_command(arguments: &[String]) -> Result<String, Failure> {
         Some("answer") => task_answer(&arguments[1..]),
         Some("stop") => task_stop(&arguments[1..]),
         Some("acknowledge") => task_acknowledge(&arguments[1..]),
+        Some("redirect") => task_redirect(&arguments[1..]),
         Some(other) => Err(Failure::Usage(format!("unknown task command `{other}`"))),
         None => Err(Failure::Usage(
-            "`depot task` needs a subcommand: add, approve, answer or stop".to_string(),
+            "`depot task` needs a subcommand: add, approve, answer, stop or redirect".to_string(),
         )),
     }
 }
@@ -247,6 +251,22 @@ fn task_acknowledge(arguments: &[String]) -> Result<String, Failure> {
     let home = DepotHome::resolve()?;
     let task = acknowledge_task(&home, flags.value("project"), &ids[0])?;
     Ok(format!("acknowledged {}\n", task.id))
+}
+
+fn task_redirect(arguments: &[String]) -> Result<String, Failure> {
+    let flags = Flags::parse(arguments, &[])?;
+    flags.reject_unknown(&["text", "project"])?;
+    let ids = flags.positionals();
+    if ids.len() != 1 {
+        return Err(Failure::Usage(
+            "`depot task redirect` needs exactly one task id".to_string(),
+        ));
+    }
+    let text = flags.required("text")?;
+
+    let home = DepotHome::resolve()?;
+    let task = redirect_task(&home, flags.value("project"), &ids[0], text)?;
+    Ok(format!("redirected {}\n", task.id))
 }
 
 fn ask_command(arguments: &[String]) -> Result<String, Failure> {

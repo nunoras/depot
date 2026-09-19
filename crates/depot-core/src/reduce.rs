@@ -196,6 +196,8 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             }
         }
 
+        FactKind::WorkerRedirected { .. } => {}
+
         FactKind::WorkerLivenessChanged { task, liveness } => {
             let in_flight = next
                 .tasks

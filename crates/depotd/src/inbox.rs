@@ -117,6 +117,7 @@ fn need_for(tag: FactTag, task: Option<&Task>) -> Need {
         | FactTag::WorkerTurnResumeRequested
         | FactTag::WorkerTurnStarted
         | FactTag::WorkerTurnEnded
+        | FactTag::WorkerRedirected
         | FactTag::WorkerSubmissionRecorded
         | FactTag::WorkerSubmitted
         | FactTag::ValidationStarted
@@ -165,6 +166,13 @@ fn headline(tag: FactTag, event: &RecordedEvent, task: Option<&Task>) -> Result<
         }
         FactTag::WorkerTurnStarted => "worker turn started".to_string(),
         FactTag::WorkerTurnEnded => "worker turn ended".to_string(),
+        FactTag::WorkerRedirected => match payload_field(&event.payload, "text") {
+            Ok(text) => format!(
+                "a new direction was queued for the worker: {}",
+                one_line(&text)
+            ),
+            Err(_) => "a new direction was queued for the worker".to_string(),
+        },
         FactTag::WorkerLivenessChanged => liveness_line(&event.payload)?,
         FactTag::WorkerSubmissionRecorded => "recorded a submission".to_string(),
         FactTag::WorkerSubmitted => "submitted a change".to_string(),

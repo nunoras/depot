@@ -40,7 +40,10 @@ pub fn inbox_entries(
     let mut entries = Vec::new();
     for event in events {
         let tag = fact_tag_from_name(&event.kind)?;
-        if matches!(tag, FactTag::Polled | FactTag::CoordinatorContextMeasured) {
+        if matches!(
+            tag,
+            FactTag::Polled | FactTag::CoordinatorContextMeasured | FactTag::OnEventNotified
+        ) {
             continue;
         }
         let task = event.task.as_ref().and_then(|id| tasks.get(id));
@@ -122,6 +125,7 @@ fn need_for(tag: FactTag, task: Option<&Task>) -> Need {
         | FactTag::CoordinatorSessionStarted
         | FactTag::CoordinatorContextMeasured
         | FactTag::DaemonRestarted
+        | FactTag::OnEventNotified
         | FactTag::Polled => Need::Nothing,
     }
 }
@@ -201,6 +205,7 @@ fn headline(tag: FactTag, event: &RecordedEvent, task: Option<&Task>) -> Result<
         FactTag::ProviderRateLimited => "hit a provider rate limit".to_string(),
         FactTag::CoordinatorSessionStarted => "this session started".to_string(),
         FactTag::CoordinatorContextMeasured => "context measured".to_string(),
+        FactTag::OnEventNotified => "the daemon ran its event hook".to_string(),
         FactTag::DaemonRestarted => "the daemon restarted".to_string(),
         FactTag::Polled => "the daemon polled".to_string(),
     })

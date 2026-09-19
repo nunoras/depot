@@ -121,6 +121,27 @@ account = "work"
 `account` may be empty: depot then omits `--account` on the boxr launch.
 pi has no isolated account directory, so a pi profile leaves it blank and uses the host credentials.
 
+### On-event hook
+
+When `[on_event]` is set in the depot home's `config.toml`, depotd runs the command with one JSON event on stdin each time progress blocks on the human.
+The command owns delivery and retries; depotd never does HTTP itself.
+
+```toml
+[on_event]
+command = "curl -sf -d @- https://ntfy.sh/my-depot"
+events = ["question", "failed", "merge_refused"]
+```
+
+Without an `events` list the hook fires on the blocking events by default: `question` when a task waits on the user, `failed` when a task stops making progress, and `merge_refused` when an automatic merge was refused and the task is held.
+`landed` is opt-in and fires when a pull request merges.
+An event fires at most once per state change, and no `on_event` section means no hook and no change in behaviour.
+
+Each event carries the project slug, the task id, the task title, the event name, the question and a recommended default when one exists, and the pull request link when one exists:
+
+```json
+{"project":"depot","task":"t-7","title":"on_event hook","event":"question","question":"Which store?","recommended_default":null,"pull_request":null}
+```
+
 Neither file accepts a key from the other side of the split, and registering a project never writes a machine-local setting into the repository.
 `crates/depotd/tests/config_split.rs` is the guard.
 

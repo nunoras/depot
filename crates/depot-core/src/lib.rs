@@ -3,6 +3,8 @@ mod dispatch;
 pub use dispatch::{
     Confidence, DispatchRefusal, DispatchResolution, DispatchRule, resolve_dispatch,
 };
+pub use event::{BlockingEvent, blocking_event};
+mod event;
 mod fact;
 mod model;
 mod reduce;

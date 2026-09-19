@@ -125,6 +125,7 @@ pub enum FactTag {
     RunDurationExceeded,
     RetryExhausted,
     ProviderRateLimited,
+    OnEventNotified,
     CoordinatorSessionStarted,
     CoordinatorContextMeasured,
     DaemonRestarted,
@@ -160,6 +161,7 @@ pub fn fact_tag(kind: &FactKind) -> FactTag {
         FactKind::RunDurationExceeded { .. } => FactTag::RunDurationExceeded,
         FactKind::RetryExhausted { .. } => FactTag::RetryExhausted,
         FactKind::ProviderRateLimited { .. } => FactTag::ProviderRateLimited,
+        FactKind::OnEventNotified { .. } => FactTag::OnEventNotified,
         FactKind::CoordinatorSessionStarted { .. } => FactTag::CoordinatorSessionStarted,
         FactKind::CoordinatorContextMeasured { .. } => FactTag::CoordinatorContextMeasured,
         FactKind::DaemonRestarted => FactTag::DaemonRestarted,
@@ -196,6 +198,7 @@ pub fn fact_tag_name(tag: FactTag) -> &'static str {
         FactTag::RunDurationExceeded => "run_duration_exceeded",
         FactTag::RetryExhausted => "retry_exhausted",
         FactTag::ProviderRateLimited => "provider_rate_limited",
+        FactTag::OnEventNotified => "on_event_notified",
         FactTag::CoordinatorSessionStarted => "coordinator_session_started",
         FactTag::CoordinatorContextMeasured => "coordinator_context_measured",
         FactTag::DaemonRestarted => "daemon_restarted",
@@ -232,6 +235,7 @@ pub fn fact_tag_from_name(name: &str) -> Result<FactTag> {
         "run_duration_exceeded" => FactTag::RunDurationExceeded,
         "retry_exhausted" => FactTag::RetryExhausted,
         "provider_rate_limited" => FactTag::ProviderRateLimited,
+        "on_event_notified" => FactTag::OnEventNotified,
         "coordinator_session_started" => FactTag::CoordinatorSessionStarted,
         "coordinator_context_measured" => FactTag::CoordinatorContextMeasured,
         "daemon_restarted" => FactTag::DaemonRestarted,
@@ -271,7 +275,8 @@ pub fn fact_task(kind: &FactKind) -> Option<TaskId> {
         | FactKind::PullRequestClosedUnmerged { task }
         | FactKind::RunDurationExceeded { task }
         | FactKind::RetryExhausted { task }
-        | FactKind::ProviderRateLimited { task, .. } => task.clone(),
+        | FactKind::ProviderRateLimited { task, .. }
+        | FactKind::OnEventNotified { task, .. } => task.clone(),
         FactKind::CoordinatorSessionStarted { .. }
         | FactKind::CoordinatorContextMeasured { .. }
         | FactKind::DaemonRestarted

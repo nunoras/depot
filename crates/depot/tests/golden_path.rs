@@ -1022,7 +1022,7 @@ fn a_restart_with_a_task_in_flight_marks_it_unknown_and_launches_no_replacement(
             depotd::adapters::forge::GitHub::new(golden.forge.base_url(), support::TOKEN),
             "main",
         ),
-        depotd::StderrNotifier,
+        depotd::NoEventHook,
     );
 
     golden.boxr.respond("status", "", "status interrupted", 1);
@@ -1629,4 +1629,58 @@ fn user_section(rendered: &str) -> &str {
     let rest = &rendered[start..];
     let end = rest.find("\n## ").unwrap_or(rest.len());
     &rest[..end]
+}
+
+#[test]
+fn the_on_event_hook_fires_once_per_blocking_event() {
+    let golden = Golden::new(Validation::Passing);
+    let log = golden.temp.path().join("hook.log");
+    let command = format!("cat >> {}; echo >> {}", log.display(), log.display());
+    golden
+        .home
+        .write_settings(&support::settings_with_on_event(Some(
+            depotd::OnEventSettings {
+                command,
+                events: None,
+            },
+        )))
+        .expect("the settings are written");
+    let daemon = golden.daemon();
+
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    assert!(
+        !log.exists(),
+        "no event fires while no task blocks on the user"
+    );
+
+    golden.boxr.report_finished();
+    let asked = golden.worker_commits_and_asks("Which store?");
+    assert_eq!(asked.status.code(), Some(0));
+    assert_eq!(golden.task().state, TaskState::WaitingOnQuestion);
+
+    daemon.tick().expect("the daemon fires the event hook");
+    let events = hook_events(&log);
+    assert_eq!(events.len(), 1, "one blocking event fires once: {events:?}");
+    let event = &events[0];
+    assert_eq!(event["project"], "example");
+    assert_eq!(event["task"], TASK);
+    assert_eq!(event["title"], "Wire the store");
+    assert_eq!(event["event"], "question");
+    assert_eq!(event["question"], "Which store?");
+    assert!(event["recommended_default"].is_null());
+    assert!(event["pull_request"].is_null());
+
+    daemon
+        .tick()
+        .expect("a further poll does not fire the hook again");
+    assert_eq!(hook_events(&log).len(), 1, "the same block fires once");
+}
+
+fn hook_events(log: &std::path::Path) -> Vec<serde_json::Value> {
+    std::fs::read_to_string(log)
+        .expect("the hook log")
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("each hook line is a json payload"))
+        .collect()
 }

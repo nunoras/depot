@@ -726,6 +726,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             }
         }
 
+        FactKind::OnEventNotified { .. } => {}
         FactKind::Polled => {}
     }
 

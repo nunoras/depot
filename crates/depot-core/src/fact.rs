@@ -141,6 +141,10 @@ pub enum FactKind {
         task: TaskId,
         profile: ProfileId,
     },
+    OnEventNotified {
+        task: TaskId,
+        event: String,
+    },
     CoordinatorSessionStarted {
         session: SessionId,
     },

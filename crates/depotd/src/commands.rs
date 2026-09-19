@@ -237,6 +237,35 @@ pub fn stop_task(home: &DepotHome, selection: Option<&str>, id: &str) -> Result<
     task(&store, &project, &id)
 }
 
+pub fn redirect_task(
+    home: &DepotHome,
+    selection: Option<&str>,
+    id: &str,
+    text: &str,
+) -> Result<Task> {
+    let store = Store::open(home)?;
+    let project = select_project(&store, selection)?;
+    let id = TaskId::new(id);
+    let current = task(&store, &project, &id)?;
+    if current.state != TaskState::Running {
+        return Err(transition_refused(&current, "redirected"));
+    }
+    let at = now();
+    let fact = Fact {
+        at,
+        kind: FactKind::WorkerRedirected {
+            task: id.clone(),
+            text: text.to_owned(),
+        },
+    };
+    store.apply_fact(
+        &project,
+        &event_key(&["worker_redirected", id.as_str(), &at.millis().to_string()]),
+        &fact,
+    )?;
+    task(&store, &project, &id)
+}
+
 pub fn read_inbox(home: &DepotHome, selection: Option<&str>) -> Result<String> {
     let store = Store::open(home)?;
     let project = select_project(&store, selection)?;

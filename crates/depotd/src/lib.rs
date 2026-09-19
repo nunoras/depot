@@ -36,7 +36,7 @@ pub use daemon::{
     NoEventHook, ObservedPullRequest, ShellEventHook, ShellValidation, ValidationResult,
     ValidationRunner, pull_request_body, resume_prompt,
 };
-pub use depot_core::{ProjectState, TaskState};
+pub use depot_core::{ProjectState, Task, TaskState};
 pub use documents::{document_path, write_document};
 pub use error::{Error, Result};
 pub use home::{

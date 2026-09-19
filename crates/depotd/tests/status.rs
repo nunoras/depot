@@ -23,10 +23,10 @@ fn status_shows_held_running_blocked_waiting_and_validated_tasks_distinctly() {
     let rendered = render_status(&fixture.home, &StatusSelection::All, false).expect("status");
 
     for label in [
+        "Needs you - waiting on an answer",
         "Held - awaiting approval",
         "Running",
-        "Blocked - needs a person",
-        "Waiting on a question",
+        "Failed",
         "Validated",
     ] {
         assert!(
@@ -168,9 +168,9 @@ fn a_failed_task_fades_once_a_live_task_depends_on_it() {
     let history = render_status(&fixture.home, &StatusSelection::All, true).expect("history");
 
     assert!(faded.contains("## Running (1)"));
-    assert!(!faded.contains("Blocked - needs a person"));
+    assert!(!faded.contains("## Failed"));
     assert!(faded.contains("1 faded task hidden"));
-    assert!(history.contains("## Blocked - needs a person (1)"));
+    assert!(history.contains("## Failed (1)"));
 }
 
 #[test]
@@ -199,8 +199,8 @@ fn an_acknowledged_failed_task_fades_and_history_still_shows_it() {
     let faded = render_status(&fixture.home, &StatusSelection::All, false).expect("status");
     let history = render_status(&fixture.home, &StatusSelection::All, true).expect("history");
 
-    assert!(!faded.contains("Blocked - needs a person"));
-    assert!(history.contains("## Blocked - needs a person (1)"));
+    assert!(!faded.contains("## Failed"));
+    assert!(history.contains("## Failed (1)"));
 }
 
 #[test]

@@ -35,6 +35,7 @@ pub use daemon::{
     ObservedPullRequest, ShellValidation, StderrNotifier, ValidationResult, ValidationRunner,
     pull_request_body, resume_prompt,
 };
+pub use depot_core::{ProjectState, TaskState};
 pub use documents::{document_path, write_document};
 pub use error::{Error, Result};
 pub use home::{
@@ -47,4 +48,4 @@ pub use project::{LocationKind, Project};
 pub use projects::{Added, StatusSelection, add_project, render_status, select_project};
 pub use settings::{ProfileSettings, Settings};
 pub use store::{Applied, EventOutcome, RecordedEvent, SCHEMA_VERSION, Store, event_key};
-pub use vocabulary::{ROLE_NAMES, role_from_name};
+pub use vocabulary::{ROLE_NAMES, role_from_name, role_name, state_name};

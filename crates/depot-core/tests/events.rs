@@ -19,6 +19,7 @@ fn task(state: TaskState) -> Task {
         submission: None,
         artifacts: Vec::new(),
         links: Vec::new(),
+        acknowledged_at: None,
         branch_head: None,
         merge_refused: None,
         retry: None,

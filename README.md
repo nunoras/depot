@@ -184,14 +184,20 @@ A role with no entry in the project's `[profiles]` map is refused when the task 
 
 ## Running the daemon
 
-The daemon runs a continuous loop for one project, polling session status, launching workers, running validation, and delivering pull requests.
+One daemon serves every project registered in the store, polling session status, launching workers, running validation, and delivering pull requests.
 
 ```sh
-depotd --project <project>
+depotd
 ```
 
-The daemon acquires an exclusive lock on `$DEPOT_HOME/depotd.lock` to prevent multiple daemon instances.
+`--project <project>` narrows the daemon to one project as a debug filter; without it the daemon picks up every project in the store, including ones added while it runs.
+The daemon acquires an exclusive lock on `$DEPOT_HOME/depotd.lock`, so the lock itself enforces the one-daemon-per-store singleton, and a second daemon for any project in that store is refused.
 Polling interval is controlled by the `poll_interval_seconds` setting in the depot home's `config.toml`.
+
+Worker capacity is two settings in that same `config.toml`.
+`concurrency` is the store-global cap on in-flight tasks across all projects, and `project_concurrency` maps a project slug to that project's own cap, defaulting to 1.
+Each project's effective cap is its own cap clamped to the global slots the other projects have not taken, and the daemon ticks the projects in a rotating order, so a busy project cannot starve the rest and queued work is scheduled round-robin across projects.
+A project that needs more than one worker at a time raises its entry in `project_concurrency`.
 
 Every tick reconciles the records before it acts: a task whose attempt holds no worktree is leased one, an attempt without a session is launched, an answer a worker has not been told about is resumed, a submitted commit is validated, a validated commit is published, and a task with an open pull request is observed at the forge.
 Each pass is derived from the stored records rather than from the actions a fact produced, so a fact the coordinator's CLI wrote reaches its end without that process executing anything; `docs/adr/0003-reconciliation-derives-pending-work.md` records why.

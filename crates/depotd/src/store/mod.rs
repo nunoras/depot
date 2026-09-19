@@ -6,7 +6,7 @@ mod tasks;
 use std::path::Path;
 use std::time::Duration;
 
-use depot_core::{Fact, ProjectId, ProjectState, Timestamp};
+use depot_core::{Fact, Limits, ProjectId, ProjectState, Timestamp};
 use rusqlite::{Connection, params};
 
 use crate::config::ProjectConfig;
@@ -14,6 +14,7 @@ use crate::error::{Error, Result};
 use crate::factcodec;
 use crate::home::DepotHome;
 use crate::project::{LocationKind, Project};
+use crate::settings::Settings;
 
 pub use apply::Applied;
 pub use migrations::SCHEMA_VERSION;
@@ -116,10 +117,30 @@ impl Store {
             coordinator: self.coordinator_session(&project.id)?,
             profiles: config.profiles()?,
             fallback_profiles: settings.profile_fallbacks(),
-            limits: settings.limits(),
+            limits: Limits {
+                max_concurrent_tasks: self.concurrency_cap(project, &settings)?,
+                coordinator_context_tokens: settings.coordinator_context_tokens,
+                ..Limits::default()
+            },
             always_relay_questions: config.questions.always_relay,
             auto_merge: config.pull_request.auto_merge,
         })
+    }
+
+    fn concurrency_cap(&self, project: &Project, settings: &Settings) -> Result<usize> {
+        let mut in_flight_elsewhere = 0usize;
+        for other in self.projects()? {
+            if other.id == project.id {
+                continue;
+            }
+            in_flight_elsewhere += self
+                .tasks(&other.id)?
+                .values()
+                .filter(|task| task.state.in_flight())
+                .count();
+        }
+        let free = settings.concurrency.saturating_sub(in_flight_elsewhere);
+        Ok(settings.project_concurrency(&project.slug).min(free))
     }
 
     pub fn record_event(

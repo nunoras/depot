@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use depot_core::{Limits, ProfileId};
+use depot_core::ProfileId;
 use serde::{Deserialize, Serialize};
 
 use crate::adapters::profiles::{ConfiguredProfiles, ProfileError, ProfileSpec, RoleEntry};
@@ -14,6 +14,7 @@ use crate::error::{Error, Result};
 pub struct Settings {
     pub typesafe_base_url: String,
     pub concurrency: usize,
+    pub project_concurrency: BTreeMap<String, usize>,
     pub run_duration_minutes: u64,
     pub poll_interval_seconds: u64,
     pub pool_root: Option<PathBuf>,
@@ -37,6 +38,7 @@ impl Default for Settings {
         Self {
             typesafe_base_url: crate::adapters::typesafe::DEFAULT_API_BASE.into(),
             concurrency: 4,
+            project_concurrency: BTreeMap::new(),
             run_duration_minutes: 60,
             poll_interval_seconds: 30,
             pool_root: None,
@@ -65,12 +67,12 @@ impl Settings {
         Duration::from_secs(self.poll_interval_seconds)
     }
 
-    pub fn limits(&self) -> Limits {
-        Limits {
-            max_concurrent_tasks: self.concurrency,
-            coordinator_context_tokens: self.coordinator_context_tokens,
-            ..Limits::default()
-        }
+    pub fn project_concurrency(&self, slug: &str) -> usize {
+        self.project_concurrency
+            .get(slug)
+            .copied()
+            .unwrap_or(1)
+            .max(1)
     }
 
     pub fn profile_fallbacks(&self) -> Vec<ProfileId> {

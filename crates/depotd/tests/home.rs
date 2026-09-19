@@ -101,7 +101,8 @@ fn machine_local_settings_survive_a_reopen_and_are_written_only_once() {
     assert_eq!(settings.concurrency, 9);
     assert_eq!(settings.run_duration().as_secs(), 45 * 60);
     assert_eq!(settings.poll_interval().as_secs(), 30);
-    assert_eq!(settings.limits().max_concurrent_tasks, 9);
+    assert_eq!(settings.project_concurrency("example"), 1);
+    assert_eq!(settings.project_concurrency("anything"), 1);
     assert_eq!(
         Settings::from_toml(&defaults).expect("the first open writes a readable config"),
         Settings::default(),

@@ -3030,6 +3030,62 @@ fn cancel_before_session_id_still_stops_the_launched_worker() {
 }
 
 #[test]
+fn cancelling_releases_any_lease_the_task_acquired() {
+    run(vec![
+        case(
+            "cancelling a running attempt with a session and a lease stops the worker and releases the lease",
+            state(vec![running_with_session("t1", "s1", "w1")]),
+            vec![fact(
+                1_000,
+                FactKind::TaskCancelled {
+                    task: task_id("t1"),
+                },
+            )],
+        )
+        .when(
+            "t1",
+            TaskState::Cancelled,
+            vec![
+                Action::StopSession {
+                    task: task_id("t1"),
+                },
+                Action::ReleaseWorktree {
+                    task: task_id("t1"),
+                    lease: lease("w1"),
+                },
+                Action::RenderChecklist,
+            ],
+        )
+        .checking(|state| subject(state, "t1").attempts[0].worktree.is_none()),
+        case(
+            "cancelling a running attempt that holds a lease but never launched releases the lease",
+            state(vec![running_with_lease("t1", "w1")]),
+            vec![fact(
+                1_000,
+                FactKind::TaskCancelled {
+                    task: task_id("t1"),
+                },
+            )],
+        )
+        .when(
+            "t1",
+            TaskState::Cancelled,
+            vec![
+                Action::StopSession {
+                    task: task_id("t1"),
+                },
+                Action::ReleaseWorktree {
+                    task: task_id("t1"),
+                    lease: lease("w1"),
+                },
+                Action::RenderChecklist,
+            ],
+        )
+        .checking(|state| subject(state, "t1").attempts[0].worktree.is_none()),
+    ]);
+}
+
+#[test]
 fn daemon_restart_renders_when_attempts_become_unknown() {
     run(vec![
         case(

@@ -700,7 +700,9 @@ where
     }
 
     fn stop(&self, task: TaskId) -> Result<()> {
-        let session = self.session_for(&self.task(&task)?)?;
+        let Ok(session) = self.session_for(&self.task(&task)?) else {
+            return Ok(());
+        };
         self.sessions
             .stop(&session)
             .map_err(|error| Error::Project(error.to_string()))

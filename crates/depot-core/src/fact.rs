@@ -111,6 +111,11 @@ pub enum FactKind {
         task: TaskId,
         commit: CommitId,
     },
+    PushFailed {
+        task: TaskId,
+        commit: CommitId,
+        reason: String,
+    },
     PullRequestOpened {
         task: TaskId,
         number: u64,

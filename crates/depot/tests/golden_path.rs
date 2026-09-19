@@ -31,6 +31,7 @@ const CHECKS: &str = "pull_request_checks_changed";
 const MERGED: &str = "pull_request_merged";
 const CLOSED_UNMERGED: &str = "pull_request_closed_unmerged";
 const MERGE_REFUSED: &str = "pull_request_merge_refused";
+const PUSH_FAILED: &str = "push_failed";
 const RESTARTED: &str = "daemon_restarted";
 
 #[test]
@@ -1414,6 +1415,132 @@ fn a_pull_request_branch_that_lags_the_validated_commit_is_pushed_forward() {
         1,
         "catching the branch up opens no second pull request"
     );
+}
+
+#[test]
+fn a_fix_role_push_overwrites_a_force_pushed_remote_branch() {
+    let golden = Golden::new(Validation::Passing);
+    golden.map_role("fix", Some(PROFILE));
+    let daemon = golden.daemon();
+
+    let added = golden.depot_ok(&[
+        "task",
+        "add",
+        "--title",
+        "Fix the store",
+        "--intent",
+        "Repair the records in sqlite.",
+        "--role",
+        "fix",
+        "--project",
+        SLUG,
+    ]);
+    assert_eq!(added, format!("added {TASK}\n"));
+    golden.depot_ok(&["task", "approve", TASK, "--project", SLUG]);
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_submits();
+    let commit = golden.head();
+    golden.script_pull_request(&commit);
+    daemon
+        .tick()
+        .expect("the daemon validates, pushes and opens the pull request");
+    assert_eq!(golden.task().state, TaskState::PrOpen);
+
+    let rival = golden.force_push_divergent_branch();
+    assert_ne!(rival, commit, "the remote branch was replaced");
+
+    let reworked = golden.commit_in_lease("rework.txt", "the rework\n");
+    let mut task = golden.task();
+    task.validations.push(ValidationRecord {
+        command: "cargo test".to_owned(),
+        commit: CommitId::new(reworked.clone()),
+        exit_code: 0,
+        duration: std::time::Duration::from_secs(5),
+        output_tail: "ok".to_owned(),
+    });
+    golden
+        .store
+        .put_task(&task)
+        .expect("the revalidation is recorded");
+
+    daemon
+        .tick()
+        .expect("the fix-role push overwrites the force-pushed remote branch");
+
+    assert_eq!(golden.task().state, TaskState::PrOpen);
+    assert_eq!(
+        git::git(
+            &golden.origin,
+            &["rev-parse", &format!("refs/heads/{BRANCH}")]
+        )
+        .trim(),
+        reworked,
+        "the branch lands on the commit depot validated"
+    );
+}
+
+#[test]
+fn a_push_rejection_fails_the_task_and_the_daemon_keeps_running() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_submits();
+    let commit = golden.head();
+    golden.script_pull_request(&commit);
+    daemon
+        .tick()
+        .expect("the daemon validates, pushes and opens the pull request");
+    assert_eq!(golden.task().state, TaskState::PrOpen);
+
+    let rival = golden.force_push_divergent_branch();
+    let reworked = golden.commit_in_lease("rework.txt", "the rework\n");
+    let mut task = golden.task();
+    task.validations.push(ValidationRecord {
+        command: "cargo test".to_owned(),
+        commit: CommitId::new(reworked.clone()),
+        exit_code: 0,
+        duration: std::time::Duration::from_secs(5),
+        output_tail: "ok".to_owned(),
+    });
+    golden
+        .store
+        .put_task(&task)
+        .expect("the revalidation is recorded");
+
+    daemon
+        .tick()
+        .expect("a rejected push is recorded, not fatal");
+
+    let failed = golden.task();
+    assert_eq!(failed.state, TaskState::Failed);
+    assert_eq!(failed.branch_head, Some(CommitId::new(commit.clone())));
+    assert!(
+        golden.history(TASK).contains(&PUSH_FAILED.to_string()),
+        "the rejection is on the journal"
+    );
+    assert_ne!(
+        git::git(
+            &golden.origin,
+            &["rev-parse", &format!("refs/heads/{BRANCH}")]
+        )
+        .trim(),
+        reworked,
+        "the rejected push changed nothing at the forge"
+    );
+
+    let blocked = golden.status();
+    assert!(
+        blocked.contains("Blocked - needs a person (1)"),
+        "{blocked}"
+    );
+    assert_eq!(blocked, golden.checklist());
+
+    daemon
+        .tick()
+        .expect("the daemon keeps scheduling after a push rejection");
+    assert_eq!(golden.task().state, TaskState::Failed);
+    assert!(!rival.is_empty());
 }
 
 #[test]

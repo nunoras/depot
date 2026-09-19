@@ -245,16 +245,49 @@ impl Golden {
     }
 
     pub fn map_build_role(&self, profile: Option<&str>) {
+        self.map_role("build", profile);
+    }
+
+    pub fn map_role(&self, role: &str, profile: Option<&str>) {
         let path = self.repo.join(depotd::PROJECT_CONFIG_FILE_NAME);
         let text = fs::read_to_string(&path).expect("the project config is readable");
         let mut config =
             depotd::ProjectConfig::from_toml(&text).expect("the project config parses");
         config.profiles = profile
-            .map(|profile| BTreeMap::from([("build".to_string(), profile.to_string())]))
+            .map(|profile| BTreeMap::from([(role.to_string(), profile.to_string())]))
             .unwrap_or_default();
         config
             .write(&self.repo)
             .expect("the project config is written");
+    }
+
+    pub fn force_push_divergent_branch(&self) -> String {
+        let rival = self.base.join("rival");
+        let _ = fs::remove_dir_all(&rival);
+        git::git(
+            &self.base,
+            &[
+                "clone",
+                &file_url(&self.origin),
+                rival.to_str().expect("the rival path is utf-8"),
+            ],
+        );
+        configure(&rival);
+        fs::write(rival.join("rival.txt"), "a rejected attempt\n")
+            .expect("the rival file is written");
+        git::git(&rival, &["add", "."]);
+        git::git(&rival, &["commit", "-m", "a rejected attempt"]);
+        git::git(
+            &rival,
+            &["push", "--force", "origin", &format!("HEAD:{BRANCH}")],
+        );
+        git::git(&self.lease, &["fetch", "origin"]);
+        git::git(
+            &self.origin,
+            &["rev-parse", &format!("refs/heads/{BRANCH}")],
+        )
+        .trim()
+        .to_owned()
     }
 
     pub fn set_auto_merge(&self, enabled: bool) {

@@ -2885,6 +2885,64 @@ fn retry_exhausted_gates_and_stops_in_flight_work() {
 }
 
 #[test]
+fn push_failure_fails_the_task_and_holds_it_for_the_user() {
+    run(vec![
+        case(
+            "a push rejection in validated fails the attempt and holds the task",
+            state(vec![with_attempt(
+                task("t1", TaskState::Validated),
+                attempt(BUILD),
+            )]),
+            vec![fact(
+                1_000,
+                FactKind::PushFailed {
+                    task: task_id("t1"),
+                    commit: commit("c1"),
+                    reason: "non-fast-forward".to_owned(),
+                },
+            )],
+        )
+        .when(
+            "t1",
+            TaskState::Failed,
+            vec![hold("t1"), Action::RenderChecklist],
+        )
+        .checking(|state| holds(state, "t1", AttemptOutcome::Failed)),
+        case(
+            "a push rejection in pr-open fails the task",
+            state(vec![task("t1", TaskState::PrOpen)]),
+            vec![fact(
+                2_000,
+                FactKind::PushFailed {
+                    task: task_id("t1"),
+                    commit: commit("c1"),
+                    reason: "non-fast-forward".to_owned(),
+                },
+            )],
+        )
+        .when(
+            "t1",
+            TaskState::Failed,
+            vec![hold("t1"), Action::RenderChecklist],
+        )
+        .checking(|state| subject(state, "t1").retry.is_none()),
+        case(
+            "a landed task ignores a push rejection",
+            state(vec![task("t1", TaskState::Landed)]),
+            vec![fact(
+                3_000,
+                FactKind::PushFailed {
+                    task: task_id("t1"),
+                    commit: commit("c1"),
+                    reason: "non-fast-forward".to_owned(),
+                },
+            )],
+        )
+        .when("t1", TaskState::Landed, vec![]),
+    ]);
+}
+
+#[test]
 fn merge_closes_an_open_attempt_before_landing() {
     run(vec![
         case(

@@ -480,3 +480,76 @@ fn a_refused_auto_merge_reaches_the_user_from_the_inbox() {
         "the refusal carries the reason the forge gave, got\n{payload}"
     );
 }
+
+#[test]
+fn a_long_no_action_section_collapses_behind_a_count_and_keeps_the_user_first() {
+    let fixture = support::fixture();
+    let added = support::register_with_config(&fixture, "example", BUILD_ONLY);
+    let store = Store::open(&fixture.home).expect("store");
+    let project = &added.project.id;
+
+    apply(
+        &store,
+        project,
+        "task_proposed:t-1",
+        1_000,
+        proposed("t-1", "Wire the store"),
+    );
+    apply(
+        &store,
+        project,
+        "validation_finished:t-1",
+        2_000,
+        FactKind::ValidationFinished {
+            task: TaskId::new("t-1"),
+            command: "cargo test".to_string(),
+            commit: CommitId::new("bad000"),
+            exit_code: 101,
+            duration: std::time::Duration::from_millis(1),
+            output_tail: "boom".to_string(),
+        },
+    );
+    let mut task = support::full_task(project, "t-1");
+    task.state = TaskState::Failed;
+    store.put_task(&task).expect("the task is stored");
+
+    for index in 0..15_u64 {
+        apply(
+            &store,
+            project,
+            &format!("polled-fact:{index}"),
+            60_000 + index * 60_000,
+            FactKind::WorkerTurnStarted {
+                task: TaskId::new("t-1"),
+                session: SessionId::new(format!("s{index}")),
+            },
+        );
+    }
+
+    let payload = read_inbox(&fixture.home, Some("example")).expect("inbox");
+
+    let nothing_start = payload.find("\n## No action").expect("a no-action section");
+    assert!(
+        payload[..nothing_start].contains("## For the user (1)"),
+        "the user's facts come before any bulk, got\n{payload}"
+    );
+
+    let nothing = section(&payload, "No action");
+    assert_eq!(
+        nothing.lines().count(),
+        12,
+        "the heading, the summary line and the newest ten facts, got\n{payload}"
+    );
+    assert!(
+        nothing.contains("... and 6 earlier no-action facts"),
+        "the collapsed bulk is counted, not printed, got\n{payload}"
+    );
+    assert!(
+        !nothing.contains("00:05:00Z"),
+        "the oldest facts are the ones collapsed, got\n{payload}"
+    );
+    assert!(
+        nothing.contains("00:14:00Z"),
+        "the newest facts still show, got\n{payload}"
+    );
+}

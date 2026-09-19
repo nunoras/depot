@@ -68,16 +68,30 @@ pub fn render_inbox(entries: &[InboxEntry]) -> String {
             continue;
         }
         out.push_str(&format!("\n## {} ({})\n", need.heading(), group.len()));
-        for entry in group {
-            out.push_str(&format!(
-                "- {} at {}\n",
-                entry.line,
-                format_timestamp(entry.at)
-            ));
+        if need == Need::Nothing && group.len() > NOTHING_SHOWN {
+            let earlier = group.len() - NOTHING_SHOWN;
+            out.push_str(&format!("- ... and {earlier} earlier no-action facts\n",));
+            for entry in &group[earlier..] {
+                out.push_str(&format!(
+                    "- {} at {}\n",
+                    entry.line,
+                    format_timestamp(entry.at)
+                ));
+            }
+        } else {
+            for entry in group {
+                out.push_str(&format!(
+                    "- {} at {}\n",
+                    entry.line,
+                    format_timestamp(entry.at)
+                ));
+            }
         }
     }
     out
 }
+
+const NOTHING_SHOWN: usize = 10;
 
 fn need_for(tag: FactTag, task: Option<&Task>) -> Need {
     let state = task.map(|task| task.state);

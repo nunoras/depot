@@ -1,8 +1,9 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use depot_core::{TaskId, TaskState};
-use depotd::{DepotHome, Store, add_project};
+use depotd::{DepotHome, ProfileSettings, Settings, Store, add_project};
 use tempfile::TempDir;
 
 const BIN: &str = env!("CARGO_BIN_EXE_depot");
@@ -16,6 +17,20 @@ impl Cli {
     fn new() -> Self {
         let temp = tempfile::tempdir().expect("temporary directory");
         let home = temp.path().join("depot-home");
+        DepotHome::at(&home)
+            .write_settings(&Settings {
+                profiles: BTreeMap::from([(
+                    "glm-5.3".to_string(),
+                    ProfileSettings {
+                        harness: "pi".to_string(),
+                        model: "glm-5.3".to_string(),
+                        effort: "high".to_string(),
+                        account: String::new(),
+                    },
+                )]),
+                ..Settings::default()
+            })
+            .expect("settings");
         Self { temp, home }
     }
 

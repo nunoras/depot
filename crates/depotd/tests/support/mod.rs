@@ -9,7 +9,7 @@ use depot_core::{
     Dependency, Limits, Link, ProfileId, ProjectId, ProjectState, Question, Retry, Role, SessionId,
     Task, TaskId, TaskState, Timestamp, ValidationRecord, WorktreeLease,
 };
-use depotd::{Added, DepotHome, add_project};
+use depotd::{Added, DepotHome, ProfileSettings, Settings, add_project};
 use tempfile::TempDir;
 
 pub const ALL_STATES: [TaskState; 10] = [
@@ -34,6 +34,30 @@ pub fn fixture() -> Fixture {
     let temp = tempfile::tempdir().expect("temporary directory");
     let home = DepotHome::at(temp.path().join("depot-home"));
     home.ensure().expect("depot home");
+    home.write_settings(&Settings {
+        profiles: BTreeMap::from([
+            (
+                "fable-5".to_string(),
+                ProfileSettings {
+                    harness: "pi".to_string(),
+                    model: "fable-5".to_string(),
+                    effort: "high".to_string(),
+                    account: String::new(),
+                },
+            ),
+            (
+                "glm-5.3".to_string(),
+                ProfileSettings {
+                    harness: "pi".to_string(),
+                    model: "glm-5.3".to_string(),
+                    effort: "high".to_string(),
+                    account: String::new(),
+                },
+            ),
+        ]),
+        ..Settings::default()
+    })
+    .expect("settings");
     Fixture { temp, home }
 }
 

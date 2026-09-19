@@ -4,8 +4,8 @@ use std::collections::BTreeSet;
 
 use depotd::{
     ARCHIVE_DIR_NAME, CHECKLIST_FILE_NAME, CONTEXT_DOCUMENT_FILE_NAME, DATABASE_FILE_NAME,
-    DOCUMENTS_DIR_NAME, MEDIA_DIR_NAME, PROJECTS_DIR_NAME, SCRATCH_DIR_NAME, SETTINGS_FILE_NAME,
-    Settings, Store, add_project, slug_for,
+    DOCUMENTS_DIR_NAME, DepotHome, MEDIA_DIR_NAME, PROJECTS_DIR_NAME, SCRATCH_DIR_NAME,
+    SETTINGS_FILE_NAME, Settings, Store, add_project, slug_for,
 };
 
 #[test]
@@ -83,21 +83,20 @@ fn a_registered_project_gets_a_context_document_depot_never_renders() {
 
 #[test]
 fn machine_local_settings_survive_a_reopen_and_are_written_only_once() {
-    let fixture = support::fixture();
-    fixture.home.ensure().expect("home");
-    let defaults = std::fs::read_to_string(fixture.home.config_path()).expect("config");
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let home = DepotHome::at(temp.path().join("depot-home"));
+    home.ensure().expect("home");
+    let defaults = std::fs::read_to_string(home.config_path()).expect("config");
 
-    fixture
-        .home
-        .write_settings(&Settings {
-            concurrency: 9,
-            run_duration_minutes: 45,
-            ..Settings::default()
-        })
-        .expect("settings");
-    fixture.home.ensure().expect("home again");
+    home.write_settings(&Settings {
+        concurrency: 9,
+        run_duration_minutes: 45,
+        ..Settings::default()
+    })
+    .expect("settings");
+    home.ensure().expect("home again");
 
-    let settings = fixture.home.load_settings().expect("settings");
+    let settings = home.load_settings().expect("settings");
     assert_eq!(settings.concurrency, 9);
     assert_eq!(settings.run_duration().as_secs(), 45 * 60);
     assert_eq!(settings.poll_interval().as_secs(), 30);

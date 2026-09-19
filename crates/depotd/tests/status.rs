@@ -23,10 +23,10 @@ fn status_shows_held_running_blocked_waiting_and_validated_tasks_distinctly() {
     let rendered = render_status(&fixture.home, &StatusSelection::All).expect("status");
 
     for label in [
+        "Needs you - waiting on an answer",
         "Held - awaiting approval",
         "Running",
-        "Blocked - needs a person",
-        "Waiting on a question",
+        "Failed",
         "Validated",
     ] {
         assert!(

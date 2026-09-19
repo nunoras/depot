@@ -68,15 +68,16 @@ fn the_checklist_shows_every_task_state_distinctly() {
     let rendered = render_checklist(&support::varied_state());
 
     for label in [
+        "Needs you - waiting on an answer",
         "Held - awaiting approval",
         "Approved - queued",
         "Running",
-        "Waiting on a question",
+        "Needs you - waiting on an answer",
         "Validating",
         "Validated",
         "Pull request open",
         "Landed",
-        "Blocked - needs a person",
+        "Failed",
         "Cancelled",
     ] {
         assert!(

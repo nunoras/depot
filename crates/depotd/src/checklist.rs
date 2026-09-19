@@ -5,15 +5,18 @@ use depot_core::{
 use crate::vocabulary::{checks_name, role_name};
 
 const SECTIONS: [(TaskState, &str); 10] = [
+    (
+        TaskState::WaitingOnQuestion,
+        "Needs you - waiting on an answer",
+    ),
     (TaskState::Proposed, "Held - awaiting approval"),
     (TaskState::Approved, "Approved - queued"),
     (TaskState::Running, "Running"),
-    (TaskState::WaitingOnQuestion, "Waiting on a question"),
     (TaskState::Validating, "Validating"),
     (TaskState::Validated, "Validated"),
     (TaskState::PrOpen, "Pull request open"),
     (TaskState::Landed, "Landed"),
-    (TaskState::Failed, "Blocked - needs a person"),
+    (TaskState::Failed, "Failed"),
     (TaskState::Cancelled, "Cancelled"),
 ];
 
@@ -97,6 +100,15 @@ fn render_task(out: &mut String, state: &ProjectState, task: &Task) {
 
     if let Some(question) = unanswered(task) {
         out.push_str(&format!("  - question: {}\n", one_line(&question.text)));
+    }
+
+    if task.state == TaskState::WaitingOnQuestion && !task.artifacts.is_empty() {
+        let paths: Vec<String> = task
+            .artifacts
+            .iter()
+            .map(|artifact| format!("`{}`", one_line(&artifact.path)))
+            .collect();
+        out.push_str(&format!("  - artifacts: {}\n", paths.join(", ")));
     }
 
     if let Some(record) = task.validations.last() {

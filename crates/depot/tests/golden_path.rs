@@ -279,7 +279,10 @@ fn a_worker_question_is_relayed_answered_and_the_worker_resumes_with_the_answer(
     assert!(waiting.questions[0].answer.is_none());
 
     let relayed = golden.status();
-    assert!(relayed.contains("Waiting on a question (1)"), "{relayed}");
+    assert!(
+        relayed.contains("Needs you - waiting on an answer (1)"),
+        "{relayed}"
+    );
     assert!(relayed.contains("Which store?"), "{relayed}");
     assert_eq!(relayed, golden.checklist());
 
@@ -651,10 +654,7 @@ fn a_failed_validation_opens_no_pull_request_and_keeps_the_branch() {
     );
 
     let blocked = golden.status();
-    assert!(
-        blocked.contains("Blocked - needs a person (1)"),
-        "{blocked}"
-    );
+    assert!(blocked.contains("Failed (1)"), "{blocked}");
     assert!(blocked.contains("waits on: a person"), "{blocked}");
     assert!(blocked.contains("exited 1"), "{blocked}");
     assert!(blocked.contains(&commit), "{blocked}");
@@ -873,10 +873,7 @@ fn a_resume_that_keeps_failing_surfaces_the_task_to_a_person() {
     );
 
     let blocked = golden.status();
-    assert!(
-        blocked.contains("Blocked - needs a person (1)"),
-        "{blocked}"
-    );
+    assert!(blocked.contains("Failed (1)"), "{blocked}");
     assert_eq!(blocked, golden.checklist());
 
     let inbox = golden.depot_ok(&["inbox", "--project", SLUG]);
@@ -917,10 +914,7 @@ fn a_restart_with_a_launch_intent_surfaces_it_rather_than_launching_again() {
     assert!(task.attempts[0].worktree.is_some(), "the worktree is kept");
 
     let blocked = golden.status();
-    assert!(
-        blocked.contains("Blocked - needs a person (1)"),
-        "{blocked}"
-    );
+    assert!(blocked.contains("Failed (1)"), "{blocked}");
     assert_eq!(blocked, golden.checklist());
 
     let inbox = golden.depot_ok(&["inbox", "--project", SLUG]);
@@ -1315,10 +1309,7 @@ fn a_merge_of_a_revision_depot_never_validated_is_not_landed() {
     );
 
     let checklist = golden.status();
-    assert!(
-        checklist.contains("Blocked - needs a person (1)"),
-        "{checklist}"
-    );
+    assert!(checklist.contains("Failed (1)"), "{checklist}");
     assert!(!checklist.contains("Landed"), "{checklist}");
     assert_eq!(checklist, golden.checklist());
 }

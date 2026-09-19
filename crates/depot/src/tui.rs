@@ -10,7 +10,7 @@ use crossterm::terminal::{
 use crossterm::{ExecutableCommand, cursor};
 
 use depotd::{
-    DepotHome, Error, Project, ProjectState, StatusSelection, Store, TaskState, role_name,
+    DepotHome, Error, Project, ProjectState, StatusSelection, Store, Task, TaskState, role_name,
     select_project, state_name,
 };
 
@@ -76,7 +76,7 @@ fn frame(projects: &[(Project, ProjectState)], width: usize) -> Vec<Vec<Segment>
         if state.tasks.is_empty() {
             lines.push(vec![Segment::Dim("  no tasks".to_string())]);
         }
-        for task in state.tasks.values() {
+        for task in ordered_tasks(state) {
             let id = format!("  {:<5}", task.id.as_str());
             let status = pad(state_name(task.state), 10);
             let role = pad(role_name(task.role), 7);
@@ -86,17 +86,49 @@ fn frame(projects: &[(Project, ProjectState)], width: usize) -> Vec<Vec<Segment>
                 .chars()
                 .take(width.saturating_sub(used + 1))
                 .collect();
+            let waiting = task.state == TaskState::WaitingOnQuestion;
+            if waiting {
+                lines.push(vec![Segment::State("  needs you".to_string(), task.state)]);
+            }
             lines.push(vec![
                 Segment::Text(id),
                 Segment::State(status, task.state),
                 Segment::Text(role),
                 Segment::Text(title),
             ]);
+            if waiting {
+                if let Some(question) = waiting_question(task) {
+                    let text: String = question.chars().take(width.saturating_sub(4)).collect();
+                    lines.push(vec![Segment::Text(format!("    {text}"))]);
+                }
+                for artifact in &task.artifacts {
+                    let path: String = artifact
+                        .path
+                        .chars()
+                        .take(width.saturating_sub(16))
+                        .collect();
+                    lines.push(vec![Segment::Dim(format!("    artifact {path}"))]);
+                }
+            }
         }
         lines.push(vec![Segment::Text(String::new())]);
     }
     lines.pop();
     lines
+}
+
+fn ordered_tasks(state: &ProjectState) -> Vec<&Task> {
+    let mut tasks: Vec<&depotd::Task> = state.tasks.values().collect();
+    tasks.sort_by_key(|task| task.state != TaskState::WaitingOnQuestion);
+    tasks
+}
+
+fn waiting_question(task: &Task) -> Option<&str> {
+    task.questions
+        .iter()
+        .rev()
+        .find(|question| question.answer.is_none())
+        .map(|question| question.text.as_str())
 }
 
 fn pad(text: &str, width: usize) -> String {

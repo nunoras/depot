@@ -207,9 +207,9 @@ fn status_shows_held_running_blocked_waiting_and_validated_tasks_distinctly() {
     for label in [
         "Held - awaiting approval",
         "Running",
-        "Waiting on a question",
+        "Needs you - waiting on an answer",
         "Validated",
-        "Blocked - needs a person",
+        "Failed",
     ] {
         assert!(
             rendered.contains(&format!("## {label} (1)")),
@@ -433,7 +433,7 @@ fn a_question_is_answered_and_a_task_is_stopped_from_the_command_line() {
 
     let waiting = cli.run(&["status", "--project", "example"]);
     assert!(
-        stdout(&waiting).contains("Waiting on a question (1)"),
+        stdout(&waiting).contains("Needs you - waiting on an answer (1)"),
         "got\n{}",
         stdout(&waiting)
     );

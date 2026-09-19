@@ -229,6 +229,7 @@ fn reason(status: u16) -> &'static str {
         201 => "Created",
         401 => "Unauthorized",
         403 => "Forbidden",
+        204 => "No Content",
         404 => "Not Found",
         422 => "Unprocessable Entity",
         _ => "Internal Server Error",

@@ -5,8 +5,8 @@ use crate::action::{Action, Baseline};
 use crate::fact::{Fact, FactKind, Liveness};
 use crate::model::{
     Answer, Attempt, AttemptOutcome, Checks, CommitId, CoordinatorSession, Dependency, Limits,
-    Link, ProfileId, ProjectState, Question, Retry, Submission, Task, TaskId, TaskState, Timestamp,
-    ValidationRecord, WorktreeLease,
+    Link, ProfileId, ProjectState, Question, Retry, Role, Submission, Task, TaskId, TaskState,
+    Timestamp, ValidationRecord, WorktreeLease,
 };
 
 pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) {
@@ -450,6 +450,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                         started_at: fact.at,
                         finished_at: None,
                         outcome: AttemptOutcome::InFlight,
+                        rebase: false,
                     });
                     task.state = TaskState::Running;
                     task.updated_at = fact.at;
@@ -802,6 +803,37 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             }
         }
 
+        FactKind::RebaseScheduled { task, profile, .. } => {
+            let scheduled = next.auto_merge
+                && next
+                    .profiles
+                    .get(&Role::Fix)
+                    .is_some_and(|configured| configured == profile)
+                && next
+                    .tasks
+                    .get(task)
+                    .is_some_and(|task| rebase_allowed(&next, task));
+            if scheduled && let Some(task) = next.tasks.get_mut(task) {
+                let lease = take_last_worktree(task);
+                task.attempts.push(Attempt {
+                    session: None,
+                    profile: profile.clone(),
+                    worktree: lease,
+                    started_at: fact.at,
+                    finished_at: None,
+                    outcome: AttemptOutcome::InFlight,
+                    rebase: true,
+                });
+                task.state = TaskState::Running;
+                task.updated_at = fact.at;
+                changed = true;
+                actions.push(Action::LaunchSession {
+                    task: task.id.clone(),
+                    profile: profile.clone(),
+                });
+            }
+        }
+
         FactKind::OnEventNotified { .. } => {}
         FactKind::Polled => {}
     }
@@ -871,6 +903,7 @@ fn start_ready_tasks(
             started_at: at,
             finished_at: None,
             outcome: AttemptOutcome::InFlight,
+            rebase: false,
         });
         actions.push(Action::AcquireWorktree {
             task: id.clone(),
@@ -936,6 +969,29 @@ pub fn auto_merge_due(state: &ProjectState, task: &Task, head: &CommitId) -> boo
             .pull_request()
             .is_some_and(|(_, _, checks)| checks == Checks::Passing)
         && task.validated_commit() == Some(head)
+}
+
+pub fn rebase_due(state: &ProjectState, task: &Task, conflicting: bool) -> Option<ProfileId> {
+    if !conflicting || !rebase_allowed(state, task) {
+        return None;
+    }
+    state.profiles.get(&Role::Fix).cloned()
+}
+
+fn rebase_allowed(state: &ProjectState, task: &Task) -> bool {
+    state.auto_merge
+        && task.state == TaskState::PrOpen
+        && task
+            .attempts
+            .last()
+            .is_some_and(|attempt| !attempt.outcome.is_open())
+        && (task.attempts.len() as u32) < state.limits.max_attempts
+        && !state.tasks.values().any(|other| {
+            other
+                .attempts
+                .iter()
+                .any(|a| a.rebase && a.outcome.is_open())
+        })
 }
 
 pub fn publication_blocked(state: &ProjectState, task: &TaskId) -> bool {

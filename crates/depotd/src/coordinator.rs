@@ -86,6 +86,20 @@ impl CoordinatorContext {
     }
 
     pub fn brief(&self, task: &Task) -> Result<String> {
+        self.render_brief(task, &task.title, &task.intent)
+    }
+
+    pub fn rebase_brief(&self, task: &Task) -> Result<String> {
+        let title = format!("Rebase: {}", task.title);
+        let intent = "The task's open pull request conflicts with the project base branch. Rebase \
+             the delivery branch checked out in your worktree onto the base branch and resolve \
+             the conflicts so the submitted change survives. Keep the change as it was \
+             submitted; do not extend it."
+            .to_string();
+        self.render_brief(task, &title, &intent)
+    }
+
+    fn render_brief(&self, task: &Task, title: &str, intent: &str) -> Result<String> {
         let output = output_destination(task, &self.home);
         let done = done_criteria(task.role);
         let dependencies = dependency_lines(&self.state, task);
@@ -106,11 +120,11 @@ impl CoordinatorContext {
         render_template(
             BRIEF_TEMPLATE,
             &[
-                ("title", &task.title),
+                ("title", title),
                 ("task", task.id.as_str()),
                 ("project", self.project.id.as_str()),
                 ("role", role_name(task.role)),
-                ("intent", &task.intent),
+                ("intent", intent),
                 ("output", &output),
                 ("done", done),
                 ("dependencies", &dependencies),

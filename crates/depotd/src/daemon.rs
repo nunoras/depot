@@ -79,6 +79,7 @@ pub trait Delivery {
         number: u64,
         head: &CommitId,
     ) -> Result<()>;
+    fn delete_branch(&self, repo: &RepoSlug, branch: &str) -> Result<()>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,7 +87,9 @@ pub struct ObservedPullRequest {
     pub state: PrState,
     pub checks: Checks,
     pub commit: CommitId,
+    pub head_ref: String,
     pub base: CommitId,
+    pub mergeable: Option<bool>,
 }
 
 pub struct ShellValidation;
@@ -197,7 +200,9 @@ impl<F: Forge> Delivery for ForgeDelivery<F> {
             state: observed.state,
             checks: observed.checks,
             commit: observed.head,
+            head_ref: observed.head_ref,
             base: observed.base,
+            mergeable: observed.mergeable,
         }))
     }
 
@@ -210,6 +215,12 @@ impl<F: Forge> Delivery for ForgeDelivery<F> {
     ) -> Result<()> {
         self.forge
             .merge_pull_request(repo, number, head)
+            .map_err(|error| Error::Project(error.to_string()))
+    }
+
+    fn delete_branch(&self, repo: &RepoSlug, branch: &str) -> Result<()> {
+        self.forge
+            .delete_branch(repo, branch)
             .map_err(|error| Error::Project(error.to_string()))
     }
 }
@@ -571,7 +582,13 @@ where
         }
         let config = self.store.project_config(&self.project)?;
         let settings = self.store.home().load_settings()?;
-        let spec = if let Some(pinned) = &task_record.dispatch_profile {
+        let rebase = task_record
+            .attempts
+            .last()
+            .is_some_and(|attempt| attempt.rebase);
+        let spec = if rebase {
+            settings.profile_spec(profile.clone())?
+        } else if let Some(pinned) = &task_record.dispatch_profile {
             if &profile != pinned && !settings.profile_fallbacks().contains(&profile) {
                 return Err(Error::Config(format!(
                     "profile `{profile}` is not authorized for task `{task}`"
@@ -597,10 +614,12 @@ where
                     })?
             }
         };
-        let brief = self
-            .store
-            .coordinator_context(&self.project)?
-            .brief(&task_record)?;
+        let context = self.store.coordinator_context(&self.project)?;
+        let brief = if rebase {
+            context.rebase_brief(&task_record)?
+        } else {
+            context.brief(&task_record)?
+        };
         self.record(
             &event_key(&[
                 "worker_turn_launch_requested",
@@ -1255,7 +1274,45 @@ where
                 }
             }
         }
+        self.schedule_rebases(&observed_open)?;
         self.auto_merge(observed_open)
+    }
+
+    fn schedule_rebases(&self, observed_open: &[(TaskId, u64, ObservedPullRequest)]) -> Result<()> {
+        let conflicting: Vec<&(TaskId, u64, ObservedPullRequest)> = observed_open
+            .iter()
+            .filter(|(_, _, observed)| observed.mergeable == Some(false))
+            .collect();
+        if conflicting.is_empty() {
+            return Ok(());
+        }
+        let state = self.store.project_state(&self.project)?;
+        for (id, _, observed) in conflicting {
+            let Some(task) = state.tasks.get(id) else {
+                continue;
+            };
+            let Some(profile) = depot_core::rebase_due(&state, task, true) else {
+                continue;
+            };
+            self.record(
+                &event_key(&[
+                    "rebase_scheduled",
+                    id.as_str(),
+                    observed.commit.as_str(),
+                    observed.base.as_str(),
+                ]),
+                Fact {
+                    at: now(),
+                    kind: FactKind::RebaseScheduled {
+                        task: id.clone(),
+                        profile,
+                        commit: observed.commit.clone(),
+                        base: observed.base.clone(),
+                    },
+                },
+            )?;
+        }
+        Ok(())
     }
 
     fn auto_merge(&self, observed_open: Vec<(TaskId, u64, ObservedPullRequest)>) -> Result<()> {
@@ -1289,6 +1346,11 @@ where
                     },
                 },
             )?;
+            if let Ok(repo) = self.project_repo()
+                && let Err(error) = self.delivery.delete_branch(&repo, &observed.head_ref)
+            {
+                log("branch_delete_failed", &error.to_string());
+            }
         }
         Ok(())
     }

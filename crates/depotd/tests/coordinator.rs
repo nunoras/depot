@@ -346,6 +346,7 @@ fn the_unmapped_role_refusal_names_the_role_the_project_and_the_file() {
             role: "review".to_string(),
             dependencies: Vec::new(),
             base_dependency: None,
+            hold_pr: false,
         },
     )
     .expect_err("an unmapped role is refused");
@@ -375,6 +376,7 @@ fn a_multi_dependency_add_without_a_base_leaves_no_trace() {
             role: "build".to_string(),
             dependencies: vec!["t-a@aaa".to_string(), "t-b@bbb".to_string()],
             base_dependency: None,
+            hold_pr: false,
         },
     )
     .expect_err("multiple dependencies without a base are refused");
@@ -402,6 +404,7 @@ fn a_multi_dependency_add_without_a_base_leaves_no_trace() {
             role: "build".to_string(),
             dependencies: Vec::new(),
             base_dependency: None,
+            hold_pr: false,
         },
     )
     .expect("a corrected add still works");
@@ -424,6 +427,7 @@ fn a_task_added_through_the_command_surface_lands_held() {
             role: "build".to_string(),
             dependencies: Vec::new(),
             base_dependency: None,
+            hold_pr: false,
         },
     )
     .expect("added");
@@ -441,6 +445,7 @@ fn a_task_added_through_the_command_surface_lands_held() {
             role: "build".to_string(),
             dependencies: vec!["t-1@abc123".to_string()],
             base_dependency: None,
+            hold_pr: false,
         },
     )
     .expect("added");
@@ -470,6 +475,7 @@ fn answering_two_open_questions_records_two_facts() {
             role: "build".to_string(),
             dependencies: Vec::new(),
             base_dependency: None,
+            hold_pr: false,
         },
     )
     .expect("added");
@@ -569,6 +575,7 @@ fn approving_a_cancelled_task_is_refused_without_writing() {
             role: "build".to_string(),
             dependencies: Vec::new(),
             base_dependency: None,
+            hold_pr: false,
         },
     )
     .expect("added");
@@ -702,6 +709,7 @@ fn answering_with_no_open_question_is_refused_without_writing() {
             role: "build".to_string(),
             dependencies: Vec::new(),
             base_dependency: None,
+            hold_pr: false,
         },
     )
     .expect("added");
@@ -745,6 +753,7 @@ fn a_refused_approval_leaves_the_whole_batch_unwritten() {
                 role: "build".to_string(),
                 dependencies: Vec::new(),
                 base_dependency: None,
+                hold_pr: false,
             },
         )
         .expect("added");
@@ -788,6 +797,7 @@ fn approving_a_task_records_the_actions_the_daemon_will_take() {
             role: "build".to_string(),
             dependencies: Vec::new(),
             base_dependency: None,
+            hold_pr: false,
         },
     )
     .expect("added");

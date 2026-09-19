@@ -90,6 +90,7 @@ pub fn simple_task(project: &ProjectId, id: &str, state: TaskState, created_at: 
         links: Vec::new(),
         branch_head: None,
         merge_refused: None,
+        hold_pr: false,
         retry: None,
         created_at: Timestamp::from_millis(created_at),
         updated_at: Timestamp::from_millis(created_at),
@@ -184,6 +185,7 @@ pub fn full_task(project: &ProjectId, id: &str) -> Task {
         ],
         branch_head: Some(CommitId::new("ccc333")),
         merge_refused: Some("the forge refused the merge".to_string()),
+        hold_pr: false,
         retry: Some(Retry {
             profile: ProfileId::new("sonnet"),
             not_before: Timestamp::from_millis(1_700_000_120_000),

@@ -226,6 +226,7 @@ pub struct Task {
     pub links: Vec<Link>,
     pub branch_head: Option<CommitId>,
     pub merge_refused: Option<String>,
+    pub hold_pr: bool,
     pub retry: Option<Retry>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,

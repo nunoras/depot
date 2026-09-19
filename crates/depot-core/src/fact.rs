@@ -37,6 +37,10 @@ pub enum FactKind {
         dispatch_profile: Option<ProfileId>,
         dependencies: Vec<Dependency>,
         base_dependency: Option<TaskId>,
+        hold_pr: bool,
+    },
+    TaskReleased {
+        task: TaskId,
     },
     TaskApproved {
         task: TaskId,

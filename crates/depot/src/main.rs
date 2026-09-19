@@ -4,7 +4,7 @@ mod tui;
 
 use depotd::{
     DepotHome, Error, StatusSelection, TaskRequest, add_project, add_task, answer_question,
-    approve_tasks, ask_question, read_inbox, render_status, stop_task, submit_task,
+    approve_tasks, ask_question, read_inbox, release_task, render_status, stop_task, submit_task,
     write_narrative,
 };
 
@@ -16,8 +16,9 @@ USAGE
   depot status [--project <name>] [--all] [--tui]
   depot task add --title <title> --intent <intent> [--role <plan|build|review|fix>]
                  [--depends-on <task>@<commit>]...
-                 [--base-dependency <task-id>] [--project <name>]
+                 [--base-dependency <task-id>] [--hold-pr] [--project <name>]
   depot task approve <task-id>... [--project <name>]
+  depot task release <task-id> [--project <name>]
   depot task answer <task-id> --text <answer> [--by <coordinator|user>] [--project <name>]
   depot task stop <task-id> [--project <name>]
   depot ask --task <task-id> --project <name> [--relay] <question>
@@ -148,21 +149,23 @@ fn task_command(arguments: &[String]) -> Result<String, Failure> {
         Some("approve") => task_approve(&arguments[1..]),
         Some("answer") => task_answer(&arguments[1..]),
         Some("stop") => task_stop(&arguments[1..]),
+        Some("release") => task_release(&arguments[1..]),
         Some(other) => Err(Failure::Usage(format!("unknown task command `{other}`"))),
         None => Err(Failure::Usage(
-            "`depot task` needs a subcommand: add, approve, answer or stop".to_string(),
+            "`depot task` needs a subcommand: add, approve, answer, stop or release".to_string(),
         )),
     }
 }
 
 fn task_add(arguments: &[String]) -> Result<String, Failure> {
-    let flags = Flags::parse(arguments, &[])?;
+    let flags = Flags::parse(arguments, &["hold-pr"])?;
     flags.reject_unknown(&[
         "title",
         "intent",
         "role",
         "depends-on",
         "base-dependency",
+        "hold-pr",
         "project",
     ])?;
     flags.reject_positionals()?;
@@ -173,6 +176,7 @@ fn task_add(arguments: &[String]) -> Result<String, Failure> {
         role: flags.value("role").unwrap_or_default().to_string(),
         dependencies: flags.all("depends-on"),
         base_dependency: flags.value("base-dependency").map(str::to_string),
+        hold_pr: flags.has("hold-pr"),
     };
     let home = DepotHome::resolve()?;
     let task = add_task(&home, flags.value("project"), &request)?;
@@ -228,6 +232,21 @@ fn task_stop(arguments: &[String]) -> Result<String, Failure> {
     let home = DepotHome::resolve()?;
     let task = stop_task(&home, flags.value("project"), &ids[0])?;
     Ok(format!("stopped {}\n", task.id))
+}
+
+fn task_release(arguments: &[String]) -> Result<String, Failure> {
+    let flags = Flags::parse(arguments, &[])?;
+    flags.reject_unknown(&["project"])?;
+    let ids = flags.positionals();
+    if ids.len() != 1 {
+        return Err(Failure::Usage(
+            "`depot task release` needs exactly one task id".to_string(),
+        ));
+    }
+
+    let home = DepotHome::resolve()?;
+    let task = release_task(&home, flags.value("project"), &ids[0])?;
+    Ok(format!("released {}\n", task.id))
 }
 
 fn ask_command(arguments: &[String]) -> Result<String, Failure> {

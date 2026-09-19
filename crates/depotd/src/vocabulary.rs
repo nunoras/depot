@@ -100,6 +100,7 @@ pub fn checks_from_name(name: &str) -> Result<Checks> {
 pub enum FactTag {
     TaskDispatchJudged,
     TaskProposed,
+    TaskReleased,
     TaskApproved,
     TaskCancelled,
     QuestionAsked,
@@ -135,6 +136,7 @@ pub fn fact_tag(kind: &FactKind) -> FactTag {
     match kind {
         FactKind::TaskDispatchJudged { .. } => FactTag::TaskDispatchJudged,
         FactKind::TaskProposed { .. } => FactTag::TaskProposed,
+        FactKind::TaskReleased { .. } => FactTag::TaskReleased,
         FactKind::TaskApproved { .. } => FactTag::TaskApproved,
         FactKind::TaskCancelled { .. } => FactTag::TaskCancelled,
         FactKind::QuestionAsked { .. } => FactTag::QuestionAsked,
@@ -171,6 +173,7 @@ pub fn fact_tag_name(tag: FactTag) -> &'static str {
     match tag {
         FactTag::TaskDispatchJudged => "task_dispatch_judged",
         FactTag::TaskProposed => "task_proposed",
+        FactTag::TaskReleased => "task_released",
         FactTag::TaskApproved => "task_approved",
         FactTag::TaskCancelled => "task_cancelled",
         FactTag::QuestionAsked => "question_asked",
@@ -207,6 +210,7 @@ pub fn fact_tag_from_name(name: &str) -> Result<FactTag> {
     let tag = match name {
         "task_dispatch_judged" => FactTag::TaskDispatchJudged,
         "task_proposed" => FactTag::TaskProposed,
+        "task_released" => FactTag::TaskReleased,
         "task_approved" => FactTag::TaskApproved,
         "task_cancelled" => FactTag::TaskCancelled,
         "question_asked" => FactTag::QuestionAsked,
@@ -247,6 +251,7 @@ pub fn fact_task(kind: &FactKind) -> Option<TaskId> {
     let task = match kind {
         FactKind::TaskDispatchJudged { task, .. }
         | FactKind::TaskProposed { task, .. }
+        | FactKind::TaskReleased { task }
         | FactKind::TaskApproved { task }
         | FactKind::TaskCancelled { task }
         | FactKind::QuestionAsked { task, .. }

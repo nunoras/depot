@@ -957,6 +957,9 @@ where
             }
             match task.state {
                 TaskState::Validated if task.pull_request().is_none() => {
+                    if task.hold_pr {
+                        continue;
+                    }
                     let Some(commit) = task.validated_commit().cloned() else {
                         continue;
                     };
@@ -1287,6 +1290,7 @@ mod tests {
             links: Vec::new(),
             branch_head: None,
             merge_refused: None,
+            hold_pr: false,
             retry: None,
             created_at: depot_core::Timestamp::from_millis(0),
             updated_at: depot_core::Timestamp::from_millis(0),

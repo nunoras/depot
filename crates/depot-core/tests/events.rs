@@ -23,6 +23,7 @@ fn task(state: TaskState) -> Task {
         merge_refused: None,
         retry: None,
         created_at: Timestamp::from_millis(0),
+        acknowledged_at: None,
         updated_at: Timestamp::from_millis(0),
     }
 }

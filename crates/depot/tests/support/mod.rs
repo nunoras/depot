@@ -609,6 +609,7 @@ pub fn settings_with_on_event(on_event: Option<OnEventSettings>) -> Settings {
     Settings {
         on_event,
         poll_interval_seconds: 1,
+        project_concurrency: BTreeMap::from([(SLUG.to_string(), 4)]),
         profiles: BTreeMap::from([(
             PROFILE.to_string(),
             ProfileSettings {

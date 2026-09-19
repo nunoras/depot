@@ -84,7 +84,7 @@ fn a_project_state_round_trips_through_the_configuration_split() {
         ]),
         fallback_profiles: vec![ProfileId::new("gpt-5.5"), ProfileId::new("sonnet")],
         limits: Limits {
-            max_concurrent_tasks: 7,
+            max_concurrent_tasks: 1,
             ..Limits::default()
         },
         always_relay_questions: true,
@@ -108,7 +108,7 @@ fn a_project_with_no_committed_config_falls_back_to_defaults() {
     let store = Store::open(&fixture.home).expect("store");
     let state = store.project_state(&added.project).expect("state");
     assert!(state.profiles.is_empty());
-    assert_eq!(state.limits.max_concurrent_tasks, 4);
+    assert_eq!(state.limits.max_concurrent_tasks, 1);
     assert!(!state.always_relay_questions);
 }
 

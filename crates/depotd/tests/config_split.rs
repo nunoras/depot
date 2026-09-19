@@ -20,9 +20,10 @@ const PROJECT_ONLY_KEYS: [&str; 5] = [
     "dispatch",
 ];
 
-const MACHINE_LOCAL_ONLY_KEYS: [&str; 8] = [
+const MACHINE_LOCAL_ONLY_KEYS: [&str; 9] = [
     "typesafe_base_url",
     "concurrency",
+    "project_concurrency",
     "run_duration_minutes",
     "poll_interval_seconds",
     "pool_root",
@@ -31,9 +32,10 @@ const MACHINE_LOCAL_ONLY_KEYS: [&str; 8] = [
     "credentials",
 ];
 
-const MACHINE_LOCAL_KEYS: [&str; 9] = [
+const MACHINE_LOCAL_KEYS: [&str; 10] = [
     "typesafe_base_url",
     "concurrency",
+    "project_concurrency",
     "run_duration_minutes",
     "poll_interval_seconds",
     "pool_root",
@@ -116,6 +118,7 @@ fn registering_a_project_never_writes_machine_local_settings_into_the_repository
             fallback_profiles: vec!["sonnet".to_string()],
             coordinator_context_tokens: 60_000,
             credentials: BTreeMap::from([("github".to_string(), "gh-cli".to_string())]),
+            project_concurrency: BTreeMap::from([("depot".to_string(), 2)]),
             profiles: BTreeMap::new(),
             on_event: None,
         })

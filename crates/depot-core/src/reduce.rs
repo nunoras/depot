@@ -88,6 +88,12 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                         task: task.id.clone(),
                     });
                 }
+                if let Some(lease) = take_last_worktree(task) {
+                    actions.push(Action::ReleaseWorktree {
+                        task: task.id.clone(),
+                        lease,
+                    });
+                }
             }
         }
 

@@ -185,7 +185,7 @@ The verbs a coordinator drives:
 | `depot task add --title <title> --intent <intent> [--role <role>] [--depends-on <task>@<commit>]... [--base-dependency <task-id>]` | records a task with its dependencies. Multiple dependencies need a base. It lands held, and that is the proposal. Without `--role` depot resolves the role from the project's dispatch rules. |
 | `depot task approve <task-id>...` | the user's go, for one task or several in one message. |
 | `depot task answer <task-id> --text <answer> [--by coordinator\|user]` | records an answer and resumes the worker. |
-| `depot task stop <task-id>` | stops a task. |
+| `depot task stop <task-id>` | stops a task from any state before it lands: proposed, approved, waiting on a slot or lease, running or validating. It cancels the task, stops the worker session if one exists, and releases the worktree lease the task acquired. A cancelled or landed task needs no stop; stopping a cancelled task is a quiet no-op. |
 | `depot task acknowledge <task-id>` | acknowledges a failed or cancelled task so it fades from the default status. |
 | `depot status [--project <name>] [--all] [--history]` | the live checklist; `--history` shows faded tasks. |
 | `depot doc write <name> --content <text\|->` | writes a narrative document under the project's `docs/`. |

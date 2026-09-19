@@ -8,6 +8,60 @@ use depotd::{
     event_key,
 };
 
+fn exclude_lines(directory: &std::path::Path) -> Vec<String> {
+    std::fs::read_to_string(directory.join(".git").join("info").join("exclude"))
+        .expect("git exclude")
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn registering_a_git_project_ignores_the_config_instead_of_writing_it() {
+    let fixture = support::fixture();
+    let directory = support::project_directory(&fixture, "repo");
+    let status = std::process::Command::new("git")
+        .arg("init")
+        .arg(&directory)
+        .status()
+        .expect("git");
+    assert!(status.success());
+
+    let added =
+        add_project(&fixture.home, directory.to_str().expect("utf-8 path")).expect("registered");
+
+    assert!(added.ignored_config);
+    assert!(!directory.join(PROJECT_CONFIG_FILE_NAME).exists());
+    assert!(
+        exclude_lines(&directory)
+            .iter()
+            .any(|line| line.trim() == PROJECT_CONFIG_FILE_NAME)
+    );
+
+    add_project(&fixture.home, directory.to_str().expect("utf-8 path")).expect("registered again");
+    let lines = exclude_lines(&directory);
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|line| line.trim() == PROJECT_CONFIG_FILE_NAME)
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn registering_a_directory_outside_git_writes_no_ignore_rule() {
+    let fixture = support::fixture();
+    let directory = support::project_directory(&fixture, "plain");
+
+    let added =
+        add_project(&fixture.home, directory.to_str().expect("utf-8 path")).expect("registered");
+
+    assert!(!added.ignored_config);
+    assert!(!directory.join(".git").exists());
+    assert!(!directory.join(PROJECT_CONFIG_FILE_NAME).exists());
+}
+
 #[test]
 fn a_task_round_trips_through_the_store_with_every_field_intact() {
     let fixture = support::fixture();

@@ -34,7 +34,7 @@ SELECTION
 
 NOTES
   A task lands held. Approving it is what lets it run.
-  A role resolves to a profile through the project's committed .depot.toml; an unmapped role is refused.
+  A role resolves to a profile through the project's machine-local .depot.toml; an unmapped role is refused.
   Multiple --depends-on need --base-dependency naming one of those tasks as the baseline.
   `--content -` reads a document from standard input.
   Failed and cancelled tasks fade from the default status once a live task
@@ -143,8 +143,8 @@ fn project_add(arguments: &[String]) -> Result<String, Failure> {
         out.push_str(&format!("already registered {}\n", added.project.id));
     }
     out.push_str(&format!("home: {}\n", added.home.root().display()));
-    if let Some(config) = &added.config_path {
-        out.push_str(&format!("config: {}\n", config.display()));
+    if added.ignored_config {
+        out.push_str("config: .depot.toml stays machine-local, ignored via .git/info/exclude\n");
     }
     Ok(out)
 }

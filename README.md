@@ -37,7 +37,7 @@ Everything depot owns lives outside your repositories, in one home: `$DEPOT_HOME
 ```
 
 `depot project add <path-or-url>` registers a project and writes its home directory.
-A path project also scaffolds its committed `.depot.toml` when that file is missing.
+A path project also ignores `.depot.toml` through the repository's `.git/info/exclude`, so project knowledge stays machine-local and is never committed.
 Adding the same project twice is idempotent; a path that is not an existing directory is refused.
 
 `depot status` prints the rendered checklist for the project this directory belongs to.
@@ -52,7 +52,8 @@ The store applies its schema migrations on open and refuses a database written b
 
 ## The configuration split
 
-Project knowledge is committed with the repository, so validation commands and profiles are reviewed like code.
+Project knowledge is machine-local, because profiles name workers that exist on one machine.
+`depot project add` adds `.depot.toml` to the repository's `.git/info/exclude`, so the file never reaches a commit.
 
 `.depot.toml`, in the project repository:
 

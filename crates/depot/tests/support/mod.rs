@@ -25,9 +25,10 @@ use depotd::adapters::forge::GitHub;
 use depotd::adapters::sessions::{Boxr, Sessions};
 use depotd::adapters::worktrees::Treehouse;
 use depotd::{
-    Daemon, DepotHome, ForgeDelivery, HOME_ENV, ProfileSettings, Project, RecordedEvent, Settings,
-    ShellValidation, StderrNotifier, Store,
+    Daemon, DepotHome, ForgeDelivery, HOME_ENV, OnEventSettings, ProfileSettings, Project,
+    RecordedEvent, Settings, ShellValidation, Store,
 };
+use depotd::{EventHook, NoEventHook, ShellEventHook};
 use fake_forge::FakeForge;
 use fake_program::FakeProgram;
 
@@ -269,7 +270,13 @@ impl Golden {
 
     pub fn daemon(
         &self,
-    ) -> Daemon<'_, Boxr, Treehouse, ShellValidation, ForgeDelivery<GitHub>, StderrNotifier> {
+    ) -> Daemon<'_, Boxr, Treehouse, ShellValidation, ForgeDelivery<GitHub>, Box<dyn EventHook>>
+    {
+        let settings = self.home.load_settings().expect("the settings");
+        let hook: Box<dyn EventHook> = match &settings.on_event {
+            Some(on_event) => Box::new(ShellEventHook::new(on_event.command.clone())),
+            None => Box::new(NoEventHook),
+        };
         Daemon::new(
             &self.store,
             self.project.clone(),
@@ -280,7 +287,7 @@ impl Golden {
                 GitHub::new(self.forge.base_url(), TOKEN),
                 self.project_config_base(),
             ),
-            StderrNotifier,
+            hook,
         )
     }
 
@@ -594,8 +601,13 @@ pub fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
-fn settings() -> Settings {
+pub fn settings() -> Settings {
+    settings_with_on_event(None)
+}
+
+pub fn settings_with_on_event(on_event: Option<OnEventSettings>) -> Settings {
     Settings {
+        on_event,
         poll_interval_seconds: 1,
         profiles: BTreeMap::from([(
             PROFILE.to_string(),

@@ -31,9 +31,9 @@ pub use coordinator::{
     WorkerLaunch, render_template,
 };
 pub use daemon::{
-    DAEMON_LOCK_FILE_NAME, Daemon, Delivery, ForgeDelivery, InstanceLock, Notifier,
-    ObservedPullRequest, ShellValidation, StderrNotifier, ValidationResult, ValidationRunner,
-    pull_request_body, resume_prompt,
+    DAEMON_LOCK_FILE_NAME, Daemon, Delivery, EventHook, EventNotice, ForgeDelivery, InstanceLock,
+    NoEventHook, ObservedPullRequest, ShellEventHook, ShellValidation, ValidationResult,
+    ValidationRunner, pull_request_body, resume_prompt,
 };
 pub use depot_core::{ProjectState, TaskState};
 pub use documents::{document_path, write_document};
@@ -46,6 +46,6 @@ pub use home::{
 pub use inbox::{InboxEntry, Need, inbox_entries, render_inbox};
 pub use project::{LocationKind, Project};
 pub use projects::{Added, StatusSelection, add_project, render_status, select_project};
-pub use settings::{ProfileSettings, Settings};
+pub use settings::{DEFAULT_ON_EVENTS, OnEventSettings, ProfileSettings, Settings};
 pub use store::{Applied, EventOutcome, RecordedEvent, SCHEMA_VERSION, Store, event_key};
 pub use vocabulary::{ROLE_NAMES, role_from_name, role_name, state_name};

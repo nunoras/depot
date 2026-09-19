@@ -117,6 +117,7 @@ fn registering_a_project_never_writes_machine_local_settings_into_the_repository
             coordinator_context_tokens: 60_000,
             credentials: BTreeMap::from([("github".to_string(), "gh-cli".to_string())]),
             profiles: BTreeMap::new(),
+            on_event: None,
         })
         .expect("machine-local settings");
 

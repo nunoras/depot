@@ -111,6 +111,7 @@ pub enum FactTag {
     WorkerTurnUnresolved,
     WorkerTurnStarted,
     WorkerTurnEnded,
+    WorkerRedirected,
     WorkerLivenessChanged,
     WorkerSubmissionRecorded,
     WorkerSubmitted,
@@ -148,6 +149,7 @@ pub fn fact_tag(kind: &FactKind) -> FactTag {
         FactKind::WorkerTurnUnresolved { .. } => FactTag::WorkerTurnUnresolved,
         FactKind::WorkerTurnStarted { .. } => FactTag::WorkerTurnStarted,
         FactKind::WorkerTurnEnded { .. } => FactTag::WorkerTurnEnded,
+        FactKind::WorkerRedirected { .. } => FactTag::WorkerRedirected,
         FactKind::WorkerLivenessChanged { .. } => FactTag::WorkerLivenessChanged,
         FactKind::WorkerSubmissionRecorded { .. } => FactTag::WorkerSubmissionRecorded,
         FactKind::WorkerSubmitted { .. } => FactTag::WorkerSubmitted,
@@ -186,6 +188,7 @@ pub fn fact_tag_name(tag: FactTag) -> &'static str {
         FactTag::WorkerTurnUnresolved => "worker_turn_unresolved",
         FactTag::WorkerTurnStarted => "worker_turn_started",
         FactTag::WorkerTurnEnded => "worker_turn_ended",
+        FactTag::WorkerRedirected => "worker_redirected",
         FactTag::WorkerLivenessChanged => "worker_liveness_changed",
         FactTag::WorkerSubmissionRecorded => "worker_submission_recorded",
         FactTag::WorkerSubmitted => "worker_submitted",
@@ -224,6 +227,7 @@ pub fn fact_tag_from_name(name: &str) -> Result<FactTag> {
         "worker_turn_unresolved" => FactTag::WorkerTurnUnresolved,
         "worker_turn_started" => FactTag::WorkerTurnStarted,
         "worker_turn_ended" => FactTag::WorkerTurnEnded,
+        "worker_redirected" => FactTag::WorkerRedirected,
         "worker_liveness_changed" => FactTag::WorkerLivenessChanged,
         "worker_submission_recorded" => FactTag::WorkerSubmissionRecorded,
         "worker_submitted" => FactTag::WorkerSubmitted,
@@ -266,6 +270,7 @@ pub fn fact_task(kind: &FactKind) -> Option<TaskId> {
         | FactKind::WorkerTurnUnresolved { task }
         | FactKind::WorkerTurnStarted { task, .. }
         | FactKind::WorkerTurnEnded { task }
+        | FactKind::WorkerRedirected { task, .. }
         | FactKind::WorkerLivenessChanged { task, .. }
         | FactKind::WorkerSubmissionRecorded { task, .. }
         | FactKind::WorkerSubmitted { task, .. }

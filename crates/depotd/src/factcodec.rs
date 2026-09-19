@@ -91,6 +91,10 @@ pub fn encode_payload(kind: &FactKind) -> String {
             ("session", quoted(session.as_str())),
         ]),
         FactKind::WorkerTurnEnded { task } => task_field(task.as_str()),
+        FactKind::WorkerRedirected { task, text } => object(vec![
+            ("task", quoted(task.as_str())),
+            ("text", quoted(text)),
+        ]),
         FactKind::WorkerLivenessChanged { task, liveness } => object(vec![
             ("task", quoted(task.as_str())),
             ("liveness", quoted(liveness_name(*liveness))),

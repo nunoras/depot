@@ -672,19 +672,23 @@ where
     fn resume(&self, task: TaskId) -> Result<()> {
         let record = self.task(&task)?;
         let session = self.session_for(&record)?;
-        let answered = self
-            .latest_answered(&task)?
-            .ok_or_else(|| Error::Project(format!("task `{task}` has no answer to resume")))?;
+        let answers = self.answers_since_turn_start(&task)?;
+        let redirect = self.pending_redirect(&task)?;
+        if answers.is_empty() && redirect.is_none() {
+            return Err(Error::Project(format!(
+                "task `{task}` has no answer to resume"
+            )));
+        }
         let attempt = self.resume_attempts(&task)? + 1;
         if attempt > MAX_RESUME_ATTEMPTS {
             return self.surface_unresolved_turn(&task);
         }
-        let answers = self.answers_since_turn_start(&task)?;
+        let prompt = resume_reason(&redirect, &answers);
         self.record(
             &event_key(&[
                 "worker_turn_resume_requested",
                 task.as_str(),
-                &answered.to_string(),
+                &now().millis().to_string(),
                 &attempt.to_string(),
             ]),
             Fact {
@@ -692,7 +696,7 @@ where
                 kind: FactKind::WorkerTurnResumeRequested { task: task.clone() },
             },
         )?;
-        if let Err(error) = self.sessions.resume(&session, &resume_prompt(&answers)) {
+        if let Err(error) = self.sessions.resume(&session, &prompt) {
             log("resume_failed", &error.to_string());
             return Ok(());
         }
@@ -868,11 +872,33 @@ where
             if !resumable || task.has_unanswered_question() {
                 continue;
             }
-            if self.resume_is_owed(&task.id)? || self.resume_is_pending(&task.id)? {
-                self.resume(task.id)?;
+            let redirect = self.pending_redirect(&task.id)?;
+            if !self.resume_is_owed(&task.id)?
+                && !self.resume_is_pending(&task.id)?
+                && redirect.is_none()
+            {
+                continue;
             }
+            if redirect.is_some()
+                && !self.resume_is_owed(&task.id)?
+                && !self.resume_is_pending(&task.id)?
+                && self.session_turn_is_running(&task)?
+            {
+                continue;
+            }
+            self.resume(task.id)?;
         }
         Ok(())
+    }
+
+    fn session_turn_is_running(&self, task: &Task) -> Result<bool> {
+        let session = self.session_for(task)?;
+        Ok(matches!(
+            self.sessions
+                .status(&session)
+                .map_err(|error| Error::Project(error.to_string()))?,
+            crate::adapters::sessions::SessionState::Running
+        ))
     }
 
     fn leased_worktree(&self, task: &TaskId) -> Result<Option<WorktreeLease>> {
@@ -1025,9 +1051,37 @@ where
         Ok(self.answer_owed(task)? && !self.resume_is_pending(task)?)
     }
 
+    fn pending_redirect(&self, task: &TaskId) -> Result<Option<String>> {
+        let events = self.store.events(&self.project.id)?;
+        let started = events
+            .iter()
+            .rev()
+            .find(|event| {
+                event.task.as_ref() == Some(task)
+                    && event.kind == fact_tag_name(FactTag::WorkerTurnStarted)
+            })
+            .map(|event| event.id)
+            .unwrap_or(0);
+        let redirected = events
+            .iter()
+            .rev()
+            .find(|event| {
+                event.task.as_ref() == Some(task)
+                    && event.kind == fact_tag_name(FactTag::WorkerRedirected)
+            })
+            .filter(|event| event.id > started);
+        match redirected {
+            Some(event) => Ok(Some(payload_field(&event.payload, "text")?)),
+            None => Ok(None),
+        }
+    }
+
     fn reconcile_sessions(&self) -> Result<()> {
         for task in self.store.tasks(&self.project.id)?.into_values() {
-            if !task.state.in_flight() || self.answer_owed(&task.id)? {
+            if !task.state.in_flight()
+                || self.answer_owed(&task.id)?
+                || self.pending_redirect(&task.id)?.is_some()
+            {
                 continue;
             }
             let Some(session) = task
@@ -1338,6 +1392,20 @@ pub fn resume_prompt(answers: &[(String, String)]) -> String {
             format!("{} Continue the task.", answered.join(" "))
         }
     }
+}
+
+pub fn resume_reason(redirect: &Option<String>, answers: &[(String, String)]) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(text) = redirect {
+        parts.push(format!(
+            "The task was redirected: {}. Take the new direction into account.",
+            stripped(text)
+        ));
+    }
+    if !answers.is_empty() {
+        parts.push(resume_prompt(answers));
+    }
+    parts.join(" ")
 }
 
 fn stripped(answer: &str) -> String {

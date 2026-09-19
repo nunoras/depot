@@ -76,6 +76,10 @@ pub enum FactKind {
     WorkerTurnEnded {
         task: TaskId,
     },
+    WorkerRedirected {
+        task: TaskId,
+        text: String,
+    },
     WorkerLivenessChanged {
         task: TaskId,
         liveness: Liveness,

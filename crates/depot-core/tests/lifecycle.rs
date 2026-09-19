@@ -1327,6 +1327,25 @@ fn a_worker_turn_that_ends_without_submitting_is_commentary() {
 }
 
 #[test]
+fn a_redirect_is_commentary_until_the_worker_is_resumed() {
+    run(vec![
+        case(
+            "a queued redirect changes no state",
+            state(vec![running_with_session("t1", "s1", "w1")]),
+            vec![fact(
+                1_000,
+                FactKind::WorkerRedirected {
+                    task: task_id("t1"),
+                    text: "drop the migration".to_owned(),
+                },
+            )],
+        )
+        .when("t1", TaskState::Running, vec![])
+        .checking(|state| holds(state, "t1", AttemptOutcome::InFlight)),
+    ]);
+}
+
+#[test]
 fn pull_request_checks_are_recorded_without_a_transition() {
     run(vec![
         case(

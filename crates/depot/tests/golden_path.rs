@@ -745,6 +745,102 @@ fn a_restart_without_a_leased_worktree_retries_the_acquire() {
 }
 
 #[test]
+fn a_redirect_queued_mid_turn_reaches_the_worker_at_the_next_turn() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+
+    assert_eq!(
+        golden.depot_ok(&[
+            "task",
+            "redirect",
+            TASK,
+            "--text",
+            "Skip the migration; the schema is frozen.",
+            "--project",
+            SLUG,
+        ]),
+        format!("redirected {TASK}\n")
+    );
+    assert_eq!(golden.task().state, TaskState::Running);
+    assert!(
+        golden
+            .history(TASK)
+            .contains(&"worker_redirected".to_string())
+    );
+
+    let inbox = golden.depot_ok(&["inbox", "--project", SLUG]);
+    assert!(
+        inbox.contains("a new direction was queued for the worker"),
+        "{inbox}"
+    );
+    assert!(
+        inbox.contains("Skip the migration"),
+        "the inbox shows the direction: {inbox}"
+    );
+
+    golden.boxr.report_running();
+    daemon
+        .tick()
+        .expect("a running worker is not interrupted mid-turn");
+    assert!(golden.boxr.calls_to("resume").is_empty());
+
+    golden.boxr.report_finished();
+    daemon
+        .tick()
+        .expect("the daemon delivers the redirect when the turn ends");
+    let resumed = golden.boxr.calls_to("resume");
+    assert_eq!(resumed.len(), 1, "the worker is resumed once");
+    assert_eq!(
+        resumed[0],
+        vec![
+            "resume",
+            SESSION,
+            "The task was redirected: Skip the migration; the schema is frozen. Take the new direction into account.",
+        ]
+    );
+    assert_eq!(golden.task().state, TaskState::Running);
+
+    daemon
+        .tick()
+        .expect("a further poll does not deliver the redirect twice");
+    assert_eq!(golden.boxr.calls_to("resume").len(), 1);
+}
+
+#[test]
+fn a_redirect_is_refused_for_a_task_that_is_not_running() {
+    let golden = Golden::new(Validation::Passing);
+    golden.depot_ok(&[
+        "task",
+        "add",
+        "--title",
+        "Wire the store",
+        "--intent",
+        "Persist the records in sqlite.",
+        "--role",
+        "build",
+        "--project",
+        SLUG,
+    ]);
+    let refused = golden.depot(&[
+        "task",
+        "redirect",
+        TASK,
+        "--text",
+        "too late",
+        "--project",
+        SLUG,
+    ]);
+    assert_eq!(refused.status.code(), Some(1));
+    assert!(
+        support::stderr(&refused).contains("cannot be redirected"),
+        "{}",
+        support::stderr(&refused)
+    );
+}
+
+#[test]
 fn a_failed_resume_is_retried_on_the_next_tick_and_delivers_the_answer() {
     let golden = Golden::new(Validation::Passing);
     let daemon = golden.daemon();

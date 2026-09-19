@@ -599,6 +599,23 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             }
         }
 
+        FactKind::PushFailed { task, .. } => {
+            let accepting = next
+                .tasks
+                .get(task)
+                .is_some_and(|task| matches!(task.state, TaskState::Validated | TaskState::PrOpen));
+            if accepting && let Some(task) = next.tasks.get_mut(task) {
+                close_attempt(task, AttemptOutcome::Failed, fact.at);
+                task.state = TaskState::Failed;
+                task.retry = None;
+                task.updated_at = fact.at;
+                changed = true;
+                actions.push(Action::HoldForUser {
+                    task: task.id.clone(),
+                });
+            }
+        }
+
         FactKind::RunDurationExceeded { task } => {
             if let Some(task) = next.tasks.get_mut(task)
                 && task.state.in_flight()

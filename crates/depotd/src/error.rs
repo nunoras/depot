@@ -18,6 +18,17 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+impl Error {
+    pub fn is_lock_contention(&self) -> bool {
+        matches!(
+            self,
+            Error::Database(rusqlite::Error::SqliteFailure(ffi, _))
+                if ffi.code == rusqlite::ErrorCode::DatabaseBusy
+                    || ffi.code == rusqlite::ErrorCode::DatabaseLocked
+        )
+    }
+}
+
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

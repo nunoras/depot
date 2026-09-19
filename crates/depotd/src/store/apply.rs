@@ -5,7 +5,7 @@ use crate::error::Result;
 use crate::project::Project;
 use crate::store::coordinators::{clear_session, write_session};
 use crate::store::tasks::write_task;
-use crate::store::{EventOutcome, Store, write_event};
+use crate::store::{EventOutcome, Store, with_lock_retry, write_event};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Applied {
@@ -19,6 +19,10 @@ impl Store {
     }
 
     pub fn apply_facts(&self, project: &Project, facts: &[(String, Fact)]) -> Result<Applied> {
+        with_lock_retry(|| self.apply_facts_once(project, facts))
+    }
+
+    fn apply_facts_once(&self, project: &Project, facts: &[(String, Fact)]) -> Result<Applied> {
         let transaction = self.connection().unchecked_transaction()?;
         let state = self.project_state(project)?;
         let mut next = state.clone();

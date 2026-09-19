@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use depot_core::*;
 
-type Check = fn(&ProjectState) -> bool;
+type Check = Box<dyn Fn(&ProjectState) -> bool>;
 
 const BUILD: &str = "build-profile";
 const PLAN: &str = "plan-profile";
@@ -69,6 +69,7 @@ fn task(id: &str, state: TaskState) -> Task {
         links: Vec::new(),
         branch_head: None,
         merge_refused: None,
+        acknowledged_at: None,
         retry: None,
         created_at: at(0),
         updated_at: at(0),
@@ -285,8 +286,8 @@ impl Case {
         self
     }
 
-    fn checking(mut self, check: Check) -> Self {
-        self.check = Some(check);
+    fn checking(mut self, check: impl Fn(&ProjectState) -> bool + 'static) -> Self {
+        self.check = Some(Box::new(check));
         self
     }
 }
@@ -3167,4 +3168,125 @@ fn rule_14_an_unmapped_role_is_refused_rather_than_defaulted() {
         "the fallback list only replaces a profile a task already holds, so it never fills a missing mapping"
     );
     assert_eq!(next.tasks[&task_id("t1")].state, TaskState::Approved);
+}
+
+#[test]
+fn rule_15_an_acknowledgement_fades_a_failed_or_cancelled_task() {
+    fn acknowledged_at(millis: u64) -> impl Fn(&ProjectState) -> bool {
+        move |state: &ProjectState| subject(state, "t1").acknowledged_at == Some(at(millis))
+    }
+
+    run(vec![
+        case(
+            "a failed task records the acknowledgement",
+            state(vec![task("t1", TaskState::Failed)]),
+            vec![fact(
+                1_000,
+                FactKind::TaskAcknowledged {
+                    task: task_id("t1"),
+                },
+            )],
+        )
+        .when("t1", TaskState::Failed, vec![Action::RenderChecklist])
+        .checking(acknowledged_at(1_000)),
+        case(
+            "a cancelled task records the acknowledgement",
+            state(vec![task("t1", TaskState::Cancelled)]),
+            vec![fact(
+                2_000,
+                FactKind::TaskAcknowledged {
+                    task: task_id("t1"),
+                },
+            )],
+        )
+        .when("t1", TaskState::Cancelled, vec![Action::RenderChecklist])
+        .checking(acknowledged_at(2_000)),
+        case(
+            "a second acknowledgement changes nothing",
+            state(vec![{
+                let mut task = task("t1", TaskState::Failed);
+                task.acknowledged_at = Some(at(1_000));
+                task
+            }]),
+            vec![fact(
+                3_000,
+                FactKind::TaskAcknowledged {
+                    task: task_id("t1"),
+                },
+            )],
+        )
+        .when("t1", TaskState::Failed, vec![])
+        .checking(acknowledged_at(1_000)),
+        case(
+            "a running task cannot be acknowledged",
+            state(vec![running("t1")]),
+            vec![fact(
+                4_000,
+                FactKind::TaskAcknowledged {
+                    task: task_id("t1"),
+                },
+            )],
+        )
+        .when("t1", TaskState::Running, vec![])
+        .checking(|state| subject(state, "t1").acknowledged_at.is_none()),
+    ]);
+}
+
+#[test]
+fn rule_16_a_failed_or_cancelled_task_fades_when_superseded_or_acknowledged() {
+    fn faded(want: bool) -> impl Fn(&ProjectState) -> bool {
+        move |state: &ProjectState| task_faded(state, subject(state, "t1")) == want
+    }
+
+    run(vec![
+        case(
+            "a fresh failure does not fade",
+            state(vec![task("t1", TaskState::Failed)]),
+            vec![fact(1_000, FactKind::Polled)],
+        )
+        .when("t1", TaskState::Failed, vec![])
+        .checking(faded(false)),
+        case(
+            "a running replacement filed against the failure fades it",
+            state(vec![
+                task("t1", TaskState::Failed),
+                with_base(task("t2", TaskState::Running), "t1"),
+            ]),
+            vec![fact(2_000, FactKind::Polled)],
+        )
+        .when("t1", TaskState::Failed, vec![])
+        .checking(faded(true)),
+        case(
+            "a dependency on the failure also fades it",
+            state(vec![
+                task("t1", TaskState::Cancelled),
+                depending_on(task("t2", TaskState::Proposed), "t1", "c1"),
+            ]),
+            vec![fact(3_000, FactKind::Polled)],
+        )
+        .when("t1", TaskState::Cancelled, vec![])
+        .checking(faded(true)),
+        case(
+            "another failure filed against the failure does not fade it",
+            state(vec![
+                task("t1", TaskState::Failed),
+                with_base(task("t2", TaskState::Failed), "t1"),
+            ]),
+            vec![fact(4_000, FactKind::Polled)],
+        )
+        .when("t1", TaskState::Failed, vec![])
+        .checking(faded(false)),
+        case(
+            "an acknowledgement fades it without a replacement",
+            state(vec![task("t1", TaskState::Failed)]),
+            vec![fact(
+                5_000,
+                FactKind::TaskAcknowledged {
+                    task: task_id("t1"),
+                },
+            )],
+        )
+        .when("t1", TaskState::Failed, vec![Action::RenderChecklist])
+        .checking(faded(true)),
+    ]);
 }

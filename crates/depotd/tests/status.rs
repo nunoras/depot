@@ -1,6 +1,6 @@
 mod support;
 
-use depot_core::TaskState;
+use depot_core::{Fact, FactKind, TaskId, TaskState, Timestamp};
 use depotd::{StatusSelection, Store, render_status};
 
 #[test]
@@ -20,7 +20,7 @@ fn status_shows_held_running_blocked_waiting_and_validated_tasks_distinctly() {
             .expect("stored");
     }
 
-    let rendered = render_status(&fixture.home, &StatusSelection::All).expect("status");
+    let rendered = render_status(&fixture.home, &StatusSelection::All, false).expect("status");
 
     for label in [
         "Held - awaiting approval",
@@ -55,6 +55,7 @@ fn status_can_be_narrowed_to_one_project() {
     let rendered = render_status(
         &fixture.home,
         &StatusSelection::Project(first.project.slug.clone()),
+        false,
     )
     .expect("status");
 
@@ -72,6 +73,7 @@ fn status_accepts_a_project_path_as_the_name() {
     let rendered = render_status(
         &fixture.home,
         &StatusSelection::Project(directory.to_str().unwrap().to_string()),
+        false,
     )
     .expect("status");
 
@@ -84,7 +86,7 @@ fn status_over_every_project_lists_both() {
     let first = support::register(&fixture, "first");
     let second = support::register(&fixture, "second");
 
-    let rendered = render_status(&fixture.home, &StatusSelection::All).expect("status");
+    let rendered = render_status(&fixture.home, &StatusSelection::All, false).expect("status");
 
     assert!(rendered.contains(first.project.id.as_str()));
     assert!(rendered.contains(second.project.id.as_str()));
@@ -95,7 +97,7 @@ fn status_over_no_projects_says_so() {
     let fixture = support::fixture();
 
     assert_eq!(
-        render_status(&fixture.home, &StatusSelection::All).expect("status"),
+        render_status(&fixture.home, &StatusSelection::All, false).expect("status"),
         "No projects registered.\n"
     );
 }
@@ -108,6 +110,7 @@ fn status_names_a_project_it_cannot_find() {
     let error = render_status(
         &fixture.home,
         &StatusSelection::Project("elsewhere".to_string()),
+        false,
     )
     .expect_err("unknown project");
 
@@ -120,7 +123,7 @@ fn status_from_a_directory_outside_every_project_says_so() {
     support::register(&fixture, "first");
     support::register(&fixture, "second");
 
-    let error = render_status(&fixture.home, &StatusSelection::CurrentDirectory)
+    let error = render_status(&fixture.home, &StatusSelection::CurrentDirectory, false)
         .expect_err("no project owns the depot checkout");
     let message = error.to_string();
 
@@ -134,7 +137,7 @@ fn status_from_outside_a_sole_registered_project_is_not_a_guess() {
     let fixture = support::fixture();
     let added = support::register(&fixture, "only");
 
-    let error = render_status(&fixture.home, &StatusSelection::CurrentDirectory)
+    let error = render_status(&fixture.home, &StatusSelection::CurrentDirectory, false)
         .expect_err("a bare status outside the project must not invent a match");
     let message = error.to_string();
 
@@ -147,4 +150,75 @@ fn status_from_outside_a_sole_registered_project_is_not_a_guess() {
         message.contains("--project") && message.contains("--all"),
         "the refusal should name the explicit selection flags, got {message}"
     );
+}
+
+#[test]
+fn a_failed_task_fades_once_a_live_task_depends_on_it() {
+    let fixture = support::fixture();
+    let added = support::register(&fixture, "example");
+    let store = Store::open(&fixture.home).expect("store");
+    let mut failed = support::simple_task(&added.project.id, "t-1", TaskState::Failed, 1);
+    failed.dependencies = Vec::new();
+    store.put_task(&failed).expect("stored");
+    let mut replacement = support::simple_task(&added.project.id, "t-2", TaskState::Running, 2);
+    replacement.base_dependency = Some(TaskId::new("t-1"));
+    store.put_task(&replacement).expect("stored");
+
+    let faded = render_status(&fixture.home, &StatusSelection::All, false).expect("status");
+    let history = render_status(&fixture.home, &StatusSelection::All, true).expect("history");
+
+    assert!(faded.contains("## Running (1)"));
+    assert!(!faded.contains("Blocked - needs a person"));
+    assert!(faded.contains("1 faded task hidden"));
+    assert!(history.contains("## Blocked - needs a person (1)"));
+}
+
+#[test]
+fn an_acknowledged_failed_task_fades_and_history_still_shows_it() {
+    let fixture = support::fixture();
+    let added = support::register(&fixture, "example");
+    let store = Store::open(&fixture.home).expect("store");
+    store
+        .put_task(&support::simple_task(
+            &added.project.id,
+            "t-1",
+            TaskState::Failed,
+            1,
+        ))
+        .expect("stored");
+    let fact = Fact {
+        at: Timestamp::from_millis(2_000),
+        kind: FactKind::TaskAcknowledged {
+            task: TaskId::new("t-1"),
+        },
+    };
+    store
+        .apply_fact(&added.project, "task_acknowledged:t-1", &fact)
+        .expect("applied");
+
+    let faded = render_status(&fixture.home, &StatusSelection::All, false).expect("status");
+    let history = render_status(&fixture.home, &StatusSelection::All, true).expect("history");
+
+    assert!(!faded.contains("Blocked - needs a person"));
+    assert!(history.contains("## Blocked - needs a person (1)"));
+}
+
+#[test]
+fn a_cancelled_task_without_replacement_or_acknowledgement_stays_visible() {
+    let fixture = support::fixture();
+    let added = support::register(&fixture, "example");
+    let store = Store::open(&fixture.home).expect("store");
+    store
+        .put_task(&support::simple_task(
+            &added.project.id,
+            "t-1",
+            TaskState::Cancelled,
+            1,
+        ))
+        .expect("stored");
+
+    let rendered = render_status(&fixture.home, &StatusSelection::All, false).expect("status");
+
+    assert!(rendered.contains("## Cancelled (1)"));
+    assert!(!rendered.contains("faded"));
 }

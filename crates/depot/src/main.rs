@@ -3,9 +3,9 @@ use std::io::Read;
 mod tui;
 
 use depotd::{
-    DepotHome, Error, StatusSelection, TaskRequest, add_project, add_task, answer_question,
-    approve_tasks, ask_question, read_inbox, render_status, stop_task, submit_task,
-    write_narrative,
+    DepotHome, Error, StatusSelection, TaskRequest, acknowledge_task, add_project, add_task,
+    answer_question, approve_tasks, ask_question, read_inbox, render_status, stop_task,
+    submit_task, write_narrative,
 };
 
 const USAGE: &str = "\
@@ -13,13 +13,14 @@ depot - coordinate a project's agent work
 
 USAGE
   depot project add <path-or-url>
-  depot status [--project <name>] [--all] [--tui]
+  depot status [--project <name>] [--all] [--history] [--tui]
   depot task add --title <title> --intent <intent> [--role <plan|build|review|fix>]
                  [--depends-on <task>@<commit>]...
                  [--base-dependency <task-id>] [--project <name>]
   depot task approve <task-id>... [--project <name>]
   depot task answer <task-id> --text <answer> [--by <coordinator|user>] [--project <name>]
   depot task stop <task-id> [--project <name>]
+  depot task acknowledge <task-id> [--project <name>]
   depot ask --task <task-id> --project <name> [--relay] <question>
   depot submit --task <task-id> --project <name>
   depot inbox [--project <name>]
@@ -34,6 +35,8 @@ NOTES
   A role resolves to a profile through the project's committed .depot.toml; an unmapped role is refused.
   Multiple --depends-on need --base-dependency naming one of those tasks as the baseline.
   `--content -` reads a document from standard input.
+  Failed and cancelled tasks fade from the default status once a live task
+  depends on them or they are acknowledged; `--history` shows them.
 ";
 
 fn main() {
@@ -148,6 +151,7 @@ fn task_command(arguments: &[String]) -> Result<String, Failure> {
         Some("approve") => task_approve(&arguments[1..]),
         Some("answer") => task_answer(&arguments[1..]),
         Some("stop") => task_stop(&arguments[1..]),
+        Some("acknowledge") => task_acknowledge(&arguments[1..]),
         Some(other) => Err(Failure::Usage(format!("unknown task command `{other}`"))),
         None => Err(Failure::Usage(
             "`depot task` needs a subcommand: add, approve, answer or stop".to_string(),
@@ -230,6 +234,21 @@ fn task_stop(arguments: &[String]) -> Result<String, Failure> {
     Ok(format!("stopped {}\n", task.id))
 }
 
+fn task_acknowledge(arguments: &[String]) -> Result<String, Failure> {
+    let flags = Flags::parse(arguments, &[])?;
+    flags.reject_unknown(&["project"])?;
+    let ids = flags.positionals();
+    if ids.len() != 1 {
+        return Err(Failure::Usage(
+            "`depot task acknowledge` needs exactly one task id".to_string(),
+        ));
+    }
+
+    let home = DepotHome::resolve()?;
+    let task = acknowledge_task(&home, flags.value("project"), &ids[0])?;
+    Ok(format!("acknowledged {}\n", task.id))
+}
+
 fn ask_command(arguments: &[String]) -> Result<String, Failure> {
     let flags = Flags::parse(arguments, &["relay"])?;
     flags.reject_unknown(&["task", "project", "relay"])?;
@@ -304,8 +323,8 @@ fn inbox_command(arguments: &[String]) -> Result<String, Failure> {
 }
 
 fn status_command(arguments: &[String]) -> Result<String, Failure> {
-    let flags = Flags::parse(arguments, &["all", "tui"])?;
-    flags.reject_unknown(&["all", "project", "tui"])?;
+    let flags = Flags::parse(arguments, &["all", "tui", "history"])?;
+    flags.reject_unknown(&["all", "project", "tui", "history"])?;
     flags.reject_positionals()?;
 
     let selection = match (flags.has("all"), flags.value("project")) {
@@ -324,7 +343,7 @@ fn status_command(arguments: &[String]) -> Result<String, Failure> {
         tui::run(&home, &selection)?;
         return Ok(String::new());
     }
-    Ok(render_status(&home, &selection)?)
+    Ok(render_status(&home, &selection, flags.has("history"))?)
 }
 
 fn read_stdin() -> Result<String, Failure> {

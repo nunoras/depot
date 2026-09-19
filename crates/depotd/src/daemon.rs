@@ -1419,6 +1419,7 @@ mod tests {
             links: Vec::new(),
             branch_head: None,
             merge_refused: None,
+            acknowledged_at: None,
             retry: None,
             created_at: depot_core::Timestamp::from_millis(0),
             updated_at: depot_core::Timestamp::from_millis(0),

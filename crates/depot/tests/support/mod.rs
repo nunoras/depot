@@ -33,7 +33,7 @@ use fake_program::FakeProgram;
 
 pub const SLUG: &str = "example";
 pub const TASK: &str = "t-1";
-pub const BRANCH: &str = "depot-t-1";
+pub const BRANCH: &str = "feat/wire-the-store";
 pub const LEASE: &str = "7c1d0a5e";
 pub const SESSION: &str = "4f2a91";
 pub const PROFILE: &str = "wire-1";

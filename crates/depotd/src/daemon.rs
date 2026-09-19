@@ -445,15 +445,21 @@ where
             },
         )?;
         let repo = self.repository()?;
+        let task = self.task(&task)?;
+        let taken = self
+            .worktrees
+            .branches(&repo)
+            .map_err(|error| Error::Project(error.to_string()))?;
         let lease = self
             .worktrees
             .acquire(&AcquireRequest {
                 repo,
-                holder: format!("depot:{}", task.as_str()),
+                holder: format!("depot:{}", task.id.as_str()),
+                branch: depot_core::delivery_branch(&task, &taken),
                 baseline: baseline.clone(),
             })
             .map_err(|error| Error::Project(error.to_string()))?;
-        self.record_worktree_acquired(&task, lease.lease, baseline)
+        self.record_worktree_acquired(&task.id, lease.lease, baseline)
     }
 
     fn record_worktree_acquired(

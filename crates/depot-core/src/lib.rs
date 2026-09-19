@@ -1,4 +1,5 @@
 mod action;
+mod branch;
 mod dispatch;
 pub use dispatch::{
     Confidence, DispatchRefusal, DispatchResolution, DispatchRule, resolve_dispatch,
@@ -8,6 +9,7 @@ mod model;
 mod reduce;
 
 pub use action::{Action, Baseline};
+pub use branch::delivery_branch;
 pub use fact::{Fact, FactKind, Liveness};
 pub use model::{
     Answer, AnsweredBy, Artifact, ArtifactKind, Attempt, AttemptOutcome, Checks, CommitId,

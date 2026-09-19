@@ -1,7 +1,7 @@
 mod support;
 
 use depot_core::{Fact, FactKind, TaskId, TaskState, Timestamp};
-use depotd::{StatusSelection, Store, render_status};
+use depotd::{StatusSelection, Store, render_checklist, render_status, render_status_at};
 
 #[test]
 fn status_shows_held_running_blocked_waiting_and_validated_tasks_distinctly() {
@@ -221,4 +221,95 @@ fn a_cancelled_task_without_replacement_or_acknowledgement_stays_visible() {
 
     assert!(rendered.contains("## Cancelled (1)"));
     assert!(!rendered.contains("faded"));
+}
+
+#[test]
+fn running_tasks_carry_attempt_age_and_observed_liveness() {
+    let fixture = support::fixture();
+    let added = support::register(&fixture, "example");
+    let store = Store::open(&fixture.home).expect("store");
+
+    let mut sessionless =
+        support::simple_task(&added.project.id, "t-live", TaskState::Running, 1_000);
+    sessionless.attempts.push(depot_core::Attempt {
+        session: None,
+        profile: depot_core::ProfileId::new("pi"),
+        worktree: Some("lease".to_string().into()),
+        started_at: depot_core::Timestamp::from_millis(1_000),
+        finished_at: None,
+        outcome: depot_core::AttemptOutcome::Unknown,
+        rebase: false,
+    });
+
+    let mut unseen = support::simple_task(&added.project.id, "t-unseen", TaskState::Running, 1_000);
+    unseen.attempts.push(depot_core::Attempt {
+        session: Some(depot_core::SessionId::new("s-1")),
+        profile: depot_core::ProfileId::new("pi"),
+        worktree: Some("lease".to_string().into()),
+        started_at: depot_core::Timestamp::from_millis(1_000),
+        finished_at: None,
+        outcome: depot_core::AttemptOutcome::Unknown,
+        rebase: false,
+    });
+
+    let mut alive = support::simple_task(&added.project.id, "t-alive", TaskState::Running, 1_000);
+    alive.attempts.push(depot_core::Attempt {
+        session: Some(depot_core::SessionId::new("s-2")),
+        profile: depot_core::ProfileId::new("pi"),
+        worktree: Some("lease".to_string().into()),
+        started_at: depot_core::Timestamp::from_millis(1_000),
+        finished_at: None,
+        outcome: depot_core::AttemptOutcome::InFlight,
+        rebase: false,
+    });
+
+    for task in [&sessionless, &unseen, &alive] {
+        store.put_task(task).expect("stored");
+    }
+
+    let rendered = render_status_at(
+        &fixture.home,
+        &StatusSelection::All,
+        false,
+        depot_core::Timestamp::from_millis(1_000 + 15 * 60 * 1000),
+    )
+    .expect("status");
+
+    assert!(
+        rendered.contains("- attempt: stalled - in_flight 15m, no worker session"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("- attempt: in_flight 15m, session `s-1` not yet seen alive"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("- attempt: in_flight 15m, session `s-2` alive"),
+        "{rendered}"
+    );
+}
+
+#[test]
+fn the_written_checklist_stays_free_of_observation_time() {
+    let fixture = support::fixture();
+    let added = support::register(&fixture, "example");
+    let store = Store::open(&fixture.home).expect("store");
+    let mut task = support::simple_task(&added.project.id, "t-1", TaskState::Running, 1_000);
+    task.attempts.push(depot_core::Attempt {
+        session: None,
+        profile: depot_core::ProfileId::new("pi"),
+        worktree: None,
+        started_at: depot_core::Timestamp::from_millis(1_000),
+        finished_at: None,
+        outcome: depot_core::AttemptOutcome::Unknown,
+        rebase: false,
+    });
+    store.put_task(&task).expect("stored");
+
+    let checklist = render_checklist(&store.project_state(&added.project).expect("state"), false);
+
+    assert!(
+        !checklist.contains("attempt:"),
+        "the checklist must not carry time-shaped observations: {checklist}"
+    );
 }

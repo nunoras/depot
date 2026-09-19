@@ -476,6 +476,15 @@ impl Golden {
         self.depot_ok(&["status", "--project", SLUG])
     }
 
+    pub fn status_matches_checklist(&self, rendered: &str) {
+        let without_observations: String = rendered
+            .lines()
+            .filter(|line| !line.contains("- attempt:"))
+            .map(|line| format!("{line}\n"))
+            .collect();
+        assert_eq!(without_observations, self.checklist());
+    }
+
     pub fn events(&self) -> Vec<RecordedEvent> {
         self.store.events(&self.project.id).expect("the journal")
     }

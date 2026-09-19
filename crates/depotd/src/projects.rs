@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
 
-use depot_core::ProjectId;
+use depot_core::{ProjectId, Timestamp};
 
-use crate::checklist::render_checklist;
+use crate::checklist::{render_checklist, render_checklist_observed};
 use crate::clock::now;
 use crate::commands::ensure_profiles_resolve;
 use crate::config::ProjectConfig;
@@ -95,6 +95,15 @@ pub fn render_status(
     selection: &StatusSelection,
     history: bool,
 ) -> Result<String> {
+    render_status_at(home, selection, history, crate::clock::now())
+}
+
+pub fn render_status_at(
+    home: &DepotHome,
+    selection: &StatusSelection,
+    history: bool,
+    now: Timestamp,
+) -> Result<String> {
     let store = Store::open(home)?;
     let projects = match selection {
         StatusSelection::All => store.projects()?,
@@ -128,7 +137,11 @@ pub fn render_status(
         if index > 0 {
             out.push('\n');
         }
-        out.push_str(&render_checklist(&store.project_state(project)?, history));
+        out.push_str(&render_checklist_observed(
+            &store.project_state(project)?,
+            history,
+            now,
+        ));
     }
     Ok(out)
 }

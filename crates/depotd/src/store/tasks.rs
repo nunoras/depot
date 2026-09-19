@@ -26,7 +26,7 @@ impl Store {
         })?;
         let mut state = self.project_state(&project)?;
         state.tasks.insert(task.id.clone(), task.clone());
-        let checklist = render_checklist(&state);
+        let checklist = render_checklist(&state, false);
         let project_home = self.home().project_home(&project.slug);
         project_home.ensure()?;
         let checklist_path = project_home.checklist_path();
@@ -80,7 +80,7 @@ impl Store {
 }
 
 const TASK_COLUMNS: &str = "project_id, id, title, intent, role, state, base_dependency, \
-     branch_head, retry_profile, retry_not_before, submission_summary, merge_refused, created_at, updated_at, dispatch_profile";
+     branch_head, retry_profile, retry_not_before, submission_summary, merge_refused, created_at, updated_at, dispatch_profile, acknowledged_at";
 
 struct RawTask {
     project_id: String,
@@ -96,6 +96,7 @@ struct RawTask {
     retry_not_before: Option<i64>,
     submission_summary: Option<String>,
     merge_refused: Option<String>,
+    acknowledged_at: Option<i64>,
     created_at: i64,
     updated_at: i64,
 }
@@ -116,6 +117,7 @@ impl RawTask {
             retry_not_before: row.get("retry_not_before")?,
             submission_summary: row.get("submission_summary")?,
             merge_refused: row.get("merge_refused")?,
+            acknowledged_at: row.get("acknowledged_at")?,
             created_at: row.get("created_at")?,
             updated_at: row.get("updated_at")?,
         })
@@ -168,6 +170,10 @@ impl RawTask {
             links: store.links(&project, &self.id)?,
             branch_head: self.branch_head.map(CommitId::new),
             merge_refused: self.merge_refused,
+            acknowledged_at: self
+                .acknowledged_at
+                .map(|value| value as u64)
+                .map(Timestamp::from_millis),
             retry,
             created_at: millis(self.created_at)?,
             updated_at: millis(self.updated_at)?,
@@ -413,8 +419,8 @@ pub(super) fn write_task(transaction: &Transaction<'_>, task: &Task) -> Result<(
     transaction.execute(
         "INSERT INTO tasks (
                 project_id, id, title, intent, role, state, base_dependency, branch_head,
-                retry_profile, retry_not_before, submission_summary, merge_refused, created_at, updated_at, dispatch_profile
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                retry_profile, retry_not_before, submission_summary, merge_refused, created_at, updated_at, dispatch_profile, acknowledged_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
         params![
             task.project.as_str(),
             task.id.as_str(),
@@ -435,6 +441,7 @@ pub(super) fn write_task(transaction: &Transaction<'_>, task: &Task) -> Result<(
             task.created_at.millis() as i64,
             task.updated_at.millis() as i64,
             task.dispatch_profile.as_ref().map(ProfileId::as_str),
+            task.acknowledged_at.map(|value| value.millis() as i64),
         ],
     )?;
 

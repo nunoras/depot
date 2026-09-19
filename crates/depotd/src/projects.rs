@@ -35,7 +35,7 @@ pub fn add_project(home: &DepotHome, target: &str) -> Result<Added> {
     };
 
     let state = store.project_state(&project)?;
-    let checklist = render_checklist(&state);
+    let checklist = render_checklist(&state, false);
     let project_home = home.project_home(&project.slug);
     let created_home = !project_home.root().exists();
 
@@ -88,7 +88,11 @@ pub fn select_project(store: &Store, name: Option<&str>) -> Result<Project> {
     }
 }
 
-pub fn render_status(home: &DepotHome, selection: &StatusSelection) -> Result<String> {
+pub fn render_status(
+    home: &DepotHome,
+    selection: &StatusSelection,
+    history: bool,
+) -> Result<String> {
     let store = Store::open(home)?;
     let projects = match selection {
         StatusSelection::All => store.projects()?,
@@ -122,7 +126,7 @@ pub fn render_status(home: &DepotHome, selection: &StatusSelection) -> Result<St
         if index > 0 {
             out.push('\n');
         }
-        out.push_str(&render_checklist(&store.project_state(project)?));
+        out.push_str(&render_checklist(&store.project_state(project)?, history));
     }
     Ok(out)
 }

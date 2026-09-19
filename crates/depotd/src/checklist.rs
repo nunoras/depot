@@ -1,5 +1,5 @@
 use depot_core::{
-    Checks, ProjectState, Question, Task, TaskState, Timestamp, dependency_satisfied,
+    Checks, ProjectState, Question, Task, TaskState, Timestamp, dependency_satisfied, task_faded,
 };
 
 use crate::vocabulary::{checks_name, role_name};
@@ -17,7 +17,7 @@ const SECTIONS: [(TaskState, &str); 10] = [
     (TaskState::Cancelled, "Cancelled"),
 ];
 
-pub fn render_checklist(state: &ProjectState) -> String {
+pub fn render_checklist(state: &ProjectState, history: bool) -> String {
     let mut out = String::new();
     out.push_str("# Checklist\n\n");
     out.push_str(&format!(
@@ -31,12 +31,21 @@ pub fn render_checklist(state: &ProjectState) -> String {
         return out;
     }
 
+    let mut faded = 0usize;
     for (task_state, label) in SECTIONS {
         let mut tasks: Vec<&Task> = state
             .tasks
             .values()
             .filter(|task| task.state == task_state)
+            .filter(|task| history || !task_faded(state, task))
             .collect();
+        if !history {
+            faded += state
+                .tasks
+                .values()
+                .filter(|task| task.state == task_state && task_faded(state, task))
+                .count();
+        }
         if tasks.is_empty() {
             continue;
         }
@@ -50,6 +59,13 @@ pub fn render_checklist(state: &ProjectState) -> String {
             out.push('\n');
             render_task(&mut out, state, task);
         }
+    }
+
+    if faded > 0 {
+        out.push_str(&format!(
+            "\n{faded} faded {} hidden; `depot status --history` shows them.\n",
+            if faded == 1 { "task" } else { "tasks" }
+        ));
     }
 
     out

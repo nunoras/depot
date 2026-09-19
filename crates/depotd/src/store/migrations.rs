@@ -162,6 +162,7 @@ const MIGRATIONS: &[&str] = &[
     TASK_SUBMISSION_V5,
     "ALTER TABLE tasks ADD COLUMN dispatch_profile TEXT;",
     "ALTER TABLE tasks ADD COLUMN merge_refused TEXT;",
+    "ALTER TABLE tasks ADD COLUMN acknowledged_at INTEGER;",
 ];
 
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;

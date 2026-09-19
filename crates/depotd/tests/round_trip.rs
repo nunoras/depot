@@ -3,7 +3,10 @@ mod support;
 use std::collections::BTreeMap;
 
 use depot_core::{Limits, ProfileId, ProjectState, Role, TaskId};
-use depotd::{PROJECT_CONFIG_FILE_NAME, ProjectConfig, Settings, Store, add_project, event_key};
+use depotd::{
+    PROJECT_CONFIG_FILE_NAME, ProfileSettings, ProjectConfig, Settings, Store, add_project,
+    event_key,
+};
 
 #[test]
 fn a_task_round_trips_through_the_store_with_every_field_intact() {
@@ -61,6 +64,26 @@ fn a_project_state_round_trips_through_the_configuration_split() {
     let settings = Settings {
         concurrency: 7,
         fallback_profiles: vec!["gpt-5.5".to_string(), "sonnet".to_string()],
+        profiles: BTreeMap::from([
+            (
+                "fable-5".to_string(),
+                ProfileSettings {
+                    harness: "pi".to_string(),
+                    model: "fable-5".to_string(),
+                    effort: "high".to_string(),
+                    account: String::new(),
+                },
+            ),
+            (
+                "glm-5.3".to_string(),
+                ProfileSettings {
+                    harness: "pi".to_string(),
+                    model: "glm-5.3".to_string(),
+                    effort: "high".to_string(),
+                    account: String::new(),
+                },
+            ),
+        ]),
         ..Settings::default()
     };
     fixture.home.write_settings(&settings).expect("settings");

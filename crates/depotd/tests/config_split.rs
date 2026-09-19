@@ -2,7 +2,7 @@ mod support;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use depotd::{PROJECT_CONFIG_FILE_NAME, ProjectConfig, Settings, add_project};
+use depotd::{PROJECT_CONFIG_FILE_NAME, ProfileSettings, ProjectConfig, Settings, add_project};
 
 const PROJECT_KEYS: [&str; 5] = [
     "base_branch",
@@ -116,7 +116,15 @@ fn registering_a_project_never_writes_machine_local_settings_into_the_repository
             fallback_profiles: vec!["sonnet".to_string()],
             coordinator_context_tokens: 60_000,
             credentials: BTreeMap::from([("github".to_string(), "gh-cli".to_string())]),
-            profiles: BTreeMap::new(),
+            profiles: BTreeMap::from([(
+                "glm-5.3".to_string(),
+                ProfileSettings {
+                    harness: "pi".to_string(),
+                    model: "glm-5.3".to_string(),
+                    effort: "high".to_string(),
+                    account: String::new(),
+                },
+            )]),
             on_event: None,
         })
         .expect("machine-local settings");

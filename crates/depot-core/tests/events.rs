@@ -22,6 +22,7 @@ fn task(state: TaskState) -> Task {
         branch_head: None,
         merge_refused: None,
         retry: None,
+        acknowledged_at: None,
         created_at: Timestamp::from_millis(0),
         updated_at: Timestamp::from_millis(0),
     }

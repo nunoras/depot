@@ -91,7 +91,7 @@ Do not launch workers by hand.
 
 ## Task loop the daemon owns
 
-approve → treehouse lease → boxr launch → worker submit → validate at commit → push branch `depot-<task>` → open PR → observe checks/merge → release worktree.
+approve → treehouse lease → boxr launch → worker submit → validate at commit → push branch `feat/<slug>` from the task title → open PR → observe checks/merge → release worktree.
 
 ## See also
 

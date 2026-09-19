@@ -27,6 +27,7 @@ pub struct PoolEntry {
 pub struct AcquireRequest {
     pub repo: PathBuf,
     pub holder: String,
+    pub branch: String,
     pub baseline: Baseline,
 }
 
@@ -34,6 +35,7 @@ pub trait Worktrees {
     fn acquire(&self, request: &AcquireRequest) -> Result<Lease, WorktreeError>;
     fn release(&self, lease: &Lease) -> Result<(), WorktreeError>;
     fn pool(&self, repo: &Path) -> Result<Vec<PoolEntry>, WorktreeError>;
+    fn branches(&self, repo: &Path) -> Result<Vec<String>, WorktreeError>;
 }
 
 #[derive(Debug, Clone)]
@@ -160,12 +162,14 @@ impl Worktrees for Treehouse {
             acquired_at: field(&command, &value, "leased_at")?,
         };
 
-        let branch = request.holder.replace(':', "-");
         let checkout = match &request.baseline {
-            Baseline::PinnedCommit(commit) => {
-                self.git_args(&lease.path, &["checkout", "-B", &branch, commit.as_str()])
+            Baseline::PinnedCommit(commit) => self.git_args(
+                &lease.path,
+                &["checkout", "-B", &request.branch, commit.as_str()],
+            ),
+            Baseline::DefaultBranchHead => {
+                self.git_args(&lease.path, &["checkout", "-B", &request.branch])
             }
-            Baseline::DefaultBranchHead => self.git_args(&lease.path, &["checkout", "-B", &branch]),
         };
         if let Err(error) = self.git.run_ok(&checkout, None) {
             let _ = self.return_lease(&lease);
@@ -228,6 +232,19 @@ impl Worktrees for Treehouse {
                 })
             })
             .collect()
+    }
+
+    fn branches(&self, repo: &Path) -> Result<Vec<String>, WorktreeError> {
+        let output = self.git_output(
+            repo,
+            &[
+                "for-each-ref",
+                "--format=%(refname:short)",
+                "refs/heads",
+                "refs/remotes",
+            ],
+        )?;
+        Ok(non_empty_lines(&output))
     }
 }
 

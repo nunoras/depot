@@ -164,6 +164,7 @@ const MIGRATIONS: &[&str] = &[
     "ALTER TABLE tasks ADD COLUMN merge_refused TEXT;",
     "ALTER TABLE tasks ADD COLUMN acknowledged_at INTEGER;",
     "ALTER TABLE tasks ADD COLUMN hold_pr INTEGER NOT NULL DEFAULT 0;",
+    "ALTER TABLE task_attempts ADD COLUMN rebase INTEGER NOT NULL DEFAULT 0;",
 ];
 
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;

@@ -514,7 +514,7 @@ impl Golden {
             "GET",
             &format!("/repos/{REPOSITORY}/pulls/1"),
             200,
-            &pull_request(commit, BASE, "open", false),
+            &pull_request(commit, BASE, "open", false, true),
         );
         self.forge.route(
             "POST",
@@ -531,7 +531,7 @@ impl Golden {
             "GET",
             &format!("/repos/{REPOSITORY}/pulls/1"),
             200,
-            &pull_request(commit, base, "open", false),
+            &pull_request(commit, base, "open", false, true),
         );
     }
 
@@ -546,7 +546,7 @@ impl Golden {
             "GET",
             &format!("/repos/{REPOSITORY}/pulls/1"),
             200,
-            &pull_request(commit, BASE, "open", false),
+            &pull_request(commit, BASE, "open", false, true),
         );
         self.forge.replace_route_query(
             "GET",
@@ -570,7 +570,7 @@ impl Golden {
             "GET",
             &format!("/repos/{REPOSITORY}/pulls/1"),
             200,
-            &pull_request(commit, BASE, "closed", true),
+            &pull_request(commit, BASE, "closed", true, false),
         );
     }
 
@@ -579,7 +579,7 @@ impl Golden {
             "GET",
             &format!("/repos/{REPOSITORY}/pulls/1"),
             200,
-            &pull_request(commit, BASE, "closed", false),
+            &pull_request(commit, BASE, "closed", false, false),
         );
     }
 
@@ -590,6 +590,59 @@ impl Golden {
             200,
             "{\"sha\":\"merged\",\"merged\":true,\"message\":\"Pull Request successfully merged\"}",
         );
+    }
+
+    pub fn script_conflicting_pull_request(&self, commit: &str) {
+        self.script_pull_request(commit);
+        self.forge.replace_route(
+            "GET",
+            &format!("/repos/{REPOSITORY}/pulls/1"),
+            200,
+            &pull_request(commit, BASE, "open", false, false),
+        );
+    }
+
+    pub fn script_rebased_pull_request(&self, commit: &str) {
+        self.forge.route(
+            "GET",
+            &format!("/repos/{REPOSITORY}/commits/{commit}/check-runs"),
+            200,
+            &check_runs(),
+        );
+        self.forge.replace_route(
+            "GET",
+            &format!("/repos/{REPOSITORY}/pulls/1"),
+            200,
+            &pull_request(commit, BASE, "open", false, true),
+        );
+    }
+
+    pub fn script_delete_branch_endpoint(&self) {
+        self.forge.route(
+            "DELETE",
+            &format!("/repos/{REPOSITORY}/git/refs/heads/{BRANCH}"),
+            204,
+            "",
+        );
+    }
+
+    pub fn branch_deletes(&self) -> usize {
+        self.forge
+            .requests()
+            .into_iter()
+            .filter(|request| request.method == "DELETE")
+            .count()
+    }
+
+    pub fn worker_rebases_and_submits(&self) -> Output {
+        self.worker(&script(&[
+            "git fetch origin",
+            "git rebase origin/main",
+            "printf 'the rebase\\n' > rebase.txt",
+            "git add rebase.txt",
+            "git commit -m \"rebase onto main\"",
+            &format!("depot submit --task {TASK} --project {SLUG}"),
+        ]))
     }
 
     pub fn script_merge_endpoint_refused(&self) {
@@ -680,7 +733,7 @@ fn write_project(repo: &Path, validation: Validation) {
     fs::write(
         repo.join(".depot.toml"),
         format!(
-            "base_branch = \"main\"\n\n[profiles]\nbuild = \"{PROFILE}\"\n\n[validation]\ncommand = \"{validation_command}\"\n\n[pull_request]\nbase = \"main\"\nauto_merge = false\n"
+            "base_branch = \"main\"\n\n[profiles]\nbuild = \"{PROFILE}\"\nfix = \"{PROFILE}\"\n\n[validation]\ncommand = \"{validation_command}\"\n\n[pull_request]\nbase = \"main\"\nauto_merge = false\n"
         ),
     )
     .expect("the committed project config is written");
@@ -747,13 +800,13 @@ fn check_runs() -> String {
         .to_string()
 }
 
-fn pull_request(commit: &str, base: &str, state: &str, merged: bool) -> String {
+fn pull_request(commit: &str, base: &str, state: &str, merged: bool, mergeable: bool) -> String {
     let merged = if state == "closed" {
         format!("\"merged\":{merged},")
     } else {
         String::new()
     };
     format!(
-        "{{\"number\":1,\"html_url\":\"https://forge.test/{REPOSITORY}/pull/1\",\"title\":\"Wire the store\",\"state\":\"{state}\",{merged}\"head\":{{\"sha\":\"{commit}\"}},\"base\":{{\"sha\":\"{base}\"}}}}"
+        "{{\"number\":1,\"html_url\":\"https://forge.test/{REPOSITORY}/pull/1\",\"title\":\"Wire the store\",\"state\":\"{state}\",{merged}\"mergeable\":{mergeable},\"head\":{{\"sha\":\"{commit}\",\"ref\":\"{BRANCH}\"}},\"base\":{{\"sha\":\"{base}\"}}}}"
     )
 }

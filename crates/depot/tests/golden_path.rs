@@ -32,6 +32,7 @@ const MERGED: &str = "pull_request_merged";
 const CLOSED_UNMERGED: &str = "pull_request_closed_unmerged";
 const MERGE_REFUSED: &str = "pull_request_merge_refused";
 const PUSH_FAILED: &str = "push_failed";
+const REBASE_SCHEDULED: &str = "rebase_scheduled";
 const RESTARTED: &str = "daemon_restarted";
 
 #[test]
@@ -1906,4 +1907,78 @@ fn hook_events(log: &std::path::Path) -> Vec<serde_json::Value> {
         .lines()
         .map(|line| serde_json::from_str(line).expect("each hook line is a json payload"))
         .collect()
+}
+
+#[test]
+fn a_conflicting_pull_request_is_rebased_by_a_fix_worker_and_lands() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.set_auto_merge(true);
+    golden.script_merge_endpoint();
+    golden.script_delete_branch_endpoint();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_submits();
+    let commit = golden.head();
+    golden.script_conflicting_pull_request(&commit);
+    daemon
+        .tick()
+        .expect("the daemon validates, opens the pull request and schedules the rebase");
+
+    let rebasing = golden.task();
+    assert_eq!(rebasing.state, TaskState::Running);
+    assert!(golden.history(TASK).contains(&REBASE_SCHEDULED.to_string()));
+    assert_eq!(
+        golden.task().attempts.len(),
+        2,
+        "the rebase is a second attempt on the same task"
+    );
+    assert!(
+        golden
+            .task()
+            .attempts
+            .last()
+            .is_some_and(|attempt| attempt.rebase),
+        "the second attempt is marked as a rebase"
+    );
+    assert_eq!(
+        golden.merge_requests(),
+        0,
+        "a conflicting pull request is not merged"
+    );
+
+    let output = golden.worker_rebases_and_submits();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "the fix worker rebases and submits: {}",
+        support::stderr(&output)
+    );
+    let rebased = golden.head();
+    golden.script_rebased_pull_request(&rebased);
+    daemon
+        .tick()
+        .expect("the daemon validates the rebased commit, merges and deletes the branch");
+
+    let landed = golden.task();
+    assert_eq!(landed.state, TaskState::Landed);
+    assert!(
+        golden.history(TASK).contains(&MERGED.to_string()),
+        "the rebased pull request lands"
+    );
+    assert_eq!(golden.merge_requests(), 1);
+    assert_eq!(
+        golden.branch_deletes(),
+        1,
+        "the daemon deletes the delivery branch after the merge"
+    );
+    assert_eq!(
+        calls_to(&golden.treehouse.calls(), "return").len(),
+        1,
+        "landing the rebase returns the worktree"
+    );
+
+    let checklist = golden.status();
+    assert!(checklist.contains("Landed (1)"), "{checklist}");
+    assert_eq!(checklist, golden.checklist());
 }

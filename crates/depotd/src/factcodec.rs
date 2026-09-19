@@ -216,6 +216,17 @@ pub fn encode_payload(kind: &FactKind) -> String {
             ("commit", quoted(commit.as_str())),
             ("reason", quoted(reason)),
         ]),
+        FactKind::RebaseScheduled {
+            task,
+            profile,
+            commit,
+            base,
+        } => object(vec![
+            ("task", quoted(task.as_str())),
+            ("profile", quoted(profile.as_str())),
+            ("commit", quoted(commit.as_str())),
+            ("base", quoted(base.as_str())),
+        ]),
         FactKind::RunDurationExceeded { task } => task_field(task.as_str()),
         FactKind::RetryExhausted { task } => task_field(task.as_str()),
         FactKind::ProviderRateLimited { task, profile } => object(vec![

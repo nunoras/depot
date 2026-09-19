@@ -106,7 +106,8 @@ fn need_for(tag: FactTag, task: Option<&Task>) -> Need {
             Some(TaskState::PrOpen) => Need::User,
             _ => Need::Nothing,
         },
-        FactTag::TaskDispatchJudged
+        FactTag::RebaseScheduled
+        | FactTag::TaskDispatchJudged
         | FactTag::TaskProposed
         | FactTag::TaskReleased
         | FactTag::TaskApproved
@@ -216,6 +217,9 @@ fn headline(tag: FactTag, event: &RecordedEvent, task: Option<&Task>) -> Result<
         FactTag::PushFailed => {
             let reason = payload_field(&event.payload, "reason")?;
             format!("the push was rejected: {}", one_line(&reason))
+        }
+        FactTag::RebaseScheduled => {
+            "a conflicting pull request was scheduled for a rebase".to_string()
         }
         FactTag::RunDurationExceeded => "ran past its run duration".to_string(),
         FactTag::RetryExhausted => "ran out of retries".to_string(),

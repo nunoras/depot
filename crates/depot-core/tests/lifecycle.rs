@@ -3290,3 +3290,62 @@ fn rule_16_a_failed_or_cancelled_task_fades_when_superseded_or_acknowledged() {
         .checking(faded(true)),
     ]);
 }
+
+#[test]
+fn rule_17_approving_a_failed_task_starts_a_fresh_attempt() {
+    run(vec![
+        case(
+            "approval clears the failure and runs a new attempt",
+            state(vec![with_attempt(
+                task("t1", TaskState::Failed),
+                Attempt {
+                    worktree: Some(lease("w1")),
+                    ..spent(BUILD)
+                },
+            )]),
+            vec![fact(1_000, approved("t1"))],
+        )
+        .when(
+            "t1",
+            TaskState::Running,
+            vec![
+                acquire("t1", Baseline::DefaultBranchHead),
+                launch("t1", BUILD),
+                Action::RenderChecklist,
+            ],
+        )
+        .checking(|state| {
+            subject(state, "t1").attempts.len() == 2 && holds(state, "t1", AttemptOutcome::InFlight)
+        }),
+        case(
+            "a failed attempt keeps its worktree record for the next acquire to reuse",
+            state(vec![with_attempt(
+                task("t1", TaskState::Failed),
+                Attempt {
+                    worktree: Some(lease("w1")),
+                    ..spent(BUILD)
+                },
+            )]),
+            vec![fact(2_000, approved("t1"))],
+        )
+        .when(
+            "t1",
+            TaskState::Running,
+            vec![
+                acquire("t1", Baseline::DefaultBranchHead),
+                launch("t1", BUILD),
+                Action::RenderChecklist,
+            ],
+        )
+        .checking(|state| subject(state, "t1").attempts[0].worktree.as_ref() == Some(&lease("w1"))),
+        case(
+            "a landed task cannot be approved again",
+            state(vec![with_attempt(
+                task("t1", TaskState::Landed),
+                spent(BUILD),
+            )]),
+            vec![fact(3_000, approved("t1"))],
+        )
+        .when("t1", TaskState::Landed, vec![]),
+    ]);
+}

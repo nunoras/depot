@@ -62,8 +62,10 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
 
         FactKind::TaskApproved { task } => {
             if let Some(task) = next.tasks.get_mut(task) {
-                if task.state == TaskState::Proposed {
+                if matches!(task.state, TaskState::Proposed | TaskState::Failed) {
                     task.state = TaskState::Approved;
+                    task.retry = None;
+                    task.merge_refused = None;
                     task.updated_at = fact.at;
                     changed = true;
                 }

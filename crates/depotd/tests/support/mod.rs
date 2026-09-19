@@ -222,3 +222,14 @@ pub fn varied_state() -> ProjectState {
         auto_merge: false,
     }
 }
+
+pub fn open_attempt(profile: &str) -> Attempt {
+    Attempt {
+        session: None,
+        profile: ProfileId::new(profile),
+        worktree: None,
+        started_at: Timestamp::from_millis(0),
+        finished_at: None,
+        outcome: AttemptOutcome::InFlight,
+    }
+}

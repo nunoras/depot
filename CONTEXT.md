@@ -69,6 +69,7 @@ _Avoid_: merged, done
 **Failed**:
 A task that stopped and needs a person, with its branch, worktree and validation output kept for review.
 Failing validation, overrunning the run duration and exhausting retries all end here.
+Approving it again clears the failure and starts a fresh attempt on the same lease.
 _Avoid_: paused, errored
 
 **Checklist**:

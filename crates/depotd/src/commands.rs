@@ -90,7 +90,16 @@ pub fn approve_tasks(
                 at: now(),
                 kind: FactKind::TaskApproved { task: id.clone() },
             };
-            apply(&store, &project, &["task_approved", id.as_str()], &fact)?;
+            apply(
+                &store,
+                &project,
+                &[
+                    "task_approved",
+                    id.as_str(),
+                    &current.attempts.len().to_string(),
+                ],
+                &fact,
+            )?;
         }
         approved.push(task(&store, &project, &id)?);
     }
@@ -266,7 +275,7 @@ enum Prepared {
 
 fn prepare_approve(task: &Task) -> Result<Prepared> {
     match task.state {
-        TaskState::Proposed => Ok(Prepared::Apply),
+        TaskState::Proposed | TaskState::Failed => Ok(Prepared::Apply),
         TaskState::Approved => Ok(Prepared::AlreadyDone),
         _ => Err(transition_refused(task, "approved")),
     }

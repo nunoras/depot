@@ -799,7 +799,7 @@ fn approving_a_task_records_the_actions_the_daemon_will_take() {
     let applied = store
         .apply_fact(
             &context.project,
-            "task_approved:t-1",
+            "task_approved:t-1:0",
             &fact(
                 2_000,
                 FactKind::TaskApproved {
@@ -820,4 +820,41 @@ fn approving_a_task_records_the_actions_the_daemon_will_take() {
             .unwrap(),
         approved[0]
     );
+}
+
+#[test]
+fn approving_a_failed_task_requeues_it() {
+    let fixture = support::fixture();
+    let added = support::register_with_config(&fixture, "example", BUILD_ONLY);
+    let store = Store::open(&fixture.home).expect("store");
+    let mut failed = support::simple_task(
+        &added.project.id,
+        "t-1",
+        depot_core::TaskState::Failed,
+        1_000,
+    );
+    failed.attempts.push(depot_core::Attempt {
+        outcome: depot_core::AttemptOutcome::Failed,
+        finished_at: Some(at(2_000)),
+        ..support::open_attempt("glm-5.3")
+    });
+    store.put_task(&failed).expect("seeded failed");
+
+    let approved = depotd::approve_tasks(&fixture.home, Some("example"), &["t-1".to_string()])
+        .expect("a failed task can be approved again");
+
+    assert_eq!(approved[0].state, depot_core::TaskState::Running);
+    let replayed = store
+        .apply_fact(
+            &added.project,
+            "task_approved:t-1:1",
+            &fact(
+                3_000,
+                FactKind::TaskApproved {
+                    task: TaskId::new("t-1"),
+                },
+            ),
+        )
+        .expect("read");
+    assert_eq!(replayed.outcome, depotd::EventOutcome::Duplicate);
 }

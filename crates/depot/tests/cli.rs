@@ -984,8 +984,62 @@ fn task(project: &str, id: &str, state: TaskState, offset: u64) -> depot_core::T
         links: Vec::new(),
         branch_head: None,
         merge_refused: None,
+        acknowledged_at: None,
         retry: None,
         created_at: at,
         updated_at: at,
     }
+}
+
+#[test]
+fn an_acknowledged_task_fades_from_status_and_returns_behind_history() {
+    let cli = Cli::new();
+    let directory = cli.project_directory("example");
+    let added = add_project(&cli.depot_home(), directory.to_str().unwrap()).expect("registered");
+    let store = Store::open(&cli.depot_home()).expect("store");
+    store
+        .put_task(&task(
+            added.project.id.as_str(),
+            "t-1",
+            TaskState::Failed,
+            1,
+        ))
+        .expect("stored");
+
+    let before = cli.run(&["task", "acknowledge", "t-1", "--project", "example"]);
+    assert_eq!(before.status.code(), Some(0), "stderr: {}", stderr(&before));
+
+    let faded = cli.run(&["status", "--project", "example"]);
+    assert_eq!(faded.status.code(), Some(0), "stderr: {}", stderr(&faded));
+    assert!(!stdout(&faded).contains("Blocked - needs a person"));
+
+    let history = cli.run(&["status", "--project", "example", "--history"]);
+    assert_eq!(
+        history.status.code(),
+        Some(0),
+        "stderr: {}",
+        stderr(&history)
+    );
+    assert!(stdout(&history).contains("Blocked - needs a person (1)"));
+}
+
+#[test]
+fn acknowledging_a_running_task_is_refused() {
+    let cli = Cli::new();
+    let directory = cli.project_directory("example");
+    let added = add_project(&cli.depot_home(), directory.to_str().unwrap()).expect("registered");
+    let store = Store::open(&cli.depot_home()).expect("store");
+    store
+        .put_task(&task(
+            added.project.id.as_str(),
+            "t-1",
+            TaskState::Running,
+            1,
+        ))
+        .expect("stored");
+
+    let output = cli.run(&["task", "acknowledge", "t-1", "--project", "example"]);
+
+    assert_eq!(output.status.code(), Some(1), "stderr: {}", stderr(&output));
+    assert!(stderr(&output).contains("cannot be"));
 }

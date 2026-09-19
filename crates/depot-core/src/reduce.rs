@@ -50,6 +50,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                         links: Vec::new(),
                         branch_head: None,
                         merge_refused: None,
+                        acknowledged_at: None,
                         retry: None,
                         created_at: fact.at,
                         updated_at: fact.at,
@@ -581,6 +582,17 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             }
         }
 
+        FactKind::TaskAcknowledged { task } => {
+            if let Some(task) = next.tasks.get_mut(task)
+                && matches!(task.state, TaskState::Failed | TaskState::Cancelled)
+                && task.acknowledged_at.is_none()
+            {
+                task.acknowledged_at = Some(fact.at);
+                task.updated_at = fact.at;
+                changed = true;
+            }
+        }
+
         FactKind::RunDurationExceeded { task } => {
             if let Some(task) = next.tasks.get_mut(task)
                 && task.state.in_flight()
@@ -875,6 +887,21 @@ pub fn dependency_satisfied(state: &ProjectState, dependency: &Dependency) -> bo
         .get(&dependency.task)
         .and_then(|task| task.validated_commit())
         == Some(&dependency.commit)
+}
+
+pub fn task_faded(state: &ProjectState, task: &Task) -> bool {
+    if !matches!(task.state, TaskState::Failed | TaskState::Cancelled) {
+        return false;
+    }
+    if task.acknowledged_at.is_some() {
+        return true;
+    }
+    state.tasks.values().any(|other| {
+        other.id != task.id
+            && !matches!(other.state, TaskState::Failed | TaskState::Cancelled)
+            && (other.base_dependency.as_ref() == Some(&task.id)
+                || other.dependencies.iter().any(|d| d.task == task.id))
+    })
 }
 
 fn refresh_pending_dependents(state: &mut ProjectState, prerequisite: &TaskId, commit: &CommitId) {

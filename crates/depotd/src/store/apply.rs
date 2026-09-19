@@ -48,7 +48,10 @@ impl Store {
                 None => clear_session(&transaction, &project.id)?,
             }
         }
-        std::fs::write(project_home.checklist_path(), render_checklist(&next))?;
+        std::fs::write(
+            project_home.checklist_path(),
+            render_checklist(&next, false),
+        )?;
         transaction.commit()?;
         Ok(Applied {
             outcome: EventOutcome::Recorded,

@@ -44,6 +44,9 @@ pub enum FactKind {
     TaskCancelled {
         task: TaskId,
     },
+    TaskAcknowledged {
+        task: TaskId,
+    },
     QuestionAsked {
         task: TaskId,
         text: String,

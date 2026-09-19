@@ -102,6 +102,7 @@ pub enum FactTag {
     TaskProposed,
     TaskApproved,
     TaskCancelled,
+    TaskAcknowledged,
     QuestionAsked,
     QuestionAnswered,
     WorktreeAcquireRequested,
@@ -137,6 +138,7 @@ pub fn fact_tag(kind: &FactKind) -> FactTag {
         FactKind::TaskProposed { .. } => FactTag::TaskProposed,
         FactKind::TaskApproved { .. } => FactTag::TaskApproved,
         FactKind::TaskCancelled { .. } => FactTag::TaskCancelled,
+        FactKind::TaskAcknowledged { .. } => FactTag::TaskAcknowledged,
         FactKind::QuestionAsked { .. } => FactTag::QuestionAsked,
         FactKind::QuestionAnswered { .. } => FactTag::QuestionAnswered,
         FactKind::WorktreeAcquireRequested { .. } => FactTag::WorktreeAcquireRequested,
@@ -173,6 +175,7 @@ pub fn fact_tag_name(tag: FactTag) -> &'static str {
         FactTag::TaskProposed => "task_proposed",
         FactTag::TaskApproved => "task_approved",
         FactTag::TaskCancelled => "task_cancelled",
+        FactTag::TaskAcknowledged => "task_acknowledged",
         FactTag::QuestionAsked => "question_asked",
         FactTag::QuestionAnswered => "question_answered",
         FactTag::WorktreeAcquireRequested => "worktree_acquire_requested",
@@ -209,6 +212,7 @@ pub fn fact_tag_from_name(name: &str) -> Result<FactTag> {
         "task_proposed" => FactTag::TaskProposed,
         "task_approved" => FactTag::TaskApproved,
         "task_cancelled" => FactTag::TaskCancelled,
+        "task_acknowledged" => FactTag::TaskAcknowledged,
         "question_asked" => FactTag::QuestionAsked,
         "question_answered" => FactTag::QuestionAnswered,
         "worktree_acquire_requested" => FactTag::WorktreeAcquireRequested,
@@ -249,6 +253,7 @@ pub fn fact_task(kind: &FactKind) -> Option<TaskId> {
         | FactKind::TaskProposed { task, .. }
         | FactKind::TaskApproved { task }
         | FactKind::TaskCancelled { task }
+        | FactKind::TaskAcknowledged { task }
         | FactKind::QuestionAsked { task, .. }
         | FactKind::QuestionAnswered { task, .. }
         | FactKind::WorktreeAcquireRequested { task }

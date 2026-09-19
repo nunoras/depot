@@ -16,5 +16,6 @@ pub use model::{
     WorktreeLease,
 };
 pub use reduce::{
-    auto_merge_due, dependency_satisfied, publication_blocked, reduce, worktree_baseline,
+    auto_merge_due, dependency_satisfied, publication_blocked, reduce, task_faded,
+    worktree_baseline,
 };

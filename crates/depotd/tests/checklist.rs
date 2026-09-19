@@ -13,8 +13,8 @@ use depotd::{CHECKLIST_FILE_NAME, Store, format_timestamp, render_checklist};
 fn the_checklist_render_is_byte_identical_for_identical_state() {
     let state = support::varied_state();
 
-    let first = render_checklist(&state);
-    let second = render_checklist(&state);
+    let first = render_checklist(&state, false);
+    let second = render_checklist(&state, false);
 
     assert_eq!(first.as_bytes(), second.as_bytes());
 }
@@ -26,8 +26,8 @@ fn the_checklist_render_is_byte_identical_for_equal_state_built_twice() {
     assert_eq!(first, second);
 
     assert_eq!(
-        render_checklist(&first).as_bytes(),
-        render_checklist(&second).as_bytes()
+        render_checklist(&first, false).as_bytes(),
+        render_checklist(&second, false).as_bytes()
     );
 }
 
@@ -53,19 +53,19 @@ fn the_checklist_render_is_byte_identical_whatever_order_records_arrived_in() {
     for task in &tasks {
         store.put_task(task).expect("stored");
     }
-    let first = render_checklist(&store.project_state(&added.project).expect("state"));
+    let first = render_checklist(&store.project_state(&added.project).expect("state"), false);
 
     for task in tasks.iter().rev() {
         store.put_task(task).expect("stored again");
     }
-    let second = render_checklist(&store.project_state(&added.project).expect("state"));
+    let second = render_checklist(&store.project_state(&added.project).expect("state"), false);
 
     assert_eq!(first.as_bytes(), second.as_bytes());
 }
 
 #[test]
 fn the_checklist_shows_every_task_state_distinctly() {
-    let rendered = render_checklist(&support::varied_state());
+    let rendered = render_checklist(&support::varied_state(), false);
 
     for label in [
         "Held - awaiting approval",
@@ -131,16 +131,19 @@ fn the_checklist_states_what_each_task_waits_on() {
     }];
     tasks.insert(failed.id.clone(), failed);
 
-    let rendered = render_checklist(&ProjectState {
-        project,
-        tasks,
-        coordinator: None,
-        profiles: BTreeMap::from([(Role::Build, ProfileId::new("glm-5.3"))]),
-        fallback_profiles: Vec::new(),
-        limits: Limits::default(),
-        always_relay_questions: false,
-        auto_merge: false,
-    });
+    let rendered = render_checklist(
+        &ProjectState {
+            project,
+            tasks,
+            coordinator: None,
+            profiles: BTreeMap::from([(Role::Build, ProfileId::new("glm-5.3"))]),
+            fallback_profiles: Vec::new(),
+            limits: Limits::default(),
+            always_relay_questions: false,
+            auto_merge: false,
+        },
+        false,
+    );
 
     for expected in [
         "waits on: approval",
@@ -167,21 +170,27 @@ fn the_checklist_render_changes_when_the_state_changes() {
     let id = TaskId::new("t-0-a");
     after.tasks.get_mut(&id).expect("task").state = TaskState::Landed;
 
-    assert_ne!(render_checklist(&before), render_checklist(&after));
+    assert_ne!(
+        render_checklist(&before, false),
+        render_checklist(&after, false)
+    );
 }
 
 #[test]
 fn an_empty_project_renders_a_checklist_with_no_tasks() {
-    let rendered = render_checklist(&ProjectState {
-        project: ProjectId::new("example/project"),
-        tasks: BTreeMap::new(),
-        coordinator: None,
-        profiles: BTreeMap::new(),
-        fallback_profiles: Vec::new(),
-        limits: Limits::default(),
-        always_relay_questions: false,
-        auto_merge: false,
-    });
+    let rendered = render_checklist(
+        &ProjectState {
+            project: ProjectId::new("example/project"),
+            tasks: BTreeMap::new(),
+            coordinator: None,
+            profiles: BTreeMap::new(),
+            fallback_profiles: Vec::new(),
+            limits: Limits::default(),
+            always_relay_questions: false,
+            auto_merge: false,
+        },
+        false,
+    );
 
     assert_eq!(
         rendered,

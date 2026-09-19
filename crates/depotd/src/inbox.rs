@@ -106,6 +106,7 @@ fn need_for(tag: FactTag, task: Option<&Task>) -> Need {
         | FactTag::TaskProposed
         | FactTag::TaskApproved
         | FactTag::TaskCancelled
+        | FactTag::TaskAcknowledged
         | FactTag::QuestionAnswered
         | FactTag::WorktreeAcquireRequested
         | FactTag::WorkerTurnLaunchRequested
@@ -145,6 +146,7 @@ fn headline(tag: FactTag, event: &RecordedEvent, task: Option<&Task>) -> Result<
         FactTag::TaskProposed => "a task was filed, holding for approval".to_string(),
         FactTag::TaskApproved => "approved".to_string(),
         FactTag::TaskCancelled => "stopped".to_string(),
+        FactTag::TaskAcknowledged => "acknowledged; it fades from the default status".to_string(),
         FactTag::QuestionAsked => match unanswered(task) {
             Some(question) => format!("asked \"{}\"", one_line(&question.text)),
             None => "asked a question that is already answered".to_string(),

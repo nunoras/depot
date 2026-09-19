@@ -203,6 +203,24 @@ pub fn answer_question(
     task(&store, &project, &id)
 }
 
+pub fn acknowledge_task(home: &DepotHome, selection: Option<&str>, id: &str) -> Result<Task> {
+    let store = Store::open(home)?;
+    let project = select_project(&store, selection)?;
+    let id = TaskId::new(id);
+    let current = task(&store, &project, &id)?;
+    match (current.state, current.acknowledged_at) {
+        (TaskState::Failed | TaskState::Cancelled, Some(_)) => return Ok(current),
+        (TaskState::Failed | TaskState::Cancelled, None) => {}
+        _ => return Err(transition_refused(&current, "acknowledged")),
+    }
+    let fact = Fact {
+        at: now(),
+        kind: FactKind::TaskAcknowledged { task: id.clone() },
+    };
+    apply(&store, &project, &["task_acknowledged", id.as_str()], &fact)?;
+    task(&store, &project, &id)
+}
+
 pub fn stop_task(home: &DepotHome, selection: Option<&str>, id: &str) -> Result<Task> {
     let store = Store::open(home)?;
     let project = select_project(&store, selection)?;

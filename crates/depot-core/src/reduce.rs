@@ -25,6 +25,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             dispatch_profile,
             dependencies,
             base_dependency,
+            hold_pr,
         } => {
             if !next.tasks.contains_key(task)
                 && base_dependency_is_valid(dependencies, base_dependency)
@@ -51,12 +52,45 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                         branch_head: None,
                         merge_refused: None,
                         acknowledged_at: None,
+                        hold_pr: *hold_pr,
                         retry: None,
                         created_at: fact.at,
                         updated_at: fact.at,
                     },
                 );
                 changed = true;
+            }
+        }
+
+        FactKind::TaskReleased { task } => {
+            let accepting = next
+                .tasks
+                .get(task)
+                .is_some_and(|task| task.state == TaskState::Validated && task.hold_pr);
+            if accepting {
+                let commit = next
+                    .tasks
+                    .get(task)
+                    .and_then(|task| task.validated_commit().cloned());
+                let id = task.clone();
+                let blocked = publication_blocked(&next, task);
+                if let Some(task) = next.tasks.get_mut(task) {
+                    task.hold_pr = false;
+                    task.updated_at = fact.at;
+                    changed = true;
+                    match (commit, blocked) {
+                        (Some(commit), false) => {
+                            actions.push(Action::Push {
+                                task: id.clone(),
+                                commit: commit.clone(),
+                            });
+                            actions.push(Action::OpenPullRequest { task: id, commit });
+                        }
+                        _ => {
+                            actions.push(Action::HoldForUser { task: id });
+                        }
+                    }
+                }
             }
         }
 
@@ -324,6 +358,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                 changed = true;
                 if *exit_code == 0 {
                     refresh_pending_dependents(&mut next, task, commit);
+                    let held = next.tasks.get(task).is_some_and(|task| task.hold_pr);
                     if publication_blocked(&next, task) {
                         actions.push(Action::HoldForUser { task: task.clone() });
                     } else {
@@ -332,10 +367,14 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                             commit: commit.clone(),
                         });
                         if !already_open {
-                            actions.push(Action::OpenPullRequest {
-                                task: task.clone(),
-                                commit: commit.clone(),
-                            });
+                            if held {
+                                actions.push(Action::HoldForUser { task: task.clone() });
+                            } else {
+                                actions.push(Action::OpenPullRequest {
+                                    task: task.clone(),
+                                    commit: commit.clone(),
+                                });
+                            }
                         }
                     }
                 } else {

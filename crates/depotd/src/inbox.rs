@@ -108,6 +108,7 @@ fn need_for(tag: FactTag, task: Option<&Task>) -> Need {
         },
         FactTag::TaskDispatchJudged
         | FactTag::TaskProposed
+        | FactTag::TaskReleased
         | FactTag::TaskApproved
         | FactTag::TaskCancelled
         | FactTag::TaskAcknowledged
@@ -153,6 +154,7 @@ fn headline(tag: FactTag, event: &RecordedEvent, task: Option<&Task>) -> Result<
         FactTag::TaskApproved => "approved".to_string(),
         FactTag::TaskCancelled => "stopped".to_string(),
         FactTag::TaskAcknowledged => "acknowledged; it fades from the default status".to_string(),
+        FactTag::TaskReleased => "the pull request hold was released".to_string(),
         FactTag::QuestionAsked => match unanswered(task) {
             Some(question) => format!("asked \"{}\"", one_line(&question.text)),
             None => "asked a question that is already answered".to_string(),

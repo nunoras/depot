@@ -227,6 +227,7 @@ pub struct Task {
     pub branch_head: Option<CommitId>,
     pub merge_refused: Option<String>,
     pub acknowledged_at: Option<Timestamp>,
+    pub hold_pr: bool,
     pub retry: Option<Retry>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,

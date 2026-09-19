@@ -85,6 +85,7 @@ fn attempt(profile: &str) -> Attempt {
         started_at: at(0),
         finished_at: None,
         outcome: AttemptOutcome::InFlight,
+        rebase: false,
     }
 }
 
@@ -1472,6 +1473,7 @@ fn worktree_acquired_rework_respects_state_and_cap() {
                 started_at: at(0),
                 finished_at: Some(at(0)),
                 session: None,
+                rebase: false,
             },
         )
     };
@@ -3526,4 +3528,152 @@ fn rule_17_a_held_task_parks_its_branch_until_release() {
         )
         .when("t1", TaskState::Validating, vec![]),
     ]);
+}
+
+#[test]
+fn rule_17_a_conflicting_pull_request_is_rebased_serially_when_auto_merge_is_on() {
+    const FIX: &str = "fix-profile";
+    let fix_profiles = |mut state: ProjectState| {
+        state.profiles.insert(Role::Fix, profile(FIX));
+        state
+    };
+    let auto_merge = |state: ProjectState| {
+        let mut state = fix_profiles(state);
+        state.auto_merge = true;
+        state
+    };
+    let auto_merge_without_fix = |mut state: ProjectState| {
+        state.profiles.clear();
+        state.auto_merge = true;
+        state
+    };
+    let conflicting = |id: &str| FactKind::RebaseScheduled {
+        task: task_id(id),
+        profile: profile(FIX),
+        commit: commit("c1"),
+        base: commit("b1"),
+    };
+    let open_with_lease = || {
+        with_attempt(
+            pr_open("t1", "c1", 42),
+            Attempt {
+                outcome: AttemptOutcome::Submitted,
+                worktree: Some(lease("w1")),
+                ..attempt(BUILD)
+            },
+        )
+    };
+
+    run(vec![
+        case(
+            "a conflict schedules a fix attempt that keeps the lease",
+            auto_merge(state(vec![open_with_lease()])),
+            vec![fact(1_000, conflicting("t1"))],
+        )
+        .when(
+            "t1",
+            TaskState::Running,
+            vec![launch("t1", FIX), Action::RenderChecklist],
+        )
+        .checking(|state| {
+            let task = subject(state, "t1");
+            task.attempts.len() == 2
+                && task.attempts.last().is_some_and(|attempt| {
+                    attempt.rebase && attempt.outcome == AttemptOutcome::InFlight
+                })
+                && task
+                    .attempts
+                    .last()
+                    .and_then(|attempt| attempt.worktree.as_ref())
+                    == Some(&lease("w1"))
+        }),
+        case(
+            "a conflict is ignored while auto merge is off",
+            fix_profiles(state(vec![open_with_lease()])),
+            vec![fact(1_000, conflicting("t1"))],
+        )
+        .when("t1", TaskState::PrOpen, vec![]),
+        case(
+            "a conflict without a fix profile schedules nothing",
+            auto_merge_without_fix(state(vec![open_with_lease()])),
+            vec![fact(1_000, conflicting("t1"))],
+        )
+        .when("t1", TaskState::PrOpen, vec![]),
+    ]);
+
+    let mut sibling = pr_open("t2", "c9", 43);
+    sibling.attempts.push(Attempt {
+        session: None,
+        profile: profile(FIX),
+        worktree: Some(lease("w2")),
+        started_at: at(0),
+        finished_at: None,
+        outcome: AttemptOutcome::InFlight,
+        rebase: true,
+    });
+    sibling.state = TaskState::Running;
+
+    run(vec![
+        case(
+            "only one rebase is in flight per project",
+            auto_merge(state(vec![sibling, open_with_lease()])),
+            vec![fact(1_000, conflicting("t1"))],
+        )
+        .when("t1", TaskState::PrOpen, vec![]),
+    ]);
+
+    let mut spent_out = state(vec![open_with_lease()]);
+    spent_out.limits.max_attempts = 1;
+    run(vec![
+        case(
+            "a rebase past the attempt limit is refused",
+            auto_merge(spent_out),
+            vec![fact(1_000, conflicting("t1"))],
+        )
+        .when("t1", TaskState::PrOpen, vec![]),
+    ]);
+}
+
+#[test]
+fn rebase_due_resolves_the_fix_profile_only_for_conflicting_open_pull_requests() {
+    const FIX: &str = "fix-profile";
+    let mut base_state = base();
+    base_state.profiles.insert(Role::Fix, profile(FIX));
+    base_state.auto_merge = true;
+    let task = open_with_submitted_attempt();
+    assert_eq!(
+        rebase_due(&base_state, &task, true),
+        Some(profile(FIX)),
+        "a conflicting pull request is due for a rebase"
+    );
+    assert_eq!(
+        rebase_due(&base_state, &task, false),
+        None,
+        "a mergeable pull request is not due for a rebase"
+    );
+    let mut no_fix = base_state.clone();
+    no_fix.profiles.clear();
+    assert_eq!(
+        rebase_due(&no_fix, &task, true),
+        None,
+        "no fix profile means no rebase"
+    );
+    let mut manual = base_state;
+    manual.auto_merge = false;
+    assert_eq!(
+        rebase_due(&manual, &task, true),
+        None,
+        "auto merge off means no rebase"
+    );
+}
+
+fn open_with_submitted_attempt() -> Task {
+    with_attempt(
+        pr_open("t1", "c1", 42),
+        Attempt {
+            outcome: AttemptOutcome::Submitted,
+            worktree: Some(lease("w1")),
+            ..attempt(BUILD)
+        },
+    )
 }

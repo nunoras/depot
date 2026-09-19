@@ -50,7 +50,9 @@ pub struct PullRequest {
     pub state: PrState,
     pub checks: Checks,
     pub head: CommitId,
+    pub head_ref: String,
     pub base: CommitId,
+    pub mergeable: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,6 +84,7 @@ pub trait Forge {
         number: u64,
         head: &CommitId,
     ) -> Result<(), ForgeError>;
+    fn delete_branch(&self, repo: &RepoSlug, branch: &str) -> Result<(), ForgeError>;
 }
 
 #[derive(Debug, Clone)]
@@ -133,6 +136,7 @@ impl GitHub {
             ("GET", None) => self.with_headers(self.agent.get(url)).call(),
             ("POST", Some(body)) => self.with_headers(self.agent.post(url)).send(body),
             ("PUT", Some(body)) => self.with_headers(self.agent.put(url)).send(body),
+            ("DELETE", None) => self.with_headers(self.agent.delete(url)).call(),
             _ => return Err(invalid_method()),
         }
         .map_err(|error| ForgeError::Request {
@@ -363,6 +367,13 @@ impl Forge for GitHub {
             }
         };
 
+        let head_ref = value
+            .get("head")
+            .and_then(|head| head.get("ref"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let mergeable = value.get("mergeable").and_then(Value::as_bool);
         let checks = self.checks(repo, &CommitId::new(head))?;
         Ok(PullRequest {
             number,
@@ -370,7 +381,9 @@ impl Forge for GitHub {
             state,
             checks,
             head: CommitId::new(head),
+            head_ref,
             base: CommitId::new(base),
+            mergeable,
         })
     }
 
@@ -457,12 +470,27 @@ impl Forge for GitHub {
         let url = self.url(&format!("/repos/{}/pulls/{number}/merge", repo.path()));
         let body = json!({
             "sha": head.as_str(),
-            "merge_method": "merge",
+            "merge_method": "squash",
         })
         .to_string();
         let (status, response) = self.call("PUT", &url, Some(body))?;
         match status {
             200 => Ok(()),
+            401 | 403 => Err(ForgeError::Unauthorized { url }),
+            404 => Err(ForgeError::NotFound { url }),
+            status => Err(ForgeError::Refused {
+                url,
+                status,
+                body: response.trim().to_owned(),
+            }),
+        }
+    }
+
+    fn delete_branch(&self, repo: &RepoSlug, branch: &str) -> Result<(), ForgeError> {
+        let url = self.url(&format!("/repos/{}/git/refs/heads/{branch}", repo.path()));
+        let (status, response) = self.call("DELETE", &url, None)?;
+        match status {
+            204 => Ok(()),
             401 | 403 => Err(ForgeError::Unauthorized { url }),
             404 => Err(ForgeError::NotFound { url }),
             status => Err(ForgeError::Refused {

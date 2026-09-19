@@ -209,7 +209,7 @@ impl Store {
 
     fn attempts(&self, project: &ProjectId, task: &str) -> Result<Vec<Attempt>> {
         let mut statement = self.connection().prepare(
-            "SELECT session, profile, worktree, started_at, finished_at, outcome
+            "SELECT session, profile, worktree, started_at, finished_at, outcome, rebase
              FROM task_attempts WHERE project_id = ?1 AND task_id = ?2 ORDER BY position",
         )?;
         let rows = statement.query_map(params![project.as_str(), task], |row| {
@@ -220,6 +220,7 @@ impl Store {
                 started_at: row.get("started_at")?,
                 finished_at: row.get("finished_at")?,
                 outcome: row.get("outcome")?,
+                rebase: row.get::<_, i64>("rebase")? != 0,
             })
         })?;
         let mut attempts = Vec::new();
@@ -232,6 +233,7 @@ impl Store {
                 started_at: millis(raw.started_at)?,
                 finished_at: raw.finished_at.map(millis).transpose()?,
                 outcome: outcome_from_name(&raw.outcome)?,
+                rebase: raw.rebase,
             });
         }
         Ok(attempts)
@@ -383,6 +385,7 @@ struct RawAttempt {
     started_at: i64,
     finished_at: Option<i64>,
     outcome: String,
+    rebase: bool,
 }
 
 struct RawQuestion {
@@ -467,8 +470,8 @@ pub(super) fn write_task(transaction: &Transaction<'_>, task: &Task) -> Result<(
         transaction.execute(
             "INSERT INTO task_attempts (
                     project_id, task_id, position, session, profile, worktree, started_at,
-                    finished_at, outcome
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    finished_at, outcome, rebase
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 task.project.as_str(),
                 task.id.as_str(),
@@ -479,6 +482,7 @@ pub(super) fn write_task(transaction: &Transaction<'_>, task: &Task) -> Result<(
                 attempt.started_at.millis() as i64,
                 attempt.finished_at.map(|at| at.millis() as i64),
                 outcome_name(attempt.outcome),
+                attempt.rebase as i64,
             ],
         )?;
     }

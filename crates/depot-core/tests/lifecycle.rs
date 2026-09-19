@@ -2381,6 +2381,33 @@ fn auto_merge_waits_for_the_project_to_opt_in_and_for_the_validated_head() {
         "a head depot never validated is never merged automatically"
     );
 
+    let mut unconfigured = state.clone();
+    let task = unconfigured
+        .tasks
+        .get_mut(&task_id("t1"))
+        .expect("subject task");
+    task.links = vec![Link::PullRequest {
+        number: 42,
+        url: "https://github.com/nunoras/depot/pull/42".to_owned(),
+        checks: Checks::Unknown,
+    }];
+    assert!(
+        auto_merge_due(&unconfigured, subject(&unconfigured, "t1"), &head),
+        "a repository with no checks configured is not a failing check"
+    );
+
+    let mut pending = state.clone();
+    let task = pending.tasks.get_mut(&task_id("t1")).expect("subject task");
+    task.links = vec![Link::PullRequest {
+        number: 42,
+        url: "https://github.com/nunoras/depot/pull/42".to_owned(),
+        checks: Checks::Pending,
+    }];
+    assert!(
+        !auto_merge_due(&pending, subject(&pending, "t1"), &head),
+        "a configured check that is still pending is waited on"
+    );
+
     let mut failing = state.clone();
     let task = failing.tasks.get_mut(&task_id("t1")).expect("subject task");
     task.links = vec![Link::PullRequest {

@@ -75,6 +75,7 @@ pub fn approve_tasks(
 ) -> Result<Vec<Task>> {
     let store = Store::open(home)?;
     let project = select_project(&store, selection)?;
+    ensure_profiles_resolve(home, &store, &project)?;
     let mut ready = Vec::new();
     for id in ids {
         let id = TaskId::new(id);
@@ -310,6 +311,23 @@ fn task(store: &Store, project: &Project, id: &TaskId) -> Result<Task> {
     store
         .task(&project.id, id)?
         .ok_or_else(|| Error::NotFound(format!("no task `{id}` in project `{}`", project.slug)))
+}
+
+pub fn ensure_profiles_resolve(home: &DepotHome, store: &Store, project: &Project) -> Result<()> {
+    let settings = home.load_settings()?;
+    let missing = settings.missing_profiles(&store.project_config(project)?)?;
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let listed = missing
+        .iter()
+        .map(|(role, profile)| format!("role `{}` maps to profile `{profile}`", role_name(*role)))
+        .collect::<Vec<_>>()
+        .join("; ");
+    Err(Error::Config(format!(
+        "{listed}, and none of those profiles is defined in the machine-local settings at {}: define them under [profiles] there or map the roles to profiles that exist",
+        home.config_path().display()
+    )))
 }
 
 fn ensure_role_is_mapped(store: &Store, project: &Project, role: Role) -> Result<()> {

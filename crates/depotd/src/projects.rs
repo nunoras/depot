@@ -4,6 +4,7 @@ use depot_core::ProjectId;
 
 use crate::checklist::render_checklist;
 use crate::clock::now;
+use crate::commands::ensure_profiles_resolve;
 use crate::config::ProjectConfig;
 use crate::error::{Error, Result};
 use crate::home::{DepotHome, ProjectHome, slug_for};
@@ -35,6 +36,7 @@ pub fn add_project(home: &DepotHome, target: &str) -> Result<Added> {
     };
 
     let state = store.project_state(&project)?;
+    ensure_profiles_resolve(home, &store, &project)?;
     let checklist = render_checklist(&state, false);
     let project_home = home.project_home(&project.slug);
     let created_home = !project_home.root().exists();

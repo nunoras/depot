@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use depot_core::{Limits, ProfileId};
+use depot_core::{Limits, ProfileId, Role};
 use serde::{Deserialize, Serialize};
 
 use crate::adapters::profiles::{ConfiguredProfiles, ProfileError, ProfileSpec, RoleEntry};
@@ -95,6 +95,20 @@ impl Settings {
 
     pub fn profile_fallbacks(&self) -> Vec<ProfileId> {
         self.fallback_profiles.iter().map(ProfileId::new).collect()
+    }
+
+    pub fn missing_profiles(&self, config: &ProjectConfig) -> Result<Vec<(Role, ProfileId)>> {
+        let fallbacks = self.profile_fallbacks();
+        let mut missing = Vec::new();
+        for (role, profile) in config.profiles()? {
+            let resolvable = std::iter::once(&profile)
+                .chain(fallbacks.iter())
+                .any(|name| self.profiles.contains_key(name.as_str()));
+            if !resolvable {
+                missing.push((role, profile));
+            }
+        }
+        Ok(missing)
     }
 
     pub fn configured_profiles(&self, config: &ProjectConfig) -> Result<ConfiguredProfiles> {

@@ -1,5 +1,6 @@
 use depot_core::{
-    Checks, ProjectState, Question, Task, TaskState, Timestamp, dependency_satisfied, task_faded,
+    AttemptOutcome, Checks, ProjectState, Question, Task, TaskState, Timestamp,
+    dependency_satisfied, task_faded,
 };
 
 use crate::vocabulary::{checks_name, role_name};
@@ -18,6 +19,14 @@ const SECTIONS: [(TaskState, &str); 10] = [
 ];
 
 pub fn render_checklist(state: &ProjectState, history: bool) -> String {
+    render_project(state, history, None)
+}
+
+pub fn render_checklist_observed(state: &ProjectState, history: bool, now: Timestamp) -> String {
+    render_project(state, history, Some(now))
+}
+
+fn render_project(state: &ProjectState, history: bool, observed_at: Option<Timestamp>) -> String {
     let mut out = String::new();
     out.push_str("# Checklist\n\n");
     out.push_str(&format!(
@@ -57,7 +66,7 @@ pub fn render_checklist(state: &ProjectState, history: bool) -> String {
         out.push_str(&format!("\n## {label} ({})\n", tasks.len()));
         for task in tasks {
             out.push('\n');
-            render_task(&mut out, state, task);
+            render_task(&mut out, state, task, observed_at);
         }
     }
 
@@ -71,7 +80,12 @@ pub fn render_checklist(state: &ProjectState, history: bool) -> String {
     out
 }
 
-fn render_task(out: &mut String, state: &ProjectState, task: &Task) {
+fn render_task(
+    out: &mut String,
+    state: &ProjectState,
+    task: &Task,
+    observed_at: Option<Timestamp>,
+) {
     out.push_str(&format!(
         "- `{}` **{}** ({})\n",
         task.id,
@@ -79,6 +93,12 @@ fn render_task(out: &mut String, state: &ProjectState, task: &Task) {
         role_name(task.role)
     ));
     out.push_str(&format!("  - waits on: {}\n", waiting_on(state, task)));
+
+    if let (TaskState::Running, Some(now)) = (task.state, observed_at)
+        && let Some(line) = attempt_line(task, now)
+    {
+        out.push_str(&line);
+    }
 
     if !task.dependencies.is_empty() {
         let dependencies: Vec<String> = task
@@ -138,6 +158,39 @@ fn render_task(out: &mut String, state: &ProjectState, task: &Task) {
     if let Some(head) = &task.branch_head {
         out.push_str(&format!("  - branch head: `{head}`\n"));
     }
+}
+
+fn attempt_line(task: &Task, now: Timestamp) -> Option<String> {
+    let attempt = task.attempts.last()?;
+    if !attempt.outcome.is_open() {
+        return None;
+    }
+    let age = format_age(now.millis().saturating_sub(attempt.started_at.millis()));
+    let liveness = match (&attempt.session, attempt.outcome) {
+        (Some(session), AttemptOutcome::InFlight) => format!("session `{session}` alive"),
+        (Some(session), AttemptOutcome::Unknown) => {
+            format!("session `{session}` not yet seen alive")
+        }
+        (None, _) => {
+            return Some(format!(
+                "  - attempt: stalled - in_flight {age}, no worker session\n"
+            ));
+        }
+        (Some(_), _) => return None,
+    };
+    Some(format!("  - attempt: in_flight {age}, {liveness}\n"))
+}
+
+fn format_age(millis: u64) -> String {
+    let seconds = millis / 1000;
+    if seconds < 60 {
+        return format!("{seconds}s");
+    }
+    let minutes = seconds / 60;
+    if minutes < 60 {
+        return format!("{minutes}m");
+    }
+    format!("{}h{:02}m", minutes / 60, minutes % 60)
 }
 
 fn waiting_on(state: &ProjectState, task: &Task) -> String {

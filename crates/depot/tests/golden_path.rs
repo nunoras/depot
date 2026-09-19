@@ -424,7 +424,7 @@ fn a_settled_question_stays_open_and_resumes_the_worker_when_answered() {
     );
     let open = golden.status();
     assert!(!open.contains("Blocked"), "{open}");
-    assert_eq!(open, golden.checklist());
+    golden.status_matches_checklist(&open);
     assert!(golden.boxr.calls_to("resume").is_empty());
 
     assert_eq!(
@@ -1078,7 +1078,11 @@ fn a_configuration_error_before_a_launch_leaves_the_task_launchable() {
     let running = golden.status();
     assert!(running.contains("Running (1)"), "{running}");
     assert!(!running.contains("Blocked"), "{running}");
-    assert_eq!(running, golden.checklist());
+    assert!(
+        running.contains("attempt: in_flight"),
+        "a running line carries the attempt observation, got\n{running}"
+    );
+    golden.status_matches_checklist(&running);
 
     let inbox = golden.depot_ok(&["inbox", "--project", SLUG]);
     assert!(
@@ -1174,7 +1178,11 @@ fn a_restart_with_a_task_in_flight_marks_it_unknown_and_launches_no_replacement(
     let running = golden.status();
     assert!(running.contains("Running (1)"), "{running}");
     assert!(!running.contains("Blocked"), "{running}");
-    assert_eq!(running, golden.checklist());
+    assert!(
+        running.contains("attempt: in_flight"),
+        "a running line carries the attempt observation, got\n{running}"
+    );
+    golden.status_matches_checklist(&running);
 }
 
 #[test]

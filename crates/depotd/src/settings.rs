@@ -21,6 +21,25 @@ pub struct Settings {
     pub coordinator_context_tokens: u64,
     pub credentials: BTreeMap<String, String>,
     pub profiles: BTreeMap<String, ProfileSettings>,
+    pub on_event: Option<OnEventSettings>,
+}
+
+pub const DEFAULT_ON_EVENTS: [&str; 3] = ["question", "failed", "merge_refused"];
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OnEventSettings {
+    pub command: String,
+    pub events: Option<Vec<String>>,
+}
+
+impl OnEventSettings {
+    pub fn includes(&self, event: &str) -> bool {
+        match &self.events {
+            Some(events) => events.iter().any(|name| name == event),
+            None => DEFAULT_ON_EVENTS.contains(&event),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,6 +63,7 @@ impl Default for Settings {
             coordinator_context_tokens: 120_000,
             credentials: BTreeMap::new(),
             profiles: BTreeMap::new(),
+            on_event: None,
         }
     }
 }

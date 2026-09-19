@@ -205,6 +205,10 @@ pub fn encode_payload(kind: &FactKind) -> String {
             ("task", quoted(task.as_str())),
             ("profile", quoted(profile.as_str())),
         ]),
+        FactKind::OnEventNotified { task, event } => object(vec![
+            ("task", quoted(task.as_str())),
+            ("event", quoted(event)),
+        ]),
         FactKind::CoordinatorSessionStarted { session } => {
             object(vec![("session", quoted(session.as_str()))])
         }

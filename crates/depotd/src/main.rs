@@ -5,8 +5,8 @@ use depotd::adapters::process::Program;
 use depotd::adapters::sessions::{Boxr, Sessions};
 use depotd::adapters::worktrees::Treehouse;
 use depotd::{
-    Daemon, DepotHome, ForgeDelivery, InstanceLock, ShellValidation, StderrNotifier, Store,
-    select_project,
+    Daemon, DepotHome, EventHook, ForgeDelivery, InstanceLock, NoEventHook, ShellEventHook,
+    ShellValidation, Store, select_project,
 };
 
 const USAGE: &str = "depotd --project <project>\n";
@@ -34,6 +34,11 @@ fn run() -> depotd::Result<()> {
     sessions
         .capabilities()
         .map_err(|error| depotd::Error::Project(error.to_string()))?;
+    let settings = home.load_settings()?;
+    let hook: Box<dyn EventHook> = match &settings.on_event {
+        Some(on_event) => Box::new(ShellEventHook::new(on_event.command.clone())),
+        None => Box::new(NoEventHook),
+    };
     let daemon = Daemon::new(
         &store,
         project,
@@ -44,7 +49,7 @@ fn run() -> depotd::Result<()> {
             GitHub::new(DEFAULT_API_BASE, credentials.token),
             config.pull_request.base,
         ),
-        StderrNotifier,
+        hook,
     );
     daemon.recover()?;
     loop {

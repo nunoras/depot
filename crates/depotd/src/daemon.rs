@@ -211,12 +211,9 @@ impl<F: Forge> Delivery for ForgeDelivery<F> {
     }
 }
 
-pub struct StderrNotifier;
-
-impl Notifier for StderrNotifier {
-    fn notify(&self, task: &Task) -> Result<()> {
-        eprintln!("depot: task {} is waiting on a question", task.id);
-        Ok(())
+impl EventHook for Box<dyn EventHook> {
+    fn notify(&self, notice: &EventNotice) -> Result<()> {
+        self.as_ref().notify(notice)
     }
 }
 
@@ -286,18 +283,99 @@ fn repo_slug(remote: &str) -> Result<RepoSlug> {
     }
 }
 
-pub trait Notifier {
-    fn notify(&self, task: &Task) -> Result<()>;
+pub struct EventNotice {
+    pub project: String,
+    pub task: TaskId,
+    pub title: String,
+    pub event: &'static str,
+    pub question: Option<String>,
+    pub pull_request: Option<String>,
 }
 
-pub struct Daemon<'a, S, W, V, D, N> {
+impl EventNotice {
+    pub fn payload(&self) -> String {
+        serde_json::json!({
+            "project": self.project,
+            "task": self.task.as_str(),
+            "title": self.title,
+            "event": self.event,
+            "question": self.question,
+            "recommended_default": Option::<String>::None,
+            "pull_request": self.pull_request,
+        })
+        .to_string()
+    }
+}
+
+pub trait EventHook {
+    fn notify(&self, notice: &EventNotice) -> Result<()>;
+}
+
+pub struct ShellEventHook {
+    command: String,
+}
+
+impl ShellEventHook {
+    pub fn new(command: impl Into<String>) -> Self {
+        Self {
+            command: command.into(),
+        }
+    }
+}
+
+impl EventHook for ShellEventHook {
+    fn notify(&self, notice: &EventNotice) -> Result<()> {
+        #[cfg(windows)]
+        let mut process = {
+            let mut process = Command::new("cmd");
+            process.args(["/C", &self.command]);
+            process
+        };
+        #[cfg(not(windows))]
+        let mut process = {
+            let mut process = Command::new("sh");
+            process.args(["-c", &self.command]);
+            process
+        };
+        let mut child = process
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .map_err(Error::Io)?;
+        use std::io::Write;
+        child
+            .stdin
+            .take()
+            .ok_or_else(|| Error::Project("the on_event command closed its stdin".to_string()))?
+            .write_all(notice.payload().as_bytes())
+            .map_err(Error::Io)?;
+        let status = child.wait().map_err(Error::Io)?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(Error::Project(format!(
+                "the on_event command exited {}",
+                status.code().unwrap_or(-1)
+            )))
+        }
+    }
+}
+
+pub struct NoEventHook;
+
+impl EventHook for NoEventHook {
+    fn notify(&self, _notice: &EventNotice) -> Result<()> {
+        Ok(())
+    }
+}
+
+pub struct Daemon<'a, S, W, V, D, H> {
     store: &'a Store,
     project: Project,
     sessions: S,
     worktrees: W,
     validation: V,
     delivery: D,
-    notifier: N,
+    hook: H,
 }
 
 pub struct ValidationResult {
@@ -306,13 +384,13 @@ pub struct ValidationResult {
     pub output_tail: String,
 }
 
-impl<'a, S, W, V, D, N> Daemon<'a, S, W, V, D, N>
+impl<'a, S, W, V, D, H> Daemon<'a, S, W, V, D, H>
 where
     S: Sessions,
     W: Worktrees,
     V: ValidationRunner,
     D: Delivery,
-    N: Notifier,
+    H: EventHook,
 {
     pub fn new(
         store: &'a Store,
@@ -321,7 +399,7 @@ where
         worktrees: W,
         validation: V,
         delivery: D,
-        notifier: N,
+        hook: H,
     ) -> Self {
         Self {
             store,
@@ -330,7 +408,7 @@ where
             worktrees,
             validation,
             delivery,
-            notifier,
+            hook,
         }
     }
 
@@ -349,7 +427,8 @@ where
         )?;
         self.reconcile_start()?;
         self.reconcile_resume()?;
-        self.reconcile_sessions()
+        self.reconcile_sessions()?;
+        self.reconcile_notify()
     }
 
     pub fn tick(&self) -> Result<()> {
@@ -366,7 +445,8 @@ where
         self.reconcile_sessions()?;
         self.reconcile_validation()?;
         self.reconcile_delivery()?;
-        self.reconcile_forge()
+        self.reconcile_forge()?;
+        self.reconcile_notify()
     }
 
     pub fn worker_submitted(&self, task: TaskId, commit: CommitId) -> Result<()> {
@@ -417,7 +497,7 @@ where
             Action::Push { task, commit } => self.push(task, commit),
             Action::OpenPullRequest { task, commit } => self.open_pull_request(task, commit),
             Action::ReleaseWorktree { task, lease } => self.release(task, lease),
-            Action::Notify { task } => self.notify(task),
+            Action::Notify { .. } => Ok(()),
             Action::RenderChecklist | Action::Queue { .. } | Action::HoldForUser { .. } => Ok(()),
             Action::RotateCoordinator { .. } => Ok(()),
         }
@@ -699,8 +779,58 @@ where
             .map_err(|error| Error::Project(error.to_string()))
     }
 
-    fn notify(&self, task: TaskId) -> Result<()> {
-        self.notifier.notify(&self.task(&task)?)
+    fn reconcile_notify(&self) -> Result<()> {
+        let settings = self.store.home().load_settings()?;
+        let Some(on_event) = &settings.on_event else {
+            return Ok(());
+        };
+        let state = self.store.project_state(&self.project)?;
+        for task in state.tasks.values() {
+            let Some(event) = depot_core::blocking_event(task) else {
+                continue;
+            };
+            let name = event.name();
+            if !on_event.includes(name) {
+                continue;
+            }
+            let key = event_key(&[
+                "on_event",
+                task.id.as_str(),
+                name,
+                &task.updated_at.millis().to_string(),
+            ]);
+            if self.store.event(&self.project.id, &key)?.is_some() {
+                continue;
+            }
+            let notice = EventNotice {
+                project: self.project.slug.clone(),
+                task: task.id.clone(),
+                title: task.title.clone(),
+                event: name,
+                question: task
+                    .questions
+                    .iter()
+                    .rev()
+                    .find(|question| question.answer.is_none())
+                    .map(|question| question.text.clone()),
+                pull_request: task.pull_request().map(|(_, url, _)| url.to_owned()),
+            };
+            if let Err(error) = self.hook.notify(&notice) {
+                log("on_event_failed", &error.to_string());
+                continue;
+            }
+            self.record(
+                &key,
+                Fact {
+                    at: now(),
+                    kind: FactKind::OnEventNotified {
+                        task: task.id.clone(),
+                        event: name.to_owned(),
+                    },
+                },
+            )?;
+        }
+        Ok(())
     }
 
     fn reconcile_start(&self) -> Result<()> {
@@ -1239,7 +1369,9 @@ fn log(kind: &str, value: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{ShellValidation, ValidationRunner, repo_slug};
+    use super::{
+        EventHook, EventNotice, ShellEventHook, ShellValidation, ValidationRunner, repo_slug,
+    };
     use depot_core::CommitId;
     use tempfile::TempDir;
 
@@ -1302,6 +1434,54 @@ mod tests {
                 .validate(&task, path, &wrong, "true")
                 .is_err()
         );
+    }
+
+    #[test]
+    fn the_shell_hook_feeds_the_notice_payload_on_stdin() {
+        let temp = TempDir::new().expect("temporary directory");
+        let log = temp.path().join("hook.log");
+        let command = if cfg!(windows) {
+            format!("more > {}", log.display())
+        } else {
+            format!("cat > {}", log.display())
+        };
+        let notice = EventNotice {
+            project: "depot".to_owned(),
+            task: depot_core::TaskId::new("t-7"),
+            title: "on_event hook".to_owned(),
+            event: "question",
+            question: Some("which store?".to_owned()),
+            pull_request: None,
+        };
+        ShellEventHook::new(command)
+            .notify(&notice)
+            .expect("the hook runs");
+        let payload: serde_json::Value =
+            serde_json::from_str(std::fs::read_to_string(&log).expect("hook output").trim())
+                .expect("the payload is json");
+        assert_eq!(payload["project"], "depot");
+        assert_eq!(payload["task"], "t-7");
+        assert_eq!(payload["event"], "question");
+        assert_eq!(payload["question"], "which store?");
+        assert!(payload["recommended_default"].is_null());
+        assert!(payload["pull_request"].is_null());
+    }
+
+    #[test]
+    fn a_failing_hook_command_is_an_error() {
+        let notice = EventNotice {
+            project: "depot".to_owned(),
+            task: depot_core::TaskId::new("t-7"),
+            title: "on_event hook".to_owned(),
+            event: "failed",
+            question: None,
+            pull_request: None,
+        };
+        let exit = if cfg!(windows) { "exit /b 3" } else { "exit 3" };
+        let error = ShellEventHook::new(exit)
+            .notify(&notice)
+            .expect_err("a failing command is an error");
+        assert!(error.to_string().contains("3"), "{error}");
     }
 
     #[test]

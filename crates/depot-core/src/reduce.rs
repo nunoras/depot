@@ -967,7 +967,7 @@ pub fn auto_merge_due(state: &ProjectState, task: &Task, head: &CommitId) -> boo
         && !publication_blocked(state, &task.id)
         && task
             .pull_request()
-            .is_some_and(|(_, _, checks)| checks == Checks::Passing)
+            .is_some_and(|(_, _, checks)| matches!(checks, Checks::Passing | Checks::Unknown))
         && task.validated_commit() == Some(head)
 }
 

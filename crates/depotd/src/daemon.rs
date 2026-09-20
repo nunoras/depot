@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::fs::{File, OpenOptions};
 
 use fs2::FileExt;
@@ -65,6 +66,7 @@ pub trait Delivery {
         task: &Task,
         worktree: &Path,
         commit: &CommitId,
+        base: &str,
         body: &str,
     ) -> Result<(u64, String)>;
     fn observe_pull_request(
@@ -92,6 +94,7 @@ pub struct ObservedPullRequest {
     pub mergeable: Option<bool>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ShellValidation;
 
 impl ValidationRunner for ShellValidation {
@@ -120,17 +123,14 @@ impl ValidationRunner for ShellValidation {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct ForgeDelivery<F> {
     forge: F,
-    base: String,
 }
 
 impl<F> ForgeDelivery<F> {
-    pub fn new(forge: F, base: impl Into<String>) -> Self {
-        Self {
-            forge,
-            base: base.into(),
-        }
+    pub fn new(forge: F) -> Self {
+        Self { forge }
     }
 }
 
@@ -159,6 +159,7 @@ impl<F: Forge> Delivery for ForgeDelivery<F> {
         task: &Task,
         worktree: &Path,
         _commit: &CommitId,
+        base: &str,
         body: &str,
     ) -> Result<(u64, String)> {
         let remote = git_output(worktree, &["remote", "get-url", "origin"])?;
@@ -177,7 +178,7 @@ impl<F: Forge> Delivery for ForgeDelivery<F> {
                     title: task.title.clone(),
                     body: body.to_owned(),
                     head,
-                    base: self.base.clone(),
+                    base: base.to_owned(),
                 })
                 .map_err(|error| Error::Project(error.to_string()))?,
         };
@@ -226,6 +227,12 @@ impl<F: Forge> Delivery for ForgeDelivery<F> {
 }
 
 impl EventHook for Box<dyn EventHook> {
+    fn notify(&self, notice: &EventNotice) -> Result<()> {
+        self.as_ref().notify(notice)
+    }
+}
+
+impl EventHook for std::sync::Arc<dyn EventHook> {
     fn notify(&self, notice: &EventNotice) -> Result<()> {
         self.as_ref().notify(notice)
     }
@@ -374,6 +381,7 @@ impl EventHook for ShellEventHook {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NoEventHook;
 
 impl EventHook for NoEventHook {
@@ -390,6 +398,7 @@ pub struct Daemon<'a, S, W, V, D, H> {
     validation: V,
     delivery: D,
     hook: H,
+    budget: Cell<usize>,
 }
 
 pub struct ValidationResult {
@@ -423,6 +432,7 @@ where
             validation,
             delivery,
             hook,
+            budget: Cell::new(usize::MAX),
         }
     }
 
@@ -446,6 +456,11 @@ where
     }
 
     pub fn tick(&self) -> Result<()> {
+        self.tick_under(usize::MAX).map(|_| ())
+    }
+
+    pub fn tick_under(&self, budget: usize) -> Result<usize> {
+        self.budget.set(budget);
         let at = now();
         self.record(
             &event_key(&["polled", &at.millis().to_string()]),
@@ -460,7 +475,8 @@ where
         self.reconcile_validation()?;
         self.reconcile_delivery()?;
         self.reconcile_forge()?;
-        self.reconcile_notify()
+        self.reconcile_notify()?;
+        Ok(self.budget.get())
     }
 
     pub fn worker_submitted(&self, task: TaskId, commit: CommitId) -> Result<()> {
@@ -503,7 +519,7 @@ where
     fn execute(&self, action: Action) -> Result<()> {
         log("action", &format!("{action:?}"));
         match action {
-            Action::AcquireWorktree { task, baseline } => self.acquire(task, baseline),
+            Action::AcquireWorktree { task, baseline } => self.admit(task, baseline),
             Action::LaunchSession { task, profile } => self.launch(task, profile),
             Action::ResumeSession { task } => self.resume(task),
             Action::StopSession { task } => self.stop(task),
@@ -515,6 +531,16 @@ where
             Action::RenderChecklist | Action::Queue { .. } | Action::HoldForUser { .. } => Ok(()),
             Action::RotateCoordinator { .. } => Ok(()),
         }
+    }
+
+    fn admit(&self, task: TaskId, baseline: Baseline) -> Result<()> {
+        let budget = self.budget.get();
+        if budget == 0 {
+            log("queued", task.as_str());
+            return Ok(());
+        }
+        self.budget.set(budget - 1);
+        self.acquire(task, baseline)
     }
 
     fn acquire(&self, task: TaskId, baseline: Baseline) -> Result<()> {
@@ -793,10 +819,11 @@ where
     fn open_pull_request(&self, task: TaskId, commit: CommitId) -> Result<()> {
         let task_record = self.task(&task)?;
         let worktree = self.lease_for(&task_record)?.path;
+        let base = self.store.project_config(&self.project)?.pull_request.base;
         let body = pull_request_body(&task_record, &commit);
         let (number, url) =
             self.delivery
-                .open_pull_request(&task_record, &worktree, &commit, &body)?;
+                .open_pull_request(&task_record, &worktree, &commit, &base, &body)?;
         self.record(
             &event_key(&["pull_request_opened", task.as_str(), &number.to_string()]),
             Fact {
@@ -887,7 +914,7 @@ where
                 continue;
             };
             if task.state.in_flight() && attempt.outcome.is_open() && attempt.worktree.is_none() {
-                self.acquire(task.id.clone(), depot_core::worktree_baseline(task))?;
+                self.admit(task.id.clone(), depot_core::worktree_baseline(task))?;
             }
         }
         for task in self.store.tasks(&self.project.id)?.values() {

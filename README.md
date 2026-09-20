@@ -58,6 +58,7 @@ Project knowledge is committed with the repository, so validation commands and p
 
 ```toml
 base_branch = "main"
+max_concurrent_tasks = 1
 
 [profiles]
 build = "glm-5.3"
@@ -207,14 +208,43 @@ A role with no entry in the project's `[profiles]` map is refused when the task 
 
 ## Running the daemon
 
-The daemon runs a continuous loop for one project, polling session status, launching workers, running validation, and delivering pull requests.
+One daemon serves every project registered in the store.
+It runs a continuous loop, polling session status, launching workers, running validation, and delivering pull requests.
 
 ```sh
-depotd --project <project>
+depotd
 ```
 
-The daemon acquires an exclusive lock on `$DEPOT_HOME/depotd.lock` to prevent multiple daemon instances.
+`--project <project>` narrows the run to one registered project as a debug filter.
+The store lock is the singleton either way: the daemon acquires an exclusive lock on `$DEPOT_HOME/depotd.lock`, so a second daemon on the same home refuses to start instead of forking the work.
 Polling interval is controlled by the `poll_interval_seconds` setting in the depot home's `config.toml`.
+
+### As a user service
+
+On Linux with systemd, drop this unit in `~/.config/systemd/user/depotd.service`, then run `systemctl --user enable --now depotd`:
+
+```ini
+[Unit]
+Description=depot daemon
+After=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/depotd
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+```
+
+The environment depot needs travels with the unit: add `Environment=DEPOT_HOME=%h/.depot` and any `PATH` entry boxr, treehouse and gh require.
+Journal logs land in `journalctl --user -u depotd`.
+
+### Fair cross-project scheduling
+
+Worker slots are capped store-wide by `concurrency` in the depot home's `config.toml`.
+Each project adds `max_concurrent_tasks` to its committed `.depot.toml` (default `1`) to bound how many of those slots one project may hold, and the daemon hands out queued work round-robin across projects, rotating the first-served project every tick, so a busy project cannot starve the rest.
+A slot is occupied by a task whose attempt holds a worktree; work waiting for admission queues without one.
+`docs/adr/0005-one-daemon-per-store-with-fair-cross-project-scheduling.md` records the decisions.
 
 Every tick reconciles the records before it acts: a task whose attempt holds no worktree is leased one, an attempt without a session is launched, an answer a worker has not been told about is resumed, a submitted commit is validated, a validated commit is published, and a task with an open pull request is observed at the forge.
 Each pass is derived from the stored records rather than from the actions a fact produced, so a fact the coordinator's CLI wrote reaches its end without that process executing anything; `docs/adr/0003-reconciliation-derives-pending-work.md` records why.

@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::thread;
 
 use depotd::adapters::forge::{DEFAULT_API_BASE, GitHub, resolve_credentials};
@@ -5,11 +6,11 @@ use depotd::adapters::process::Program;
 use depotd::adapters::sessions::{Boxr, Sessions};
 use depotd::adapters::worktrees::Treehouse;
 use depotd::{
-    Daemon, DepotHome, EventHook, ForgeDelivery, InstanceLock, NoEventHook, ShellEventHook,
-    ShellValidation, Store, select_project,
+    DepotHome, EventHook, ForgeDelivery, InstanceLock, NoEventHook, ShellEventHook,
+    ShellValidation, Store, Supervisor, select_project,
 };
 
-const USAGE: &str = "depotd --project <project>\n";
+const USAGE: &str = "depotd [--project <project>]\n";
 
 fn main() {
     match run() {
@@ -22,12 +23,19 @@ fn main() {
 }
 
 fn run() -> depotd::Result<()> {
-    let project_name = arguments()?;
+    let filter = arguments()?;
     let home = DepotHome::resolve()?;
     let _lock = InstanceLock::acquire(&home)?;
     let store = Store::open(&home)?;
-    let project = select_project(&store, Some(&project_name))?;
-    let config = store.project_config(&project)?;
+    let projects = match filter {
+        Some(name) => vec![select_project(&store, Some(&name))?],
+        None => store.projects()?,
+    };
+    if projects.is_empty() {
+        return Err(depotd::Error::Project(
+            "no projects are registered; add one with `depot project add`".to_string(),
+        ));
+    }
     let credentials = resolve_credentials(&Program::new("gh"), home.root())
         .map_err(|error| depotd::Error::Project(error.to_string()))?;
     let sessions = Boxr::new(Program::new("boxr"));
@@ -35,41 +43,44 @@ fn run() -> depotd::Result<()> {
         .capabilities()
         .map_err(|error| depotd::Error::Project(error.to_string()))?;
     let settings = home.load_settings()?;
-    let hook: Box<dyn EventHook> = match &settings.on_event {
-        Some(on_event) => Box::new(ShellEventHook::new(on_event.command.clone())),
-        None => Box::new(NoEventHook),
+    let hook: Arc<dyn EventHook> = match &settings.on_event {
+        Some(on_event) => Arc::new(ShellEventHook::new(on_event.command.clone())),
+        None => Arc::new(NoEventHook),
     };
-    let daemon = Daemon::new(
+    let supervisor = Supervisor::new(
         &store,
-        project,
+        projects,
         sessions,
         Treehouse::new(Program::new("treehouse")),
         ShellValidation,
-        ForgeDelivery::new(
-            GitHub::new(DEFAULT_API_BASE, credentials.token),
-            config.pull_request.base,
-        ),
+        ForgeDelivery::new(GitHub::new(DEFAULT_API_BASE, credentials.token)),
         hook,
     );
-    daemon.recover()?;
+    supervisor.recover()?;
+    let mut turn: usize = 0;
     loop {
-        if let Err(error) = daemon.tick() {
+        if let Err(error) = supervisor.tick(turn) {
             if error.is_lock_contention() {
                 eprintln!("depotd: {error}; continuing");
             } else {
                 return Err(error);
             }
         }
+        turn = turn.wrapping_add(1);
         thread::sleep(home.load_settings()?.poll_interval());
     }
 }
 
-fn arguments() -> depotd::Result<String> {
+fn arguments() -> depotd::Result<Option<String>> {
     let mut values = std::env::args().skip(1);
     let mut project = None;
     while let Some(argument) = values.next() {
         match argument.as_str() {
-            "--project" => project = values.next(),
+            "--project" => {
+                project = Some(values.next().ok_or_else(|| {
+                    depotd::Error::Project(format!("--project needs a value\n{USAGE}"))
+                })?)
+            }
             "--help" | "-h" => return Err(depotd::Error::Project(USAGE.to_string())),
             other => {
                 return Err(depotd::Error::Project(format!(
@@ -78,5 +89,5 @@ fn arguments() -> depotd::Result<String> {
             }
         }
     }
-    project.ok_or_else(|| depotd::Error::Project(format!("--project is required\n{USAGE}")))
+    Ok(project)
 }

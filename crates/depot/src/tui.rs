@@ -84,6 +84,7 @@ struct TaskView {
     steps: Option<u64>,
     question: Option<String>,
     artifacts: Vec<String>,
+    pull_request: Option<(u64, String)>,
 }
 
 impl TaskView {
@@ -136,6 +137,9 @@ fn collect(home: &DepotHome, selection: &StatusSelection) -> Result<Vec<ProjectV
                             .iter()
                             .map(|artifact| artifact.path.clone())
                             .collect(),
+                        pull_request: task
+                            .pull_request()
+                            .map(|(number, url, _)| (number, url.to_string())),
                     }
                 })
                 .collect();
@@ -161,6 +165,7 @@ enum Segment {
     Text(String),
     State(String, TaskState),
     Dim(String),
+    Link { label: String, url: String },
 }
 
 struct Line {
@@ -267,10 +272,20 @@ fn task_lines(task: &TaskView, tick: usize, now: u64, width: usize) -> Vec<Vec<S
     } else {
         state_name(task.state).to_string()
     };
-    let mut lines = vec![vec![
+    let mut head = vec![
         Segment::Text(format!("{} ({}) ", id, role_name(task.role))),
         Segment::State(status, task.state),
-    ]];
+    ];
+    if task.state == TaskState::PrOpen
+        && let Some((number, url)) = &task.pull_request
+    {
+        head.push(Segment::Text(" ".to_string()));
+        head.push(Segment::Link {
+            label: format!("#{number}"),
+            url: url.clone(),
+        });
+    }
+    let mut lines = vec![head];
     let title: String = task.title.chars().take(width.saturating_sub(4)).collect();
     lines.push(vec![Segment::Text(format!("    {title}"))]);
     if task.running() {
@@ -430,6 +445,12 @@ impl Terminal {
                     self.stdout.execute(Print(text))?;
                     self.stdout.execute(SetForegroundColor(Color::Reset))?;
                 }
+                Segment::Link { label, url } => {
+                    self.stdout.execute(SetForegroundColor(Color::Blue))?;
+                    self.stdout
+                        .execute(Print(format!("\x1b]8;;{url}\x1b\\{label}\x1b]8;;\x1b\\")))?;
+                    self.stdout.execute(SetForegroundColor(Color::Reset))?;
+                }
             }
         }
         self.stdout.execute(Print("\r\n"))?;
@@ -469,6 +490,7 @@ mod tests {
             steps: None,
             question: None,
             artifacts: Vec::new(),
+            pull_request: None,
         }
     }
 
@@ -487,6 +509,7 @@ mod tests {
                     Segment::Text(text) | Segment::State(text, _) | Segment::Dim(text) => {
                         text.as_str()
                     }
+                    Segment::Link { label, .. } => label.as_str(),
                 })
                 .collect::<String>()
         };
@@ -573,6 +596,35 @@ mod tests {
         let lines = frame(&project_view(vec![waiting]), 0, 0, 80, false);
         let (pinned, _) = split(&lines);
         assert!(pinned.iter().any(|line| line.contains("which base branch")));
+    }
+
+    #[test]
+    fn pr_open_task_shows_clickable_pr_link() {
+        let mut task = view("t-1", "task t-1", TaskState::PrOpen);
+        task.pull_request = Some((42, "https://github.com/nunoras/depot/pull/42".to_string()));
+        let lines = frame(&project_view(vec![task]), 0, 0, 80, false);
+        assert!(matches!(
+            &lines[3].segments[2],
+            Segment::Text(text) if text == " "
+        ));
+        assert!(matches!(
+            &lines[3].segments[3],
+            Segment::Link { label, url }
+                if label == "#42" && url == "https://github.com/nunoras/depot/pull/42"
+        ));
+    }
+
+    #[test]
+    fn non_pr_open_task_renders_no_link() {
+        let mut task = view("t-1", "task t-1", TaskState::Running);
+        task.pull_request = Some((42, "https://github.com/nunoras/depot/pull/42".to_string()));
+        let lines = frame(&project_view(vec![task]), 0, 0, 80, false);
+        assert!(
+            !lines[3]
+                .segments
+                .iter()
+                .any(|segment| matches!(segment, Segment::Link { .. }))
+        );
     }
 
     #[test]

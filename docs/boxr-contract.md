@@ -33,6 +33,7 @@ Every command below is run as recorded, with the lease's worktree as the working
 | list sessions | `boxr ps` | 0 |
 
 `--kind` is the task's role name (`plan`, `build`, `review`, or `fix`), each of which is a boxr core kind.
+The describe step (PR body generation) launches with `--kind describe`.
 `--account` is omitted when the machine-local profile leaves account empty; pi has no isolated account directory, so a pi profile launches without `--account` and uses the harness default credentials.
 The prompt is always the last argument.
 `boxr tail` is not part of this surface: depot observes turn end through `boxr wait`, never by reading the harness's own output or boxr's ledger files.

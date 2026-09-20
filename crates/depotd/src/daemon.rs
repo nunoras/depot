@@ -16,6 +16,7 @@ use crate::adapters::profiles::ProfileResolver;
 use crate::adapters::sessions::{LaunchRequest, SessionProfile, Sessions};
 use crate::adapters::worktrees::{AcquireRequest, Lease, Worktrees};
 use crate::clock::now;
+use crate::describe::{self, Describer};
 use crate::error::{Error, Result};
 use crate::factcodec::payload_field;
 use crate::home::DepotHome;
@@ -67,6 +68,7 @@ pub trait Delivery {
         worktree: &Path,
         commit: &CommitId,
         base: &str,
+        title: &str,
         body: &str,
     ) -> Result<(u64, String)>;
     fn observe_pull_request(
@@ -160,6 +162,7 @@ impl<F: Forge> Delivery for ForgeDelivery<F> {
         worktree: &Path,
         _commit: &CommitId,
         base: &str,
+        title: &str,
         body: &str,
     ) -> Result<(u64, String)> {
         let remote = git_output(worktree, &["remote", "get-url", "origin"])?;
@@ -175,7 +178,7 @@ impl<F: Forge> Delivery for ForgeDelivery<F> {
                 .forge
                 .open_pull_request(&NewPullRequest {
                     repo,
-                    title: task.title.clone(),
+                    title: title.to_owned(),
                     body: body.to_owned(),
                     head,
                     base: base.to_owned(),
@@ -835,11 +838,18 @@ where
     fn open_pull_request(&self, task: TaskId, commit: CommitId) -> Result<()> {
         let task_record = self.task(&task)?;
         let worktree = self.lease_for(&task_record)?.path;
-        let base = self.store.project_config(&self.project)?.pull_request.base;
-        let body = pull_request_body(&task_record, &commit);
-        let (number, url) =
-            self.delivery
-                .open_pull_request(&task_record, &worktree, &commit, &base, &body)?;
+        let config = self.store.project_config(&self.project)?;
+        let base = config.pull_request.base.clone();
+        let describe = self.describe_pull_request(&task_record, &worktree, &config);
+        let (title, body) = describe::assemble(describe, &task_record, &commit);
+        let (number, url) = self.delivery.open_pull_request(
+            &task_record,
+            &worktree,
+            &commit,
+            &base,
+            &title,
+            &body,
+        )?;
         self.record(
             &event_key(&["pull_request_opened", task.as_str(), &number.to_string()]),
             Fact {
@@ -847,6 +857,56 @@ where
                 kind: FactKind::PullRequestOpened { task, number, url },
             },
         )
+    }
+
+    fn describe_pull_request(
+        &self,
+        task: &Task,
+        worktree: &Path,
+        config: &crate::config::ProjectConfig,
+    ) -> Option<describe::DescribeOutput> {
+        let profile = config
+            .pull_request
+            .describe_profile
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())?;
+        match self.run_describer(task, worktree, config, profile) {
+            Ok(output) => Some(output),
+            Err(error) => {
+                log("describe_failed", &error.to_string());
+                None
+            }
+        }
+    }
+
+    fn run_describer(
+        &self,
+        task: &Task,
+        worktree: &Path,
+        config: &crate::config::ProjectConfig,
+        profile: &str,
+    ) -> Result<describe::DescribeOutput> {
+        let settings = self.store.home().load_settings()?;
+        let spec = settings.profile_spec(depot_core::ProfileId::new(profile.to_owned()))?;
+        let base = &config.pull_request.base;
+        let diff = git_output(worktree, &["diff", &format!("{base}...HEAD")])?;
+        let diffstat = git_output(worktree, &["diff", "--stat", &format!("{base}...HEAD")])?;
+        let describer = describe::SessionDescriber::new(
+            &self.sessions,
+            spec,
+            Duration::from_secs(config.pull_request.describe_timeout_seconds),
+        );
+        describer.describe(&describe::DescribeInput {
+            title: task.title.clone(),
+            diff: describe::diff_section(&diff, &diffstat),
+            directory: worktree.to_path_buf(),
+            output_path: std::env::temp_dir().join(format!(
+                "depot-describe-{}-{}.md",
+                task.id,
+                now().millis()
+            )),
+        })
     }
 
     fn release(&self, _task: TaskId, lease: WorktreeLease) -> Result<()> {
@@ -1542,26 +1602,6 @@ pub fn resume_reason(redirect: &Option<String>, answers: &[(String, String)]) ->
 fn stripped(answer: &str) -> String {
     let answer = crate::checklist::one_line(answer);
     answer.strip_suffix('.').unwrap_or(&answer).to_owned()
-}
-
-pub fn pull_request_body(task: &Task, commit: &CommitId) -> String {
-    let validation = task
-        .validations
-        .iter()
-        .rev()
-        .find(|record| &record.commit == commit);
-    let result = validation
-        .map(|record| {
-            format!(
-                "`{}` at `{}` exited {}",
-                record.command, record.commit, record.exit_code
-            )
-        })
-        .unwrap_or_else(|| "no validation record".to_string());
-    format!(
-        "## Intent\n\n{}\n\n## What changed\n\n{}\n\n## Validation\n\n{}\n",
-        task.intent, task.title, result
-    )
 }
 
 fn log(kind: &str, value: &str) {

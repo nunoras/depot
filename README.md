@@ -72,6 +72,8 @@ command = "cargo test"
 [pull_request]
 base = "main"
 auto_merge = false
+describe_profile = ""
+describe_timeout_seconds = 900
 
 [questions]
 always_relay = false
@@ -257,6 +259,10 @@ Each pass is derived from the stored records rather than from the actions a fact
 A merge of any other revision is held for a person instead of landing, and a merge the forge refuses is named on the task and in `depot inbox`.
 When a forge observation reports an open pull request as conflicting, the daemon schedules one rebase attempt on the same task with the fix role's profile: the rebase worker rebases the delivery branch onto the base branch and submits, and the usual validation, push and merge path lands it.
 Only one rebase is in flight per project at a time, a task past its attempt limit gets no more, and a project without a fix profile keeps today's behavior.
+
+`[pull_request] describe_profile` in `.depot.toml` names a profile from the machine-local settings map; when it is set, the daemon launches a headless worker with it when a pull request opens, feeds it the unified diff of the delivery branch against its base (diffstat plus a truncated body when the diff is very large) and the task title, and the worker writes the reviewer-facing PR description: the first line of its output becomes the PR title and the rest the body, with depot's own `## Validation` section appended after it.
+The worker never sees the task intent, and a describe step that is unset, fails, times out or returns nothing falls back to the task title and the validation section alone.
+`describe_timeout_seconds` bounds the worker's turn and defaults to 900.
 
 On startup, the daemon performs recovery: tasks with an in-flight attempt are transitioned to `Unknown` state, allowing them to be restarted or reworked.
 

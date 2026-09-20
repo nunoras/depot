@@ -176,7 +176,8 @@ fn the_whole_journey_runs_from_proposal_to_a_released_worktree() {
         .find(|request| request.method == "POST")
         .expect("the daemon opened a pull request");
     assert_eq!(pull_request.path, "/repos/nunoras/depot/pulls");
-    assert!(pull_request.body.contains("Persist the records in sqlite."));
+    assert!(pull_request.body.contains("\"title\":\"Wire the store\""));
+    assert!(!pull_request.body.contains("Persist the records in sqlite."));
     assert!(pull_request.body.contains(&format!("`{commit}`")));
     assert!(
         requests

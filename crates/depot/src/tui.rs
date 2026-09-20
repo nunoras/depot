@@ -1,7 +1,8 @@
 use std::io::{Stdout, Write, stdout};
 use std::time::Duration;
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, poll};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind, poll};
+use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use crossterm::style::{Color, Print, SetForegroundColor};
 use crossterm::terminal::{
     Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode,
@@ -16,21 +17,40 @@ use depotd::{
 
 const REFRESH: Duration = Duration::from_secs(2);
 const POLL: Duration = Duration::from_millis(100);
+const WHEEL: usize = 3;
 
 pub fn run(home: &DepotHome, selection: &StatusSelection) -> Result<(), Error> {
     let mut terminal = Terminal::enter()?;
+    let mut scroll = 0;
     loop {
         let projects = collect(home, selection)?;
-        terminal.draw(&projects)?;
+        terminal.draw(&projects, scroll)?;
+        let viewport = terminal.viewport_height();
         let deadline = std::time::Instant::now() + REFRESH;
         while std::time::Instant::now() < deadline {
             if poll(POLL)? {
                 match event::read()? {
                     Event::Resize(_, _) => break,
-                    event if event.should_quit() => {
-                        terminal.leave()?;
-                        return Ok(());
-                    }
+                    Event::Mouse(mouse) => match mouse.kind {
+                        MouseEventKind::ScrollUp => scroll = scroll.saturating_sub(WHEEL),
+                        MouseEventKind::ScrollDown => scroll += WHEEL,
+                        _ => {}
+                    },
+                    Event::Key(event) if event.kind == KeyEventKind::Press => match event.code {
+                        KeyCode::Up => scroll = scroll.saturating_sub(1),
+                        KeyCode::Down => scroll += 1,
+                        KeyCode::PageUp => scroll = scroll.saturating_sub(viewport),
+                        KeyCode::PageDown => scroll += viewport,
+                        KeyCode::Char('q') | KeyCode::Esc => {
+                            terminal.leave()?;
+                            return Ok(());
+                        }
+                        KeyCode::Char('c') if event.modifiers.contains(KeyModifiers::CONTROL) => {
+                            terminal.leave()?;
+                            return Ok(());
+                        }
+                        _ => {}
+                    },
                     _ => {}
                 }
             }
@@ -57,68 +77,108 @@ fn collect(
         .collect()
 }
 
+#[derive(Clone)]
 enum Segment {
     Text(String),
     State(String, TaskState),
     Dim(String),
 }
 
-fn frame(projects: &[(Project, ProjectState)], width: usize) -> Vec<Vec<Segment>> {
+struct Line {
+    segments: Vec<Segment>,
+    pinned: bool,
+}
+
+fn pinned(segments: Vec<Segment>) -> Line {
+    Line {
+        segments,
+        pinned: true,
+    }
+}
+
+fn body(segments: Vec<Segment>) -> Line {
+    Line {
+        segments,
+        pinned: false,
+    }
+}
+
+fn frame(projects: &[(Project, ProjectState)], width: usize) -> Vec<Line> {
     let mut lines = Vec::new();
-    lines.push(vec![Segment::Dim(clock())]);
-    lines.push(vec![Segment::Text(String::new())]);
+    lines.push(pinned(vec![Segment::Dim(clock())]));
+    lines.push(pinned(vec![Segment::Text(String::new())]));
     if projects.is_empty() {
-        lines.push(vec![Segment::Text("No projects registered.".to_string())]);
+        lines.push(pinned(vec![Segment::Text(
+            "No projects registered.".to_string(),
+        )]));
         return lines;
     }
     for (project, state) in projects {
-        lines.push(vec![Segment::Text(project.slug.clone())]);
+        let waiting: Vec<&Task> = ordered_tasks(state)
+            .into_iter()
+            .filter(|task| task.state == TaskState::WaitingOnQuestion)
+            .collect();
+        if !waiting.is_empty() {
+            lines.push(pinned(vec![Segment::Text(project.slug.clone())]));
+            for task in waiting {
+                push_waiting_block(&mut lines, task, width);
+            }
+            lines.push(pinned(vec![Segment::Text(String::new())]));
+        }
+        lines.push(body(vec![Segment::Text(project.slug.clone())]));
         if state.tasks.is_empty() {
-            lines.push(vec![Segment::Dim("  no tasks".to_string())]);
+            lines.push(body(vec![Segment::Dim("  no tasks".to_string())]));
         }
         for task in ordered_tasks(state) {
-            let id = format!("  {:<5}", task.id.as_str());
-            let status = pad(state_name(task.state), 10);
-            let role = pad(role_name(task.role), 7);
-            let used = id.chars().count() + status.chars().count() + role.chars().count();
-            let title: String = task
-                .title
-                .chars()
-                .take(width.saturating_sub(used + 1))
-                .collect();
-            let waiting = task.state == TaskState::WaitingOnQuestion;
-            if waiting {
-                lines.push(vec![Segment::State("  needs you".to_string(), task.state)]);
+            if task.state == TaskState::WaitingOnQuestion {
+                continue;
             }
-            lines.push(vec![
-                Segment::Text(id),
-                Segment::State(status, task.state),
-                Segment::Text(role),
-                Segment::Text(title),
-            ]);
-            if waiting {
-                if let Some(question) = waiting_question(task) {
-                    let text: String = question.chars().take(width.saturating_sub(4)).collect();
-                    lines.push(vec![Segment::Text(format!("    {text}"))]);
-                }
-                for artifact in &task.artifacts {
-                    let path: String = artifact
-                        .path
-                        .chars()
-                        .take(width.saturating_sub(16))
-                        .collect();
-                    lines.push(vec![Segment::Dim(format!("    artifact {path}"))]);
-                }
-            }
+            lines.push(body(task_line(task, width)));
         }
-        lines.push(vec![Segment::Text(String::new())]);
+        lines.push(body(vec![Segment::Text(String::new())]));
     }
     lines.pop();
     lines
 }
 
+fn task_line(task: &Task, width: usize) -> Vec<Segment> {
+    let id = format!("  {:<5}", task.id.as_str());
+    let status = pad(state_name(task.state), 10);
+    let role = pad(role_name(task.role), 7);
+    let used = id.chars().count() + status.chars().count() + role.chars().count();
+    let title: String = task
+        .title
+        .chars()
+        .take(width.saturating_sub(used + 1))
+        .collect();
+    vec![
+        Segment::Text(id),
+        Segment::State(status, task.state),
+        Segment::Text(role),
+        Segment::Text(title),
+    ]
+}
+
+fn push_waiting_block(lines: &mut Vec<Line>, task: &Task, width: usize) {
+    let mut segments = vec![Segment::State("  needs you".to_string(), task.state)];
+    segments.extend(task_line(task, width));
+    lines.push(pinned(segments));
+    if let Some(question) = waiting_question(task) {
+        let text: String = question.chars().take(width.saturating_sub(4)).collect();
+        lines.push(pinned(vec![Segment::Text(format!("    {text}"))]));
+    }
+    for artifact in &task.artifacts {
+        let path: String = artifact
+            .path
+            .chars()
+            .take(width.saturating_sub(16))
+            .collect();
+        lines.push(pinned(vec![Segment::Dim(format!("    artifact {path}"))]));
+    }
+}
+
 fn ordered_tasks(state: &ProjectState) -> Vec<&Task> {
-    let mut tasks: Vec<&depotd::Task> = state.tasks.values().collect();
+    let mut tasks: Vec<&Task> = state.tasks.values().collect();
     tasks.sort_by_key(|task| task.state != TaskState::WaitingOnQuestion);
     tasks
 }
@@ -163,24 +223,6 @@ fn state_color(state: TaskState) -> Color {
     }
 }
 
-trait ShouldQuit {
-    fn should_quit(&self) -> bool;
-}
-
-impl ShouldQuit for Event {
-    fn should_quit(&self) -> bool {
-        match self {
-            Event::Key(event) => {
-                event.kind == KeyEventKind::Press
-                    && (matches!(event.code, KeyCode::Char('q') | KeyCode::Esc)
-                        || (event.code == KeyCode::Char('c')
-                            && event.modifiers.contains(KeyModifiers::CONTROL)))
-            }
-            _ => false,
-        }
-    }
-}
-
 struct Terminal {
     stdout: Stdout,
 }
@@ -191,42 +233,73 @@ impl Terminal {
         let mut stdout = stdout();
         stdout.execute(EnterAlternateScreen)?;
         stdout.execute(cursor::Hide)?;
+        stdout.execute(EnableMouseCapture)?;
         Ok(Self { stdout })
     }
 
-    fn draw(&mut self, projects: &[(Project, ProjectState)]) -> Result<(), Error> {
+    fn viewport_height(&self) -> usize {
+        size()
+            .map(|(_, height)| height as usize)
+            .unwrap_or(24)
+            .saturating_sub(1)
+    }
+
+    fn draw(&mut self, projects: &[(Project, ProjectState)], scroll: usize) -> Result<(), Error> {
         let (width, height) = size()
             .map(|(width, height)| (width as usize, height as usize))
             .unwrap_or((80, 24));
         let lines = frame(projects, width.saturating_sub(1));
+        let pinned: Vec<&Line> = lines.iter().filter(|line| line.pinned).collect();
+        let body: Vec<&Line> = lines.iter().filter(|line| !line.pinned).collect();
+        let body_window = height.saturating_sub(1).saturating_sub(pinned.len()).max(1);
+        let max_scroll = body.len().saturating_sub(body_window);
+        let scroll = scroll.min(max_scroll);
         self.stdout.execute(Clear(ClearType::All))?;
         self.stdout.execute(cursor::MoveTo(0, 0))?;
-        for line in lines.iter().take(height.saturating_sub(1)) {
-            for segment in line {
-                match segment {
-                    Segment::Text(text) => {
-                        self.stdout.execute(Print(text))?;
-                    }
-                    Segment::Dim(text) => {
-                        self.stdout.execute(SetForegroundColor(Color::DarkGrey))?;
-                        self.stdout.execute(Print(text))?;
-                        self.stdout.execute(SetForegroundColor(Color::Reset))?;
-                    }
-                    Segment::State(text, state) => {
-                        self.stdout
-                            .execute(SetForegroundColor(state_color(*state)))?;
-                        self.stdout.execute(Print(text))?;
-                        self.stdout.execute(SetForegroundColor(Color::Reset))?;
-                    }
-                }
-            }
-            self.stdout.execute(Print("\r\n"))?;
+        let mut header = pinned[0].segments.clone();
+        if max_scroll > 0 {
+            header.push(Segment::Dim(format!(
+                "  scroll {}/{}",
+                scroll + 1,
+                max_scroll + 1
+            )));
+        }
+        self.print_line(&header)?;
+        for line in pinned.iter().skip(1) {
+            self.print_line(&line.segments)?;
+        }
+        for line in body.iter().skip(scroll).take(body_window) {
+            self.print_line(&line.segments)?;
         }
         self.stdout.flush()?;
         Ok(())
     }
 
+    fn print_line(&mut self, segments: &[Segment]) -> Result<(), Error> {
+        for segment in segments {
+            match segment {
+                Segment::Text(text) => {
+                    self.stdout.execute(Print(text))?;
+                }
+                Segment::Dim(text) => {
+                    self.stdout.execute(SetForegroundColor(Color::DarkGrey))?;
+                    self.stdout.execute(Print(text))?;
+                    self.stdout.execute(SetForegroundColor(Color::Reset))?;
+                }
+                Segment::State(text, state) => {
+                    self.stdout
+                        .execute(SetForegroundColor(state_color(*state)))?;
+                    self.stdout.execute(Print(text))?;
+                    self.stdout.execute(SetForegroundColor(Color::Reset))?;
+                }
+            }
+        }
+        self.stdout.execute(Print("\r\n"))?;
+        Ok(())
+    }
+
     fn leave(&mut self) -> Result<(), Error> {
+        self.stdout.execute(DisableMouseCapture)?;
         self.stdout.execute(LeaveAlternateScreen)?;
         self.stdout.execute(cursor::Show)?;
         self.stdout.flush()?;
@@ -237,8 +310,112 @@ impl Terminal {
 
 impl Drop for Terminal {
     fn drop(&mut self) {
+        let _ = self.stdout.execute(DisableMouseCapture);
         let _ = self.stdout.execute(LeaveAlternateScreen);
         let _ = self.stdout.execute(cursor::Show);
         let _ = disable_raw_mode();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use depot_core::{Limits, ProjectId, Role, TaskId, Timestamp};
+    use depotd::LocationKind;
+
+    use super::*;
+
+    fn at(millis: u64) -> Timestamp {
+        Timestamp::from_millis(millis)
+    }
+
+    fn task(id: &str, state: TaskState) -> Task {
+        Task {
+            id: TaskId::from(id),
+            project: ProjectId::from("depot"),
+            title: format!("task {id}"),
+            intent: String::new(),
+            role: Role::Build,
+            dispatch_profile: None,
+            state,
+            dependencies: Vec::new(),
+            base_dependency: None,
+            attempts: Vec::new(),
+            questions: Vec::new(),
+            validations: Vec::new(),
+            submission: None,
+            artifacts: Vec::new(),
+            links: Vec::new(),
+            branch_head: None,
+            merge_refused: None,
+            acknowledged_at: None,
+            hold_pr: false,
+            retry: None,
+            created_at: at(0),
+            updated_at: at(0),
+        }
+    }
+
+    fn project_state(tasks: Vec<Task>) -> ProjectState {
+        ProjectState {
+            project: ProjectId::from("depot"),
+            tasks: tasks
+                .into_iter()
+                .map(|task| (task.id.clone(), task))
+                .collect(),
+            coordinator: None,
+            profiles: Default::default(),
+            fallback_profiles: Vec::new(),
+            limits: Limits::default(),
+            always_relay_questions: false,
+            auto_merge: false,
+        }
+    }
+
+    fn project() -> Project {
+        Project {
+            id: ProjectId::from("depot"),
+            kind: LocationKind::Path,
+            slug: "depot".to_string(),
+            created_at: at(0),
+        }
+    }
+
+    fn text(line: &Line) -> String {
+        line.segments
+            .iter()
+            .map(|segment| match segment {
+                Segment::Text(text) | Segment::State(text, _) | Segment::Dim(text) => text.as_str(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn waiting_task_is_pinned_and_absent_from_the_scrolling_body() {
+        let waiting = task("t-1", TaskState::WaitingOnQuestion);
+        let running = task("t-2", TaskState::Running);
+        let lines = frame(&[(project(), project_state(vec![waiting, running]))], 80);
+        let pinned: Vec<&Line> = lines.iter().filter(|line| line.pinned).collect();
+        let body: Vec<&Line> = lines.iter().filter(|line| !line.pinned).collect();
+        assert!(pinned.iter().any(|line| text(line).contains("needs you")));
+        assert!(pinned.iter().any(|line| text(line).contains("t-1")));
+        assert!(!body.iter().any(|line| text(line).contains("t-1")));
+        assert!(body.iter().any(|line| text(line).contains("t-2")));
+    }
+
+    #[test]
+    fn unanswered_question_rides_with_the_pinned_block() {
+        let mut waiting = task("t-1", TaskState::WaitingOnQuestion);
+        waiting.questions.push(depot_core::Question {
+            text: "which base branch".to_string(),
+            asked_at: at(0),
+            answer: None,
+        });
+        let lines = frame(&[(project(), project_state(vec![waiting]))], 80);
+        let pinned: Vec<&Line> = lines.iter().filter(|line| line.pinned).collect();
+        assert!(
+            pinned
+                .iter()
+                .any(|line| text(line).contains("which base branch"))
+        );
     }
 }

@@ -26,7 +26,6 @@ fn status_shows_held_running_blocked_waiting_and_validated_tasks_distinctly() {
         "Needs you - waiting on an answer",
         "Held - awaiting approval",
         "Running",
-        "Failed",
         "Validated",
     ] {
         assert!(
@@ -34,6 +33,13 @@ fn status_shows_held_running_blocked_waiting_and_validated_tasks_distinctly() {
             "missing {label} in\n{rendered}"
         );
     }
+    for label in ["Landed", "Failed", "Cancelled"] {
+        assert!(
+            !rendered.contains(&format!("## {label}")),
+            "terminal {label} leaked into the default status\n{rendered}"
+        );
+    }
+    assert!(rendered.contains("1 landed · 1 failed · 1 cancelled"));
     assert!(rendered.contains(added.project.id.as_str()));
 }
 
@@ -61,7 +67,8 @@ fn status_can_be_narrowed_to_one_project() {
 
     assert!(rendered.contains(first.project.id.as_str()));
     assert!(!rendered.contains(second.project.id.as_str()));
-    assert!(rendered.contains("## Landed (1)"));
+    assert!(!rendered.contains("## Landed"));
+    assert!(rendered.contains("1 landed"));
 }
 
 #[test]
@@ -153,7 +160,7 @@ fn status_from_outside_a_sole_registered_project_is_not_a_guess() {
 }
 
 #[test]
-fn a_failed_task_fades_once_a_live_task_depends_on_it() {
+fn a_failed_task_is_history_once_a_live_task_depends_on_it() {
     let fixture = support::fixture();
     let added = support::register(&fixture, "example");
     let store = Store::open(&fixture.home).expect("store");
@@ -169,12 +176,12 @@ fn a_failed_task_fades_once_a_live_task_depends_on_it() {
 
     assert!(faded.contains("## Running (1)"));
     assert!(!faded.contains("## Failed"));
-    assert!(faded.contains("1 faded task hidden"));
+    assert!(faded.contains("1 failed"));
     assert!(history.contains("## Failed (1)"));
 }
 
 #[test]
-fn an_acknowledged_failed_task_fades_and_history_still_shows_it() {
+fn an_acknowledged_failed_task_is_history_too() {
     let fixture = support::fixture();
     let added = support::register(&fixture, "example");
     let store = Store::open(&fixture.home).expect("store");
@@ -204,7 +211,7 @@ fn an_acknowledged_failed_task_fades_and_history_still_shows_it() {
 }
 
 #[test]
-fn a_cancelled_task_without_replacement_or_acknowledgement_stays_visible() {
+fn a_cancelled_task_is_history_without_replacement_or_acknowledgement() {
     let fixture = support::fixture();
     let added = support::register(&fixture, "example");
     let store = Store::open(&fixture.home).expect("store");
@@ -219,8 +226,8 @@ fn a_cancelled_task_without_replacement_or_acknowledgement_stays_visible() {
 
     let rendered = render_status(&fixture.home, &StatusSelection::All, false).expect("status");
 
-    assert!(rendered.contains("## Cancelled (1)"));
-    assert!(!rendered.contains("faded"));
+    assert!(!rendered.contains("## Cancelled"));
+    assert!(rendered.contains("1 cancelled"));
 }
 
 #[test]

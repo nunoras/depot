@@ -221,13 +221,22 @@ fn the_whole_journey_runs_from_proposal_to_a_released_worktree() {
     assert_eq!(golden.forge.requests().len(), forge_calls);
     assert_eq!(golden.pull_requests_opened(), 1);
 
-    let final_checklist = golden.status();
+    let final_checklist = golden.status_history();
     assert!(final_checklist.contains("Landed (1)"), "{final_checklist}");
     assert!(
         final_checklist.contains("waits on: nothing"),
         "{final_checklist}"
     );
-    assert_eq!(final_checklist, golden.checklist());
+    let default_checklist = golden.status();
+    assert!(
+        !default_checklist.contains("## Landed"),
+        "{default_checklist}"
+    );
+    assert!(
+        default_checklist.contains("1 landed"),
+        "{default_checklist}"
+    );
+    assert_eq!(default_checklist, golden.checklist());
 
     assert_eq!(
         golden.state_history(TASK),
@@ -655,11 +664,14 @@ fn a_failed_validation_opens_no_pull_request_and_keeps_the_branch() {
         BRANCH
     );
 
+    let history = golden.status_history();
+    assert!(history.contains("Failed (1)"), "{history}");
+    assert!(history.contains("waits on: a person"), "{history}");
+    assert!(history.contains("exited 1"), "{history}");
+    assert!(history.contains(&commit), "{history}");
     let blocked = golden.status();
-    assert!(blocked.contains("Failed (1)"), "{blocked}");
-    assert!(blocked.contains("waits on: a person"), "{blocked}");
-    assert!(blocked.contains("exited 1"), "{blocked}");
-    assert!(blocked.contains(&commit), "{blocked}");
+    assert!(!blocked.contains("## Failed"), "{blocked}");
+    assert!(blocked.contains("1 failed"), "{blocked}");
     assert_eq!(blocked, golden.checklist());
 
     assert_eq!(
@@ -970,9 +982,12 @@ fn a_resume_that_keeps_failing_surfaces_the_task_to_a_person() {
         "no turn start is fabricated for an answer that was never delivered"
     );
 
-    let blocked = golden.status();
-    assert!(blocked.contains("Failed (1)"), "{blocked}");
-    assert_eq!(blocked, golden.checklist());
+    let history = golden.status_history();
+    assert!(history.contains("Failed (1)"), "{history}");
+    let default = golden.status();
+    assert!(!default.contains("## Failed"), "{default}");
+    assert!(default.contains("1 failed"), "{default}");
+    assert_eq!(default, golden.checklist());
 
     let inbox = golden.depot_ok(&["inbox", "--project", SLUG]);
     assert!(
@@ -1011,9 +1026,12 @@ fn a_restart_with_a_launch_intent_surfaces_it_rather_than_launching_again() {
     );
     assert!(task.attempts[0].worktree.is_some(), "the worktree is kept");
 
-    let blocked = golden.status();
-    assert!(blocked.contains("Failed (1)"), "{blocked}");
-    assert_eq!(blocked, golden.checklist());
+    let history = golden.status_history();
+    assert!(history.contains("Failed (1)"), "{history}");
+    let default = golden.status();
+    assert!(!default.contains("## Failed"), "{default}");
+    assert!(default.contains("1 failed"), "{default}");
+    assert_eq!(default, golden.checklist());
 
     let inbox = golden.depot_ok(&["inbox", "--project", SLUG]);
     assert!(inbox.contains("## For the user (1)"), "{inbox}");
@@ -1331,10 +1349,12 @@ fn a_project_that_opts_in_merges_the_validated_pull_request_itself() {
     );
     assert!(calls_to(&golden.treehouse.calls(), "get").len() == 1);
 
-    let checklist = golden.status();
-    assert!(checklist.contains("Landed (1)"), "{checklist}");
-    assert!(!checklist.contains("Pull request open"), "{checklist}");
-    assert_eq!(checklist, golden.checklist());
+    let history = golden.status_history();
+    assert!(history.contains("Landed (1)"), "{history}");
+    let default = golden.status();
+    assert!(!default.contains("## Landed"), "{default}");
+    assert!(default.contains("1 landed"), "{default}");
+    assert_eq!(default, golden.checklist());
 }
 
 #[test]
@@ -1372,10 +1392,12 @@ fn a_pull_request_closed_unmerged_is_left_for_review() {
         "review keeps the worktree"
     );
 
-    let checklist = golden.status();
-    assert!(checklist.contains("Cancelled (1)"), "{checklist}");
-    assert!(!checklist.contains("Landed"), "{checklist}");
-    assert_eq!(checklist, golden.checklist());
+    let history = golden.status_history();
+    assert!(history.contains("Cancelled (1)"), "{history}");
+    let default = golden.status();
+    assert!(!default.contains("## Cancelled"), "{default}");
+    assert!(default.contains("1 cancelled"), "{default}");
+    assert_eq!(default, golden.checklist());
 }
 
 #[test]
@@ -1414,10 +1436,12 @@ fn a_merge_of_a_revision_depot_never_validated_is_not_landed() {
         "the unvalidated merge keeps the worktree for review"
     );
 
-    let checklist = golden.status();
-    assert!(checklist.contains("Failed (1)"), "{checklist}");
-    assert!(!checklist.contains("Landed"), "{checklist}");
-    assert_eq!(checklist, golden.checklist());
+    let history = golden.status_history();
+    assert!(history.contains("Failed (1)"), "{history}");
+    let default = golden.status();
+    assert!(!default.contains("## Landed"), "{default}");
+    assert!(default.contains("1 failed"), "{default}");
+    assert_eq!(default, golden.checklist());
 }
 
 #[test]
@@ -1633,9 +1657,12 @@ fn a_push_rejection_fails_the_task_and_the_daemon_keeps_running() {
         "the rejected push changed nothing at the forge"
     );
 
-    let blocked = golden.status();
-    assert!(blocked.contains("Failed (1)"), "{blocked}");
-    assert_eq!(blocked, golden.checklist());
+    let history = golden.status_history();
+    assert!(history.contains("Failed (1)"), "{history}");
+    let default = golden.status();
+    assert!(!default.contains("## Failed"), "{default}");
+    assert!(default.contains("1 failed"), "{default}");
+    assert_eq!(default, golden.checklist());
 
     daemon
         .tick()
@@ -1982,7 +2009,10 @@ fn a_conflicting_pull_request_is_rebased_by_a_fix_worker_and_lands() {
         "landing the rebase returns the worktree"
     );
 
-    let checklist = golden.status();
-    assert!(checklist.contains("Landed (1)"), "{checklist}");
-    assert_eq!(checklist, golden.checklist());
+    let history = golden.status_history();
+    assert!(history.contains("Landed (1)"), "{history}");
+    let default = golden.status();
+    assert!(!default.contains("## Landed"), "{default}");
+    assert!(default.contains("1 landed"), "{default}");
+    assert_eq!(default, golden.checklist());
 }

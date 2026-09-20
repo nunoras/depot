@@ -469,6 +469,10 @@ impl Golden {
         self.depot_ok(&["status", "--project", SLUG])
     }
 
+    pub fn status_history(&self) -> String {
+        self.depot_ok(&["status", "--project", SLUG, "--history"])
+    }
+
     pub fn status_matches_checklist(&self, rendered: &str) {
         let without_observations: String = rendered
             .lines()

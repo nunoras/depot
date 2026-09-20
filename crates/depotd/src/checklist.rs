@@ -1,24 +1,27 @@
+use std::collections::BTreeMap;
+
 use depot_core::{
     AttemptOutcome, Checks, ProjectState, Question, Task, TaskState, Timestamp,
-    dependency_satisfied, task_faded,
+    dependency_satisfied,
 };
 
 use crate::vocabulary::{checks_name, role_name};
 
-const SECTIONS: [(TaskState, &str); 10] = [
+const SECTIONS: [(TaskState, &str, bool); 10] = [
     (
         TaskState::WaitingOnQuestion,
         "Needs you - waiting on an answer",
+        false,
     ),
-    (TaskState::Proposed, "Held - awaiting approval"),
-    (TaskState::Approved, "Approved - queued"),
-    (TaskState::Running, "Running"),
-    (TaskState::Validating, "Validating"),
-    (TaskState::Validated, "Validated"),
-    (TaskState::PrOpen, "Pull request open"),
-    (TaskState::Landed, "Landed"),
-    (TaskState::Failed, "Failed"),
-    (TaskState::Cancelled, "Cancelled"),
+    (TaskState::Running, "Running", false),
+    (TaskState::Validating, "Validating", false),
+    (TaskState::Validated, "Validated", false),
+    (TaskState::PrOpen, "Pull request open", false),
+    (TaskState::Approved, "Approved - queued", false),
+    (TaskState::Proposed, "Held - awaiting approval", false),
+    (TaskState::Landed, "Landed", true),
+    (TaskState::Failed, "Failed", true),
+    (TaskState::Cancelled, "Cancelled", true),
 ];
 
 pub fn render_checklist(state: &ProjectState, history: bool) -> String {
@@ -43,21 +46,24 @@ fn render_project(state: &ProjectState, history: bool, observed_at: Option<Times
         return out;
     }
 
-    let mut faded = 0usize;
-    for (task_state, label) in SECTIONS {
+    let mut hidden: BTreeMap<TaskState, usize> = BTreeMap::new();
+    for (task_state, label, terminal) in SECTIONS {
+        if terminal && !history {
+            let count = state
+                .tasks
+                .values()
+                .filter(|task| task.state == task_state)
+                .count();
+            if count > 0 {
+                hidden.insert(task_state, count);
+            }
+            continue;
+        }
         let mut tasks: Vec<&Task> = state
             .tasks
             .values()
             .filter(|task| task.state == task_state)
-            .filter(|task| history || !task_faded(state, task))
             .collect();
-        if !history {
-            faded += state
-                .tasks
-                .values()
-                .filter(|task| task.state == task_state && task_faded(state, task))
-                .count();
-        }
         if tasks.is_empty() {
             continue;
         }
@@ -73,10 +79,22 @@ fn render_project(state: &ProjectState, history: bool, observed_at: Option<Times
         }
     }
 
-    if faded > 0 {
+    if !hidden.is_empty() {
+        let counts = [
+            (TaskState::Landed, "landed"),
+            (TaskState::Failed, "failed"),
+            (TaskState::Cancelled, "cancelled"),
+        ]
+        .into_iter()
+        .filter_map(|(task_state, label)| {
+            hidden
+                .get(&task_state)
+                .map(|count| format!("{count} {label}"))
+        })
+        .collect::<Vec<_>>()
+        .join(" · ");
         out.push_str(&format!(
-            "\n{faded} faded {} hidden; `depot status --history` shows them.\n",
-            if faded == 1 { "task" } else { "tasks" }
+            "\n{counts}; `depot status --history` shows them.\n"
         ));
     }
 

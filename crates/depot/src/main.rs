@@ -37,8 +37,7 @@ NOTES
   A role resolves to a profile through the project's machine-local .depot.toml; an unmapped role is refused.
   Multiple --depends-on need --base-dependency naming one of those tasks as the baseline.
   `--content -` reads a document from standard input.
-  Failed and cancelled tasks fade from the default status once a live task
-  depends on them or they are acknowledged; `--history` shows them.
+  Landed, failed and cancelled tasks are history; `--history` shows them.
   `task redirect` queues a new direction for a running worker; the daemon delivers it when the
   worker's current turn ends.
 ";

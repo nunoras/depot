@@ -233,13 +233,13 @@ fn frame(
             .filter(|task| task.state == TaskState::WaitingOnQuestion)
             .collect();
         if !waiting.is_empty() {
-            lines.push(pinned(vec![Segment::Text(project.slug.clone())]));
+            lines.push(pinned(vec![Segment::Text(format!("* {}", project.slug))]));
             for task in waiting {
                 push_waiting_block(&mut lines, task, now, width);
             }
             lines.push(pinned(vec![Segment::Text(String::new())]));
         }
-        lines.push(body(vec![Segment::Text(project.slug.clone())]));
+        lines.push(body(vec![Segment::Text(format!("* {}", project.slug))]));
         if project.tasks.is_empty() {
             lines.push(body(vec![Segment::Dim("  no tasks".to_string())]));
         }
@@ -261,17 +261,15 @@ fn frame(
 }
 
 fn task_lines(task: &TaskView, tick: usize, now: u64, width: usize) -> Vec<Vec<Segment>> {
-    let id = format!("  {:<5}", task.id.as_str());
+    let id = format!("  {}", task.id.as_str());
     let status = if task.running() {
         SPINNER[tick % SPINNER.len()].to_string()
     } else {
-        pad(state_name(task.state), 10)
+        state_name(task.state).to_string()
     };
-    let role = pad(role_name(task.role), 7);
     let mut lines = vec![vec![
-        Segment::Text(id),
+        Segment::Text(format!("{} ({}) ", id, role_name(task.role))),
         Segment::State(status, task.state),
-        Segment::Text(role),
     ]];
     let title: String = task.title.chars().take(width.saturating_sub(4)).collect();
     lines.push(vec![Segment::Text(format!("    {title}"))]);
@@ -312,7 +310,7 @@ fn stats(task: &TaskView, now: u64) -> String {
         .map(|started| format_elapsed(now.saturating_sub(started.millis())))
         .unwrap_or_else(|| "unknown".to_string());
     match task.steps {
-        Some(steps) => format!("up {}  {} steps", elapsed, steps),
+        Some(steps) => format!("up {}, {} steps", elapsed, steps),
         None => format!("up {}", elapsed),
     }
 }
@@ -326,13 +324,6 @@ fn format_elapsed(millis: u64) -> String {
     } else {
         format!("{}s", seconds)
     }
-}
-
-fn pad(text: &str, width: usize) -> String {
-    let mut out: String = text.chars().take(width).collect();
-    let padding = width - out.chars().count();
-    out.push_str(&" ".repeat(padding));
-    out
 }
 
 fn clock() -> String {
@@ -552,7 +543,7 @@ mod tests {
         let projects = project_view(vec![task]);
         let lines = frame(&projects, 0, 130_000, 80, false);
         assert!(
-            matches!(&lines[5].segments[0], Segment::Dim(text) if text == "    up 2m10s  42 steps")
+            matches!(&lines[5].segments[0], Segment::Dim(text) if text == "    up 2m10s, 42 steps")
         );
     }
 

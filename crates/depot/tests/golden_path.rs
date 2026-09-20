@@ -9,8 +9,8 @@ use depot_core::{
 use depotd::InstanceLock;
 use support::git;
 use support::{
-    ACCOUNT, BASE, BRANCH, Golden, HARNESS, LEASE, MODEL, PROFILE, SESSION, SLUG, TASK, Validation,
-    calls_to,
+    ACCOUNT, BASE, BRANCH, Golden, HARNESS, LEASE, MODEL, PROFILE, REPOSITORY, SESSION, SLUG, TASK,
+    Validation, calls_to,
 };
 
 const PROPOSED: &str = "task_proposed";
@@ -1114,10 +1114,10 @@ fn a_restart_with_a_task_in_flight_marks_it_unknown_and_launches_no_replacement(
         depotd::adapters::sessions::Boxr::new(golden.boxr.program()),
         depotd::adapters::worktrees::Treehouse::new(golden.treehouse.program()),
         depotd::ShellValidation,
-        depotd::ForgeDelivery::new(
-            depotd::adapters::forge::GitHub::new(golden.forge.base_url(), support::TOKEN),
-            "main",
-        ),
+        depotd::ForgeDelivery::new(depotd::adapters::forge::GitHub::new(
+            golden.forge.base_url(),
+            support::TOKEN,
+        )),
         depotd::NoEventHook,
     );
 
@@ -1533,6 +1533,13 @@ fn a_fix_role_push_overwrites_a_force_pushed_remote_branch() {
     ]);
     assert_eq!(added, format!("added {TASK}\n"));
     golden.depot_ok(&["task", "approve", TASK, "--project", SLUG]);
+    golden.forge.route_query(
+        "GET",
+        &format!("/repos/{REPOSITORY}/pulls"),
+        Some("state=open&head=nunoras%3Afix/fix-the-store"),
+        200,
+        "[]",
+    );
     daemon.tick().expect("the daemon launches the worker");
     golden.worker_commits_and_submits();
     let commit = golden.head();
@@ -1542,7 +1549,8 @@ fn a_fix_role_push_overwrites_a_force_pushed_remote_branch() {
         .expect("the daemon validates, pushes and opens the pull request");
     assert_eq!(golden.task().state, TaskState::PrOpen);
 
-    let rival = golden.force_push_divergent_branch();
+    let fix_branch = "fix/fix-the-store";
+    let rival = golden.force_push_divergent(fix_branch);
     assert_ne!(rival, commit, "the remote branch was replaced");
 
     let reworked = golden.commit_in_lease("rework.txt", "the rework\n");
@@ -1567,7 +1575,7 @@ fn a_fix_role_push_overwrites_a_force_pushed_remote_branch() {
     assert_eq!(
         git::git(
             &golden.origin,
-            &["rev-parse", &format!("refs/heads/{BRANCH}")]
+            &["rev-parse", &format!("refs/heads/{fix_branch}")]
         )
         .trim(),
         reworked,

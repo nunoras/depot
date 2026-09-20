@@ -262,6 +262,10 @@ impl Golden {
     }
 
     pub fn force_push_divergent_branch(&self) -> String {
+        self.force_push_divergent(BRANCH)
+    }
+
+    pub fn force_push_divergent(&self, branch: &str) -> String {
         let rival = self.base.join("rival");
         let _ = fs::remove_dir_all(&rival);
         git::git(
@@ -279,12 +283,12 @@ impl Golden {
         git::git(&rival, &["commit", "-m", "a rejected attempt"]);
         git::git(
             &rival,
-            &["push", "--force", "origin", &format!("HEAD:{BRANCH}")],
+            &["push", "--force", "origin", &format!("HEAD:{branch}")],
         );
         git::git(&self.lease, &["fetch", "origin"]);
         git::git(
             &self.origin,
-            &["rev-parse", &format!("refs/heads/{BRANCH}")],
+            &["rev-parse", &format!("refs/heads/{branch}")],
         )
         .trim()
         .to_owned()
@@ -316,20 +320,9 @@ impl Golden {
             Boxr::new(self.boxr.program()),
             Treehouse::new(self.treehouse.program()),
             ShellValidation,
-            ForgeDelivery::new(
-                GitHub::new(self.forge.base_url(), TOKEN),
-                self.project_config_base(),
-            ),
+            ForgeDelivery::new(GitHub::new(self.forge.base_url(), TOKEN)),
             hook,
         )
-    }
-
-    fn project_config_base(&self) -> String {
-        self.store
-            .project_config(&self.project)
-            .expect("the project config")
-            .pull_request
-            .base
     }
 
     pub fn depot(&self, arguments: &[&str]) -> Output {

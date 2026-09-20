@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::io::{Stdout, Write, stdout};
 use std::time::Duration;
 
@@ -22,9 +23,10 @@ const WHEEL: usize = 3;
 pub fn run(home: &DepotHome, selection: &StatusSelection) -> Result<(), Error> {
     let mut terminal = Terminal::enter()?;
     let mut scroll = 0;
+    let mut history = false;
     loop {
         let projects = collect(home, selection)?;
-        terminal.draw(&projects, scroll)?;
+        terminal.draw(&projects, scroll, history)?;
         let viewport = terminal.viewport_height();
         let deadline = std::time::Instant::now() + REFRESH;
         while std::time::Instant::now() < deadline {
@@ -41,6 +43,11 @@ pub fn run(home: &DepotHome, selection: &StatusSelection) -> Result<(), Error> {
                         KeyCode::Down => scroll += 1,
                         KeyCode::PageUp => scroll = scroll.saturating_sub(viewport),
                         KeyCode::PageDown => scroll += viewport,
+                        KeyCode::Char('h') => {
+                            history = !history;
+                            scroll = 0;
+                            break;
+                        }
                         KeyCode::Char('q') | KeyCode::Esc => {
                             terminal.leave()?;
                             return Ok(());
@@ -103,9 +110,37 @@ fn body(segments: Vec<Segment>) -> Line {
     }
 }
 
-fn frame(projects: &[(Project, ProjectState)], width: usize) -> Vec<Line> {
+fn frame(projects: &[(Project, ProjectState)], width: usize, history: bool) -> Vec<Line> {
     let mut lines = Vec::new();
     lines.push(pinned(vec![Segment::Dim(clock())]));
+    let mut counts: BTreeMap<TaskState, usize> = BTreeMap::new();
+    for (_, state) in projects {
+        for task in state.tasks.values() {
+            if is_terminal(task.state) {
+                *counts.entry(task.state).or_default() += 1;
+            }
+        }
+    }
+    if history {
+        lines.push(pinned(vec![Segment::Dim("history on  h back".to_string())]));
+    } else if !counts.is_empty() {
+        let summary = [
+            (TaskState::Landed, "landed"),
+            (TaskState::Failed, "failed"),
+            (TaskState::Cancelled, "cancelled"),
+        ]
+        .into_iter()
+        .filter_map(|(task_state, label)| {
+            counts
+                .get(&task_state)
+                .map(|count| format!("{count} {label}"))
+        })
+        .collect::<Vec<_>>()
+        .join(" · ");
+        lines.push(pinned(vec![Segment::Dim(format!(
+            "{summary}  h shows history"
+        ))]));
+    }
     lines.push(pinned(vec![Segment::Text(String::new())]));
     if projects.is_empty() {
         lines.push(pinned(vec![Segment::Text(
@@ -131,6 +166,9 @@ fn frame(projects: &[(Project, ProjectState)], width: usize) -> Vec<Line> {
         }
         for task in ordered_tasks(state) {
             if task.state == TaskState::WaitingOnQuestion {
+                continue;
+            }
+            if !history && is_terminal(task.state) {
                 continue;
             }
             lines.push(body(task_line(task, width)));
@@ -177,6 +215,13 @@ fn push_waiting_block(lines: &mut Vec<Line>, task: &Task, width: usize) {
     }
 }
 
+fn is_terminal(state: TaskState) -> bool {
+    matches!(
+        state,
+        TaskState::Landed | TaskState::Failed | TaskState::Cancelled
+    )
+}
+
 fn ordered_tasks(state: &ProjectState) -> Vec<&Task> {
     let mut tasks: Vec<&Task> = state.tasks.values().collect();
     tasks.sort_by_key(|task| task.state != TaskState::WaitingOnQuestion);
@@ -205,7 +250,7 @@ fn clock() -> String {
         .as_secs();
     let day = seconds % 86400;
     format!(
-        "depot  {:02}:{:02}:{:02} UTC  refresh 2s  q quit",
+        "depot  {:02}:{:02}:{:02} UTC  refresh 2s  h history  q quit",
         day / 3600,
         (day % 3600) / 60,
         day % 60
@@ -244,11 +289,16 @@ impl Terminal {
             .saturating_sub(1)
     }
 
-    fn draw(&mut self, projects: &[(Project, ProjectState)], scroll: usize) -> Result<(), Error> {
+    fn draw(
+        &mut self,
+        projects: &[(Project, ProjectState)],
+        scroll: usize,
+        history: bool,
+    ) -> Result<(), Error> {
         let (width, height) = size()
             .map(|(width, height)| (width as usize, height as usize))
             .unwrap_or((80, 24));
-        let lines = frame(projects, width.saturating_sub(1));
+        let lines = frame(projects, width.saturating_sub(1), history);
         let pinned: Vec<&Line> = lines.iter().filter(|line| line.pinned).collect();
         let body: Vec<&Line> = lines.iter().filter(|line| !line.pinned).collect();
         let body_window = height.saturating_sub(1).saturating_sub(pinned.len()).max(1);
@@ -393,7 +443,11 @@ mod tests {
     fn waiting_task_is_pinned_and_absent_from_the_scrolling_body() {
         let waiting = task("t-1", TaskState::WaitingOnQuestion);
         let running = task("t-2", TaskState::Running);
-        let lines = frame(&[(project(), project_state(vec![waiting, running]))], 80);
+        let lines = frame(
+            &[(project(), project_state(vec![waiting, running]))],
+            80,
+            false,
+        );
         let pinned: Vec<&Line> = lines.iter().filter(|line| line.pinned).collect();
         let body: Vec<&Line> = lines.iter().filter(|line| !line.pinned).collect();
         assert!(pinned.iter().any(|line| text(line).contains("needs you")));
@@ -410,7 +464,7 @@ mod tests {
             asked_at: at(0),
             answer: None,
         });
-        let lines = frame(&[(project(), project_state(vec![waiting]))], 80);
+        let lines = frame(&[(project(), project_state(vec![waiting]))], 80, false);
         let pinned: Vec<&Line> = lines.iter().filter(|line| line.pinned).collect();
         assert!(
             pinned

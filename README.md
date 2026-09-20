@@ -43,7 +43,9 @@ Adding the same project twice is idempotent; a path that is not an existing dire
 `depot status` prints the rendered checklist for the project this directory belongs to.
 `--project <name>` names one registered project, and `--all` lists every project.
 A directory that matches none is an error that names the registered projects, and a directory inside a project's store belongs to that project.
-A failed or cancelled task fades from the default view once a live task depends on it or a person acknowledges it with `depot task acknowledge <task-id>`; `--history` shows the faded tasks again.
+Landed, failed and cancelled tasks are history.
+The default view shows only actionable work, ordered needs-you, running, validating and pull-request-open, then queued and held, with a one-line count of what is hidden.
+`--history` shows the terminal tasks again.
 
 The store applies its schema migrations on open and refuses a database written by a newer build rather than downgrading it.
 `checklist.md` is rewritten from the records on registration and on every task write; hand edits do not stick.
@@ -188,8 +190,8 @@ The verbs a coordinator drives:
 | `depot task approve <task-id>...` | the user's go, for one task or several in one message. |
 | `depot task answer <task-id> --text <answer> [--by coordinator\|user]` | records an answer and resumes the worker. |
 | `depot task stop <task-id>` | stops a task from any state before it lands: proposed, approved, waiting on a slot or lease, running or validating. It cancels the task, stops the worker session if one exists, and releases the worktree lease the task acquired. A cancelled or landed task needs no stop; stopping a cancelled task is a quiet no-op. |
-| `depot task acknowledge <task-id>` | acknowledges a failed or cancelled task so it fades from the default status. |
-| `depot status [--project <name>] [--all] [--history]` | the live checklist; `--history` shows faded tasks. |
+| `depot task acknowledge <task-id>` | acknowledges a failed or cancelled task on the record. |
+| `depot status [--project <name>] [--all] [--history]` | the live checklist; `--history` adds landed, failed and cancelled tasks. |
 | `depot doc write <name> --content <text\|->` | writes a narrative document under the project's `docs/`. |
 | `depot inbox [--project <name>]` | what happened since the last turn. |
 

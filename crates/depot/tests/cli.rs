@@ -199,7 +199,6 @@ fn status_shows_held_running_blocked_waiting_and_validated_tasks_distinctly() {
         TaskState::Running,
         TaskState::WaitingOnQuestion,
         TaskState::Validated,
-        TaskState::Failed,
     ]
     .into_iter()
     .enumerate()
@@ -223,13 +222,47 @@ fn status_shows_held_running_blocked_waiting_and_validated_tasks_distinctly() {
         "Running",
         "Needs you - waiting on an answer",
         "Validated",
-        "Failed",
     ] {
         assert!(
             rendered.contains(&format!("## {label} (1)")),
             "missing {label} in\n{rendered}"
         );
     }
+}
+
+#[test]
+fn a_failed_task_is_history_until_status_history_asks_for_it() {
+    let cli = Cli::new();
+    let directory = cli.project_directory("example");
+    let added = add_project(&cli.depot_home(), directory.to_str().unwrap()).expect("registered");
+    let store = Store::open(&cli.depot_home()).expect("store");
+    store
+        .put_task(&task(
+            added.project.id.as_str(),
+            "t-1",
+            TaskState::Failed,
+            1,
+        ))
+        .expect("stored");
+
+    let default = cli.run(&["status", "--all"]);
+    assert_eq!(
+        default.status.code(),
+        Some(0),
+        "stderr: {}",
+        stderr(&default)
+    );
+    assert!(!stdout(&default).contains("## Failed"));
+    assert!(stdout(&default).contains("1 failed"));
+
+    let history = cli.run(&["status", "--all", "--history"]);
+    assert_eq!(
+        history.status.code(),
+        Some(0),
+        "stderr: {}",
+        stderr(&history)
+    );
+    assert!(stdout(&history).contains("## Failed (1)"));
 }
 
 #[test]
@@ -1012,7 +1045,7 @@ fn task(project: &str, id: &str, state: TaskState, offset: u64) -> depot_core::T
 }
 
 #[test]
-fn an_acknowledged_task_fades_from_status_and_returns_behind_history() {
+fn an_acknowledged_failed_task_stays_hidden_until_history_asks_for_it() {
     let cli = Cli::new();
     let directory = cli.project_directory("example");
     let added = add_project(&cli.depot_home(), directory.to_str().unwrap()).expect("registered");
@@ -1032,6 +1065,7 @@ fn an_acknowledged_task_fades_from_status_and_returns_behind_history() {
     let faded = cli.run(&["status", "--project", "example"]);
     assert_eq!(faded.status.code(), Some(0), "stderr: {}", stderr(&faded));
     assert!(!stdout(&faded).contains("## Failed"));
+    assert!(stdout(&faded).contains("1 failed"));
 
     let history = cli.run(&["status", "--project", "example", "--history"]);
     assert_eq!(

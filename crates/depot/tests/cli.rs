@@ -100,7 +100,7 @@ fn adding_a_project_registers_it_and_writes_its_home_directory() {
         "stdout: {}",
         stdout(&output)
     );
-    assert!(directory.join(".depot.toml").is_file());
+    assert!(!directory.join(".depot.toml").exists());
 
     let store = Store::open(&cli.depot_home()).expect("store");
     let projects = store.projects().expect("projects");
@@ -117,11 +117,10 @@ fn adding_a_project_registers_it_and_writes_its_home_directory() {
 fn adding_the_same_project_twice_is_idempotent() {
     let cli = Cli::new();
     let directory = cli.project_directory("example");
-    let config = directory.join(".depot.toml");
 
     let first = cli.run(&["project", "add", directory.to_str().unwrap()]);
     assert_eq!(first.status.code(), Some(0), "stderr: {}", stderr(&first));
-    let committed = std::fs::read_to_string(&config).expect("committed config");
+    assert!(!directory.join(".depot.toml").exists());
 
     let second = cli.run(&["project", "add", directory.to_str().unwrap()]);
 
@@ -131,7 +130,7 @@ fn adding_the_same_project_twice_is_idempotent() {
         "stdout: {}",
         stdout(&second)
     );
-    assert_eq!(std::fs::read_to_string(&config).expect("config"), committed);
+    assert!(!directory.join(".depot.toml").exists());
     assert_eq!(
         Store::open(&cli.depot_home())
             .expect("store")

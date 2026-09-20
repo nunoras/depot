@@ -42,7 +42,7 @@ Keep concurrency at 1 on a small host.
 
 ## Project config
 
-In the project repository, `.depot.toml` is committed knowledge: roles, validation, dispatch, PR base.
+In the project repository, `.depot.toml` is machine-local knowledge: roles, validation, dispatch, PR base. `depot project add` ignores it in `.git/info/exclude`, so it never gets committed.
 
 ```
 depot project add /path/to/boxr

@@ -146,18 +146,17 @@ fn registering_a_project_never_writes_machine_local_settings_into_the_repository
 }
 
 #[test]
-fn registering_a_project_twice_leaves_the_committed_config_alone() {
+fn registering_a_project_twice_never_writes_the_project_config() {
     let fixture = support::fixture();
     let directory = support::project_directory(&fixture, "example");
     add_project(&fixture.home, directory.to_str().expect("utf-8 path")).expect("registered");
-    let path = directory.join(PROJECT_CONFIG_FILE_NAME);
-    let before = std::fs::read_to_string(&path).expect("read");
 
     let added = add_project(&fixture.home, directory.to_str().expect("utf-8 path"))
         .expect("registered again");
 
     assert!(!added.created);
-    assert_eq!(std::fs::read_to_string(&path).expect("read"), before);
+    assert!(!added.ignored_config);
+    assert!(!directory.join(PROJECT_CONFIG_FILE_NAME).exists());
 }
 
 fn document(toml_text: &str) -> toml::Value {

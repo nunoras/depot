@@ -5,7 +5,7 @@ use depot_core::{ProjectId, Timestamp};
 use crate::checklist::{render_checklist, render_checklist_observed};
 use crate::clock::now;
 use crate::commands::ensure_profiles_resolve;
-use crate::config::ProjectConfig;
+use crate::config::PROJECT_CONFIG_FILE_NAME;
 use crate::error::{Error, Result};
 use crate::home::{DepotHome, ProjectHome, slug_for};
 use crate::project::{LocationKind, Project};
@@ -15,7 +15,7 @@ use crate::store::Store;
 pub struct Added {
     pub project: Project,
     pub created: bool,
-    pub config_path: Option<PathBuf>,
+    pub ignored_config: bool,
     pub home: ProjectHome,
 }
 
@@ -23,7 +23,11 @@ pub fn add_project(home: &DepotHome, target: &str) -> Result<Added> {
     let resolved = resolve_target(target)?;
     let store = Store::open(home)?;
 
-    let config_path = ensure_project_config(&resolved)?;
+    let ignored_config = resolved
+        .directory
+        .as_deref()
+        .map(ignore_project_config)
+        .unwrap_or(false);
     let existing = store.project(&resolved.id)?;
     let project = match existing {
         Some(project) => project,
@@ -58,7 +62,7 @@ pub fn add_project(home: &DepotHome, target: &str) -> Result<Added> {
     Ok(Added {
         project,
         created,
-        config_path,
+        ignored_config,
         home: project_home,
     })
 }
@@ -178,46 +182,25 @@ fn resolve_target(target: &str) -> Result<Resolved> {
     })
 }
 
-fn ensure_project_config(resolved: &Resolved) -> Result<Option<PathBuf>> {
-    let Some(directory) = &resolved.directory else {
-        return Ok(None);
-    };
-    let path = ProjectConfig::path_in(directory);
-    if !path.exists() {
-        let mut config = ProjectConfig::load(directory)?;
-        config.base_branch = detect_base_branch(directory);
-        config.write(directory)?;
+fn ignore_project_config(directory: &Path) -> bool {
+    let exclude = directory.join(".git").join("info").join("exclude");
+    if !exclude.is_file() {
+        return false;
     }
-    Ok(Some(path))
-}
-
-fn detect_base_branch(directory: &Path) -> String {
-    git_branch(
-        directory,
-        &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
-    )
-    .map(|branch| {
-        branch
-            .strip_prefix("origin/")
-            .unwrap_or(&branch)
-            .to_string()
-    })
-    .or_else(|| git_branch(directory, &["symbolic-ref", "--short", "HEAD"]))
-    .unwrap_or_else(|| "main".to_string())
-}
-
-fn git_branch(directory: &Path, arguments: &[&str]) -> Option<String> {
-    let output = std::process::Command::new("git")
-        .arg("-C")
-        .arg(directory)
-        .args(arguments)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
+    let existing = std::fs::read_to_string(&exclude).unwrap_or_default();
+    if existing
+        .lines()
+        .any(|line| line.trim() == PROJECT_CONFIG_FILE_NAME)
+    {
+        return false;
     }
-    let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    (!branch.is_empty()).then_some(branch)
+    let mut updated = existing;
+    if !updated.is_empty() && !updated.ends_with('\n') {
+        updated.push('\n');
+    }
+    updated.push_str(PROJECT_CONFIG_FILE_NAME);
+    updated.push('\n');
+    std::fs::write(&exclude, updated).is_ok()
 }
 
 fn unique_slug(taken: &[String], base: &str) -> String {

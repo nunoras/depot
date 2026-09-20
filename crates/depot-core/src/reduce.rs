@@ -1010,21 +1010,6 @@ pub fn dependency_satisfied(state: &ProjectState, dependency: &Dependency) -> bo
         == Some(&dependency.commit)
 }
 
-pub fn task_faded(state: &ProjectState, task: &Task) -> bool {
-    if !matches!(task.state, TaskState::Failed | TaskState::Cancelled) {
-        return false;
-    }
-    if task.acknowledged_at.is_some() {
-        return true;
-    }
-    state.tasks.values().any(|other| {
-        other.id != task.id
-            && !matches!(other.state, TaskState::Failed | TaskState::Cancelled)
-            && (other.base_dependency.as_ref() == Some(&task.id)
-                || other.dependencies.iter().any(|d| d.task == task.id))
-    })
-}
-
 fn refresh_pending_dependents(state: &mut ProjectState, prerequisite: &TaskId, commit: &CommitId) {
     for task in state.tasks.values_mut() {
         if !matches!(task.state, TaskState::Proposed | TaskState::Approved) {

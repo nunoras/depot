@@ -3398,65 +3398,6 @@ fn rule_15_an_acknowledgement_fades_a_failed_or_cancelled_task() {
     ]);
 }
 
-#[test]
-fn rule_16_a_failed_or_cancelled_task_fades_when_superseded_or_acknowledged() {
-    fn faded(want: bool) -> impl Fn(&ProjectState) -> bool {
-        move |state: &ProjectState| task_faded(state, subject(state, "t1")) == want
-    }
-
-    run(vec![
-        case(
-            "a fresh failure does not fade",
-            state(vec![task("t1", TaskState::Failed)]),
-            vec![fact(1_000, FactKind::Polled)],
-        )
-        .when("t1", TaskState::Failed, vec![])
-        .checking(faded(false)),
-        case(
-            "a running replacement filed against the failure fades it",
-            state(vec![
-                task("t1", TaskState::Failed),
-                with_base(task("t2", TaskState::Running), "t1"),
-            ]),
-            vec![fact(2_000, FactKind::Polled)],
-        )
-        .when("t1", TaskState::Failed, vec![])
-        .checking(faded(true)),
-        case(
-            "a dependency on the failure also fades it",
-            state(vec![
-                task("t1", TaskState::Cancelled),
-                depending_on(task("t2", TaskState::Proposed), "t1", "c1"),
-            ]),
-            vec![fact(3_000, FactKind::Polled)],
-        )
-        .when("t1", TaskState::Cancelled, vec![])
-        .checking(faded(true)),
-        case(
-            "another failure filed against the failure does not fade it",
-            state(vec![
-                task("t1", TaskState::Failed),
-                with_base(task("t2", TaskState::Failed), "t1"),
-            ]),
-            vec![fact(4_000, FactKind::Polled)],
-        )
-        .when("t1", TaskState::Failed, vec![])
-        .checking(faded(false)),
-        case(
-            "an acknowledgement fades it without a replacement",
-            state(vec![task("t1", TaskState::Failed)]),
-            vec![fact(
-                5_000,
-                FactKind::TaskAcknowledged {
-                    task: task_id("t1"),
-                },
-            )],
-        )
-        .when("t1", TaskState::Failed, vec![Action::RenderChecklist])
-        .checking(faded(true)),
-    ]);
-}
-
 fn held(mut task: Task) -> Task {
     task.hold_pr = true;
     task

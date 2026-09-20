@@ -64,8 +64,8 @@ fn the_checklist_render_is_byte_identical_whatever_order_records_arrived_in() {
 }
 
 #[test]
-fn the_checklist_shows_every_task_state_distinctly() {
-    let rendered = render_checklist(&support::varied_state(), false);
+fn the_checklist_shows_every_task_state_distinctly_in_history() {
+    let rendered = render_checklist(&support::varied_state(), true);
 
     for label in [
         "Needs you - waiting on an answer",
@@ -143,7 +143,7 @@ fn the_checklist_states_what_each_task_waits_on() {
             always_relay_questions: false,
             auto_merge: false,
         },
-        false,
+        true,
     );
 
     for expected in [
@@ -190,7 +190,7 @@ fn an_empty_project_renders_a_checklist_with_no_tasks() {
             always_relay_questions: false,
             auto_merge: false,
         },
-        false,
+        true,
     );
 
     assert_eq!(

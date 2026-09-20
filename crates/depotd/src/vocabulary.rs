@@ -104,6 +104,7 @@ pub enum FactTag {
     TaskApproved,
     TaskCancelled,
     TaskAcknowledged,
+    TaskRetried,
     QuestionAsked,
     QuestionAnswered,
     WorktreeAcquireRequested,
@@ -144,6 +145,7 @@ pub fn fact_tag(kind: &FactKind) -> FactTag {
         FactKind::TaskReleased { .. } => FactTag::TaskReleased,
         FactKind::TaskApproved { .. } => FactTag::TaskApproved,
         FactKind::TaskCancelled { .. } => FactTag::TaskCancelled,
+        FactKind::TaskRetried { .. } => FactTag::TaskRetried,
         FactKind::TaskAcknowledged { .. } => FactTag::TaskAcknowledged,
         FactKind::QuestionAsked { .. } => FactTag::QuestionAsked,
         FactKind::QuestionAnswered { .. } => FactTag::QuestionAnswered,
@@ -186,6 +188,7 @@ pub fn fact_tag_name(tag: FactTag) -> &'static str {
         FactTag::TaskReleased => "task_released",
         FactTag::TaskApproved => "task_approved",
         FactTag::TaskCancelled => "task_cancelled",
+        FactTag::TaskRetried => "task_retried",
         FactTag::TaskAcknowledged => "task_acknowledged",
         FactTag::QuestionAsked => "question_asked",
         FactTag::QuestionAnswered => "question_answered",
@@ -228,6 +231,7 @@ pub fn fact_tag_from_name(name: &str) -> Result<FactTag> {
         "task_released" => FactTag::TaskReleased,
         "task_approved" => FactTag::TaskApproved,
         "task_cancelled" => FactTag::TaskCancelled,
+        "task_retried" => FactTag::TaskRetried,
         "task_acknowledged" => FactTag::TaskAcknowledged,
         "question_asked" => FactTag::QuestionAsked,
         "question_answered" => FactTag::QuestionAnswered,
@@ -274,6 +278,7 @@ pub fn fact_task(kind: &FactKind) -> Option<TaskId> {
         | FactKind::TaskReleased { task }
         | FactKind::TaskApproved { task }
         | FactKind::TaskCancelled { task }
+        | FactKind::TaskRetried { task }
         | FactKind::TaskAcknowledged { task }
         | FactKind::QuestionAsked { task, .. }
         | FactKind::QuestionAnswered { task, .. }

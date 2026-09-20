@@ -225,6 +225,10 @@ impl Golden {
         }
     }
 
+    pub fn pass_validation_in_worktree(&self) {
+        write_validation_script(&self.lease, Validation::Passing);
+    }
+
     pub fn reject_worktree_acquire(&self) {
         self.treehouse.respond("get", "", "acquire interrupted", 1);
     }
@@ -367,10 +371,14 @@ impl Golden {
     }
 
     pub fn worker_commits_and_submits(&self) -> Output {
+        self.worker_commits_and_submits_with("wire the store", "the work")
+    }
+
+    pub fn worker_commits_and_submits_with(&self, message: &str, contents: &str) -> Output {
         self.worker(&script(&[
-            "printf 'the work\\n' > change.txt",
+            &format!("printf '{contents}\\n' > change.txt"),
             "git add change.txt",
-            "git commit -m \"wire the store\"",
+            &format!("git commit -m \"{message}\""),
             &format!("depot submit --task {TASK} --project {SLUG}"),
         ]))
     }
@@ -714,23 +722,13 @@ pub fn settings_with_on_event(on_event: Option<OnEventSettings>) -> Settings {
     }
 }
 
-fn write_project(repo: &Path, validation: Validation) {
-    let (name, output, exit_code) = match validation {
-        Validation::Passing => ("validate", PASSING_OUTPUT, 0),
-        Validation::Failing => ("validate", FAILING_OUTPUT, 1),
-    };
-    let (script, command) = if cfg!(windows) {
-        (
-            format!("{name}.cmd"),
-            format!("@echo off\r\necho {output}\r\nexit /b {exit_code}\r\n"),
-        )
+pub fn write_project(repo: &Path, validation: Validation) {
+    write_validation_script(repo, validation);
+    let script = if cfg!(windows) {
+        "validate.cmd".to_owned()
     } else {
-        (
-            format!("{name}.sh"),
-            format!("printf '{output}\\n'\nexit {exit_code}\n"),
-        )
+        "validate.sh".to_owned()
     };
-    fs::write(repo.join(&script), command).expect("the validation script is written");
     let validation_command = if cfg!(windows) {
         script
     } else {
@@ -743,6 +741,25 @@ fn write_project(repo: &Path, validation: Validation) {
         ),
     )
     .expect("the committed project config is written");
+}
+
+pub fn write_validation_script(repo: &Path, validation: Validation) {
+    let (output, exit_code) = match validation {
+        Validation::Passing => (PASSING_OUTPUT, 0),
+        Validation::Failing => (FAILING_OUTPUT, 1),
+    };
+    let (script, command) = if cfg!(windows) {
+        (
+            "validate.cmd".to_owned(),
+            format!("@echo off\r\necho {output}\r\nexit /b {exit_code}\r\n"),
+        )
+    } else {
+        (
+            "validate.sh".to_owned(),
+            format!("printf '{output}\\n'\nexit {exit_code}\n"),
+        )
+    };
+    fs::write(repo.join(&script), command).expect("the validation script is written");
 }
 
 fn configure(directory: &Path) {

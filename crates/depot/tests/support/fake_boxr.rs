@@ -48,6 +48,19 @@ impl FakeBoxr {
         write("exit", &format!("{exit_code}\n"));
     }
 
+    pub fn respond_launches(&self, sessions: &[&str]) {
+        for (index, session) in sessions.iter().enumerate() {
+            let suffix = format!(".{}", index + 1);
+            let write = |field: &str, text: &str| {
+                fs::write(self.root.join(format!("--harness.{field}{suffix}")), text)
+                    .expect("a scripted fake boxr response is written");
+            };
+            write("stdout", &format!("{session}\n"));
+            write("stderr", "");
+            write("exit", "0\n");
+        }
+    }
+
     pub fn report_running(&self) {
         self.respond(
             "status",

@@ -131,6 +131,22 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             }
         }
 
+        FactKind::TaskRetried { task } => {
+            let retryable = next
+                .tasks
+                .get(task)
+                .is_some_and(|task| matches!(task.state, TaskState::Failed | TaskState::Cancelled));
+            if retryable && let Some(task) = next.tasks.get_mut(task) {
+                task.state = TaskState::Approved;
+                task.retry = None;
+                task.merge_refused = None;
+                task.acknowledged_at = None;
+                task.updated_at = fact.at;
+                changed = true;
+                approved.push(task.id.clone());
+            }
+        }
+
         FactKind::QuestionAsked { task, text, relay } => {
             let relay = *relay || next.always_relay_questions;
             if let Some(task) = next.tasks.get_mut(task) {

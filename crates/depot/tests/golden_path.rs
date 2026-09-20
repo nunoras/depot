@@ -2016,3 +2016,109 @@ fn a_conflicting_pull_request_is_rebased_by_a_fix_worker_and_lands() {
     assert!(default.contains("1 landed"), "{default}");
     assert_eq!(default, golden.checklist());
 }
+
+#[test]
+fn a_retry_of_a_failed_task_runs_a_fresh_attempt_on_the_lease_it_still_holds() {
+    let golden = Golden::new(Validation::Failing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+
+    golden.worker_commits_and_submits();
+    let failed_commit = golden.head();
+    daemon.tick().expect("the daemon validates the commit");
+
+    let failed = golden.task();
+    assert_eq!(failed.state, TaskState::Failed);
+    assert_eq!(failed.attempts.len(), 1);
+    assert_eq!(
+        failed.attempts[0].worktree,
+        Some(WorktreeLease::new(LEASE)),
+        "the failed task keeps its worktree"
+    );
+    assert_eq!(calls_to(&golden.treehouse.calls(), "get").len(), 1);
+
+    support::write_project(&golden.repo, Validation::Passing);
+    golden.pass_validation_in_worktree();
+    const RELAUNCHED_SESSION: &str = "b3c7e2";
+    golden.boxr.respond_launches(&[SESSION, RELAUNCHED_SESSION]);
+    assert_eq!(
+        golden.depot_ok(&["task", "retry", TASK, "--project", SLUG]),
+        format!("retried {TASK}\n")
+    );
+
+    let retried = golden.task();
+    assert_eq!(
+        retried.state,
+        TaskState::Running,
+        "the retry puts the task straight back into the queue"
+    );
+    assert_eq!(retried.attempts.len(), 2);
+
+    daemon
+        .tick()
+        .expect("the daemon reuses the lease the task still holds");
+    daemon
+        .tick()
+        .expect("the daemon launches a fresh worker on it");
+
+    let relaunched = golden.task();
+    assert_eq!(relaunched.attempts.len(), 2);
+    assert_eq!(
+        relaunched.attempts[1].session,
+        Some(SessionId::new(RELAUNCHED_SESSION))
+    );
+    assert_eq!(
+        relaunched.attempts[1].worktree,
+        Some(WorktreeLease::new(LEASE)),
+        "the retry reuses the lease the task still holds"
+    );
+    assert_eq!(
+        calls_to(&golden.treehouse.calls(), "get").len(),
+        1,
+        "a lease that still exists is never acquired twice"
+    );
+    assert!(calls_to(&golden.treehouse.calls(), "return").is_empty());
+    assert_eq!(golden.boxr.calls_to("--harness").len(), 2);
+
+    let submitted = golden.worker_commits_and_submits_with("fix the store", "the fixed work");
+    assert_eq!(
+        submitted.status.code(),
+        Some(0),
+        "the retried worker failed: {} {}",
+        support::stdout(&submitted),
+        support::stderr(&submitted)
+    );
+    let fixed_commit = golden.head();
+    assert_ne!(fixed_commit, failed_commit);
+    golden.script_pull_request(&fixed_commit);
+    daemon
+        .tick()
+        .expect("the daemon validates the retried attempt and opens the pull request");
+
+    let opened = golden.task();
+    assert_eq!(opened.state, TaskState::PrOpen);
+    assert_eq!(
+        opened.branch_head,
+        Some(CommitId::new(fixed_commit.clone()))
+    );
+    assert_eq!(
+        golden.state_history(TASK),
+        vec![
+            PROPOSED,
+            APPROVED,
+            ACQUIRED,
+            TURN_STARTED,
+            SUBMITTED,
+            VALIDATED,
+            "task_retried",
+            ACQUIRED,
+            TURN_STARTED,
+            SUBMITTED,
+            VALIDATED,
+            PUSHED,
+            OPENED,
+            CHECKS,
+        ]
+    );
+}

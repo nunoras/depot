@@ -224,6 +224,22 @@ pub fn acknowledge_task(home: &DepotHome, selection: Option<&str>, id: &str) -> 
     task(&store, &project, &id)
 }
 
+pub fn retry_task(home: &DepotHome, selection: Option<&str>, id: &str) -> Result<Task> {
+    let store = Store::open(home)?;
+    let project = select_project(&store, selection)?;
+    let id = TaskId::new(id);
+    let current = task(&store, &project, &id)?;
+    if !matches!(current.state, TaskState::Failed | TaskState::Cancelled) {
+        return Err(transition_refused(&current, "retried"));
+    }
+    let fact = Fact {
+        at: now(),
+        kind: FactKind::TaskRetried { task: id.clone() },
+    };
+    apply(&store, &project, &["task_retried", id.as_str()], &fact)?;
+    task(&store, &project, &id)
+}
+
 pub fn stop_task(home: &DepotHome, selection: Option<&str>, id: &str) -> Result<Task> {
     let store = Store::open(home)?;
     let project = select_project(&store, selection)?;

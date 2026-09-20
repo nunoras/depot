@@ -233,13 +233,13 @@ fn frame(
             .filter(|task| task.state == TaskState::WaitingOnQuestion)
             .collect();
         if !waiting.is_empty() {
-            lines.push(pinned(vec![Segment::Text(format!("* {}", project.slug))]));
+            lines.push(pinned(vec![Segment::Text(project.slug.clone())]));
             for task in waiting {
                 push_waiting_block(&mut lines, task, now, width);
             }
             lines.push(pinned(vec![Segment::Text(String::new())]));
         }
-        lines.push(body(vec![Segment::Text(format!("* {}", project.slug))]));
+        lines.push(body(vec![Segment::Text(project.slug.clone())]));
         if project.tasks.is_empty() {
             lines.push(body(vec![Segment::Dim("  no tasks".to_string())]));
         }

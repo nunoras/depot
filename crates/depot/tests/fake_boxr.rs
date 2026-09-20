@@ -38,14 +38,18 @@ fn respond(root: &Path, arguments: &[String]) -> ExitCode {
         .map(String::as_str)
         .unwrap_or("default")
         .to_owned();
-    if let Ok(text) = fs::read_to_string(root.join(format!("{key}.stdout"))) {
+    let suffix = match sequence_index(root, &key) {
+        Some(index) => format!(".{index}"),
+        None => String::new(),
+    };
+    if let Ok(text) = fs::read_to_string(root.join(format!("{key}.stdout{suffix}"))) {
         print!("{text}");
     }
     let _ = io::stdout().flush();
-    if let Ok(text) = fs::read_to_string(root.join(format!("{key}.stderr"))) {
+    if let Ok(text) = fs::read_to_string(root.join(format!("{key}.stderr{suffix}"))) {
         eprint!("{text}");
     }
-    let code = fs::read_to_string(root.join(format!("{key}.exit")))
+    let code = fs::read_to_string(root.join(format!("{key}.exit{suffix}")))
         .ok()
         .and_then(|text| text.trim().parse::<u8>().ok())
         .unwrap_or(0);
@@ -56,4 +60,17 @@ fn respond(root: &Path, arguments: &[String]) -> ExitCode {
         let _ = fs::write(root.join("status.stdout"), state);
     }
     ExitCode::from(code)
+}
+
+fn sequence_index(root: &Path, key: &str) -> Option<usize> {
+    if !root.join(format!("{key}.stdout.1")).exists() {
+        return None;
+    }
+    let calls = fs::read_to_string(root.join("calls.txt")).ok()?;
+    Some(
+        calls
+            .split(RECORD)
+            .filter(|record| record.split(SEPARATOR).next() == Some(key))
+            .count(),
+    )
 }

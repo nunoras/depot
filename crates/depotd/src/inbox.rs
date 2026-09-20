@@ -126,6 +126,7 @@ fn need_for(tag: FactTag, task: Option<&Task>) -> Need {
         | FactTag::TaskReleased
         | FactTag::TaskApproved
         | FactTag::TaskCancelled
+        | FactTag::TaskRetried
         | FactTag::TaskAcknowledged
         | FactTag::QuestionAnswered
         | FactTag::WorktreeAcquireRequested
@@ -168,6 +169,7 @@ fn headline(tag: FactTag, event: &RecordedEvent, task: Option<&Task>) -> Result<
         FactTag::TaskProposed => "a task was filed, holding for approval".to_string(),
         FactTag::TaskApproved => "approved".to_string(),
         FactTag::TaskCancelled => "stopped".to_string(),
+        FactTag::TaskRetried => "scheduled to run again".to_string(),
         FactTag::TaskAcknowledged => "acknowledged; it fades from the default status".to_string(),
         FactTag::TaskReleased => "the pull request hold was released".to_string(),
         FactTag::QuestionAsked => match unanswered(task) {

@@ -3645,3 +3645,93 @@ fn open_with_submitted_attempt() -> Task {
         },
     )
 }
+
+#[test]
+fn rule_18_a_retry_sends_a_failed_or_cancelled_task_back_through_the_queue() {
+    let retried = |id: &str| FactKind::TaskRetried { task: task_id(id) };
+
+    run(vec![
+        case(
+            "a failed task runs again on a fresh attempt with its lease kept",
+            state(vec![with_attempt(
+                {
+                    let mut task = task("t1", TaskState::Failed);
+                    task.acknowledged_at = Some(at(500));
+                    task.merge_refused = Some("no fast forward".to_owned());
+                    task
+                },
+                Attempt {
+                    outcome: AttemptOutcome::Failed,
+                    worktree: Some(lease("w1")),
+                    ..spent(BUILD)
+                },
+            )]),
+            vec![fact(1_000, retried("t1"))],
+        )
+        .when(
+            "t1",
+            TaskState::Running,
+            vec![
+                acquire("t1", Baseline::DefaultBranchHead),
+                launch("t1", BUILD),
+                Action::RenderChecklist,
+            ],
+        )
+        .checking(|state| {
+            let task = subject(state, "t1");
+            task.acknowledged_at.is_none()
+                && task.merge_refused.is_none()
+                && task.retry.is_none()
+                && task.attempts.len() == 2
+                && task.attempts[0].worktree == Some(lease("w1"))
+                && task.attempts[1].outcome == AttemptOutcome::InFlight
+        }),
+        case(
+            "a cancelled task runs again",
+            state(vec![task("t1", TaskState::Cancelled)]),
+            vec![fact(2_000, retried("t1"))],
+        )
+        .when(
+            "t1",
+            TaskState::Running,
+            vec![
+                acquire("t1", Baseline::DefaultBranchHead),
+                launch("t1", BUILD),
+                Action::RenderChecklist,
+            ],
+        ),
+        case(
+            "a running task cannot be retried",
+            state(vec![running("t1")]),
+            vec![fact(3_000, retried("t1"))],
+        )
+        .when("t1", TaskState::Running, vec![]),
+        case(
+            "a landed task cannot be retried",
+            state(vec![task("t1", TaskState::Landed)]),
+            vec![fact(4_000, retried("t1"))],
+        )
+        .when("t1", TaskState::Landed, vec![]),
+        case(
+            "a retried task held back by the worker cap waits in the approved queue",
+            state(vec![
+                running("t1"),
+                running("t2"),
+                running("t3"),
+                running("t4"),
+                {
+                    let mut task = task("t5", TaskState::Failed);
+                    task.acknowledged_at = Some(at(500));
+                    task
+                },
+            ]),
+            vec![fact(5_000, retried("t5"))],
+        )
+        .when(
+            "t5",
+            TaskState::Approved,
+            vec![queue("t5", None), Action::RenderChecklist],
+        )
+        .checking(|state| subject(state, "t5").acknowledged_at.is_none()),
+    ]);
+}

@@ -564,6 +564,16 @@ where
                 kind: FactKind::WorktreeAcquireRequested { task: task.clone() },
             },
         )?;
+        if let Some(lease) = self
+            .task(&task)?
+            .attempts
+            .iter()
+            .rev()
+            .find_map(|attempt| attempt.worktree.clone())
+            && self.leased_worktree(&task)?.as_ref() == Some(&lease)
+        {
+            return self.record_worktree_acquired(&task, lease, baseline);
+        }
         let repo = self.repository()?;
         let task = self.task(&task)?;
         let taken = self
@@ -588,8 +598,14 @@ where
         lease: WorktreeLease,
         baseline: Baseline,
     ) -> Result<()> {
+        let attempt = self.task(task)?.attempts.len();
         self.record(
-            &event_key(&["worktree_acquired", task.as_str(), lease.as_str()]),
+            &event_key(&[
+                "worktree_acquired",
+                task.as_str(),
+                &attempt.to_string(),
+                lease.as_str(),
+            ]),
             Fact {
                 at: now(),
                 kind: FactKind::WorktreeAcquired {

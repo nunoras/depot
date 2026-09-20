@@ -190,8 +190,9 @@ The verbs a coordinator drives:
 | `depot task approve <task-id>...` | the user's go, for one task or several in one message. |
 | `depot task answer <task-id> --text <answer> [--by coordinator\|user]` | records an answer and resumes the worker. |
 | `depot task stop <task-id>` | stops a task from any state before it lands: proposed, approved, waiting on a slot or lease, running or validating. It cancels the task, stops the worker session if one exists, and releases the worktree lease the task acquired. A cancelled or landed task needs no stop; stopping a cancelled task is a quiet no-op. |
-| `depot task acknowledge <task-id>` | acknowledges a failed or cancelled task on the record. |
-| `depot status [--project <name>] [--all] [--history]` | the live checklist; `--history` adds landed, failed and cancelled tasks. |
+| `depot task acknowledge <task-id>` | acknowledges a failed or cancelled task so it fades from the default status. |
+| `depot task retry <task-id>` | sends a failed or cancelled task back to the approved queue for a fresh attempt. A worktree the task still leases is reused for the new attempt. |
+| `depot status [--project <name>] [--all] [--history]` | the live checklist; `--history` shows faded tasks. |
 | `depot doc write <name> --content <text\|->` | writes a narrative document under the project's `docs/`. |
 | `depot inbox [--project <name>]` | what happened since the last turn. |
 

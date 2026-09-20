@@ -5,7 +5,7 @@ mod tui;
 use depotd::{
     DepotHome, Error, StatusSelection, TaskRequest, acknowledge_task, add_project, add_task,
     answer_question, approve_tasks, ask_question, read_inbox, redirect_task, release_task,
-    render_status, stop_task, submit_task, write_narrative,
+    render_status, retry_task, stop_task, submit_task, write_narrative,
 };
 
 const USAGE: &str = "\
@@ -22,6 +22,7 @@ USAGE
   depot task answer <task-id> --text <answer> [--by <coordinator|user>] [--project <name>]
   depot task stop <task-id> [--project <name>]
   depot task acknowledge <task-id> [--project <name>]
+  depot task retry <task-id> [--project <name>]
   depot task redirect <task-id> --text <direction> [--project <name>]
   depot ask --task <task-id> --project <name> [--relay] <question>
   depot submit --task <task-id> --project <name>
@@ -40,6 +41,8 @@ NOTES
   Landed, failed and cancelled tasks are history; `--history` shows them.
   `task redirect` queues a new direction for a running worker; the daemon delivers it when the
   worker's current turn ends.
+  `task retry` sends a failed or cancelled task back to the approved queue; a worktree the task
+  still leases is reused for the new attempt.
 ";
 
 fn main() {
@@ -155,11 +158,13 @@ fn task_command(arguments: &[String]) -> Result<String, Failure> {
         Some("answer") => task_answer(&arguments[1..]),
         Some("stop") => task_stop(&arguments[1..]),
         Some("acknowledge") => task_acknowledge(&arguments[1..]),
+        Some("retry") => task_retry(&arguments[1..]),
         Some("redirect") => task_redirect(&arguments[1..]),
         Some("release") => task_release(&arguments[1..]),
         Some(other) => Err(Failure::Usage(format!("unknown task command `{other}`"))),
         None => Err(Failure::Usage(
-            "`depot task` needs a subcommand: add, approve, answer, stop or release".to_string(),
+            "`depot task` needs a subcommand: add, approve, answer, stop, retry or release"
+                .to_string(),
         )),
     }
 }
@@ -254,6 +259,21 @@ fn task_acknowledge(arguments: &[String]) -> Result<String, Failure> {
     let home = DepotHome::resolve()?;
     let task = acknowledge_task(&home, flags.value("project"), &ids[0])?;
     Ok(format!("acknowledged {}\n", task.id))
+}
+
+fn task_retry(arguments: &[String]) -> Result<String, Failure> {
+    let flags = Flags::parse(arguments, &[])?;
+    flags.reject_unknown(&["project"])?;
+    let ids = flags.positionals();
+    if ids.len() != 1 {
+        return Err(Failure::Usage(
+            "`depot task retry` needs exactly one task id".to_string(),
+        ));
+    }
+
+    let home = DepotHome::resolve()?;
+    let task = retry_task(&home, flags.value("project"), &ids[0])?;
+    Ok(format!("retried {}\n", task.id))
 }
 
 fn task_redirect(arguments: &[String]) -> Result<String, Failure> {

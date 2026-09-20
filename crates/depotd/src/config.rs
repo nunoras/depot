@@ -82,6 +82,8 @@ pub struct ValidationConfig {
 pub struct PullRequestConfig {
     pub base: String,
     pub auto_merge: bool,
+    pub describe_profile: Option<String>,
+    pub describe_timeout_seconds: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -108,11 +110,17 @@ impl Default for ProjectConfig {
     }
 }
 
+pub fn default_describe_timeout_seconds() -> u64 {
+    900
+}
+
 impl Default for PullRequestConfig {
     fn default() -> Self {
         Self {
             base: "main".to_string(),
             auto_merge: false,
+            describe_profile: None,
+            describe_timeout_seconds: default_describe_timeout_seconds(),
         }
     }
 }

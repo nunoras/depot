@@ -6,7 +6,7 @@ mod tasks;
 use std::path::Path;
 use std::time::Duration;
 
-use depot_core::{Fact, ProjectId, ProjectState, Timestamp};
+use depot_core::{Fact, Limits, ProjectId, ProjectState, Timestamp};
 use rusqlite::{Connection, params};
 
 use crate::config::ProjectConfig;
@@ -133,7 +133,10 @@ impl Store {
             coordinator: self.coordinator_session(&project.id)?,
             profiles: config.profiles()?,
             fallback_profiles: settings.profile_fallbacks(),
-            limits: settings.limits(),
+            limits: Limits {
+                max_concurrent_tasks: config.max_concurrent_tasks.min(settings.concurrency),
+                ..settings.limits()
+            },
             always_relay_questions: config.questions.always_relay,
             auto_merge: config.pull_request.auto_merge,
         })

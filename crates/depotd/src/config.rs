@@ -14,6 +14,8 @@ pub const PROJECT_CONFIG_FILE_NAME: &str = ".depot.toml";
 #[serde(default, deny_unknown_fields)]
 pub struct ProjectConfig {
     pub base_branch: String,
+    #[serde(default = "default_max_concurrent_tasks")]
+    pub max_concurrent_tasks: usize,
     pub profiles: BTreeMap<String, String>,
     pub validation: ValidationConfig,
     pub pull_request: PullRequestConfig,
@@ -88,10 +90,15 @@ pub struct QuestionsConfig {
     pub always_relay: bool,
 }
 
+fn default_max_concurrent_tasks() -> usize {
+    1
+}
+
 impl Default for ProjectConfig {
     fn default() -> Self {
         Self {
             base_branch: "main".to_string(),
+            max_concurrent_tasks: default_max_concurrent_tasks(),
             profiles: BTreeMap::new(),
             validation: ValidationConfig::default(),
             pull_request: PullRequestConfig::default(),

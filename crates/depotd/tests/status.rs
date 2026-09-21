@@ -239,6 +239,7 @@ fn running_tasks_carry_attempt_age_and_observed_liveness() {
     let mut sessionless =
         support::simple_task(&added.project.id, "t-live", TaskState::Running, 1_000);
     sessionless.attempts.push(depot_core::Attempt {
+        last_seen_at: None,
         session: None,
         profile: depot_core::ProfileId::new("pi"),
         worktree: Some("lease".to_string().into()),
@@ -250,6 +251,7 @@ fn running_tasks_carry_attempt_age_and_observed_liveness() {
 
     let mut unseen = support::simple_task(&added.project.id, "t-unseen", TaskState::Running, 1_000);
     unseen.attempts.push(depot_core::Attempt {
+        last_seen_at: None,
         session: Some(depot_core::SessionId::new("s-1")),
         profile: depot_core::ProfileId::new("pi"),
         worktree: Some("lease".to_string().into()),
@@ -268,6 +270,7 @@ fn running_tasks_carry_attempt_age_and_observed_liveness() {
         finished_at: None,
         outcome: depot_core::AttemptOutcome::InFlight,
         rebase: false,
+        last_seen_at: Some(depot_core::Timestamp::from_millis(1_000 + 14 * 60 * 1000)),
     });
 
     for task in [&sessionless, &unseen, &alive] {
@@ -291,9 +294,98 @@ fn running_tasks_carry_attempt_age_and_observed_liveness() {
         "{rendered}"
     );
     assert!(
-        rendered.contains("- attempt: in_flight 15m, session `s-2` alive"),
+        rendered.contains("- attempt: in_flight 15m, session `s-2` last seen 1m"),
         "{rendered}"
     );
+}
+
+#[test]
+fn a_fresh_observation_reads_as_last_seen() {
+    let rendered = rendered_attempt_line(40_000);
+    assert!(
+        rendered.contains("session `s-1` last seen 40s"),
+        "{rendered}"
+    );
+    assert!(!rendered.contains("Needs you - unobserved"), "{rendered}");
+}
+
+#[test]
+fn a_stale_observation_reads_as_unobserved_and_needs_you() {
+    let rendered = rendered_attempt_line(2 * 60 * 60 * 1000 + 41 * 60 * 1000);
+    assert!(
+        rendered.contains("session `s-1` unobserved for 2h41m"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("## Needs you - unobserved sessions (1)"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(
+            "- `t-1` **task t-1** - session `s-1` unobserved for 2h41m; check whether the worker is stuck"
+        ),
+        "{rendered}"
+    );
+}
+
+#[test]
+fn a_never_observed_session_still_reads_as_not_yet_seen() {
+    let fixture = support::fixture();
+    let added = support::register(&fixture, "example");
+    let store = Store::open(&fixture.home).expect("store");
+    let mut task = support::simple_task(&added.project.id, "t-1", TaskState::Running, 1_000);
+    task.attempts.push(depot_core::Attempt {
+        session: Some(depot_core::SessionId::new("s-1")),
+        profile: depot_core::ProfileId::new("pi"),
+        worktree: Some("lease".to_string().into()),
+        started_at: depot_core::Timestamp::from_millis(1_000),
+        finished_at: None,
+        outcome: depot_core::AttemptOutcome::InFlight,
+        rebase: false,
+        last_seen_at: None,
+    });
+    store.put_task(&task).expect("stored");
+
+    let rendered = render_status_at(
+        &fixture.home,
+        &StatusSelection::All,
+        false,
+        depot_core::Timestamp::from_millis(1_000 + 9 * 60 * 60 * 1000),
+    )
+    .expect("status");
+
+    assert!(
+        rendered.contains("session `s-1` not yet seen alive"),
+        "{rendered}"
+    );
+    assert!(!rendered.contains("Needs you - unobserved"), "{rendered}");
+}
+
+fn rendered_attempt_line(seen_age_millis: u64) -> String {
+    let now = 1_000 + 9 * 60 * 60 * 1000;
+    let fixture = support::fixture();
+    let added = support::register(&fixture, "example");
+    let store = Store::open(&fixture.home).expect("store");
+    let mut task = support::simple_task(&added.project.id, "t-1", TaskState::Running, 1_000);
+    task.attempts.push(depot_core::Attempt {
+        session: Some(depot_core::SessionId::new("s-1")),
+        profile: depot_core::ProfileId::new("pi"),
+        worktree: Some("lease".to_string().into()),
+        started_at: depot_core::Timestamp::from_millis(1_000),
+        finished_at: None,
+        outcome: depot_core::AttemptOutcome::InFlight,
+        rebase: false,
+        last_seen_at: Some(depot_core::Timestamp::from_millis(now - seen_age_millis)),
+    });
+    store.put_task(&task).expect("stored");
+
+    render_status_at(
+        &fixture.home,
+        &StatusSelection::All,
+        false,
+        depot_core::Timestamp::from_millis(now),
+    )
+    .expect("status")
 }
 
 #[test]
@@ -303,6 +395,7 @@ fn the_written_checklist_stays_free_of_observation_time() {
     let store = Store::open(&fixture.home).expect("store");
     let mut task = support::simple_task(&added.project.id, "t-1", TaskState::Running, 1_000);
     task.attempts.push(depot_core::Attempt {
+        last_seen_at: None,
         session: None,
         profile: depot_core::ProfileId::new("pi"),
         worktree: None,

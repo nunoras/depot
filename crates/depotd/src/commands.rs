@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use depot_core::{AnsweredBy, CommitId, Dependency, Fact, FactKind, Role, Task, TaskId, TaskState};
 
+use crate::adapters::process::Program;
+use crate::adapters::sessions::{Boxr, Sessions};
 use crate::clock::now;
 use crate::config::PROJECT_CONFIG_FILE_NAME;
 use crate::documents::write_document;
@@ -260,13 +262,21 @@ pub fn redirect_task(
     selection: Option<&str>,
     id: &str,
     text: &str,
-) -> Result<Task> {
+    queue: bool,
+) -> Result<(Task, bool)> {
     let store = Store::open(home)?;
     let project = select_project(&store, selection)?;
     let id = TaskId::new(id);
     let current = task(&store, &project, &id)?;
     if current.state != TaskState::Running {
         return Err(transition_refused(&current, "redirected"));
+    }
+    let turn_running = turn_is_running(&current);
+    if !turn_running && !queue {
+        return Err(Error::Project(format!(
+            "task `{}` has no running worker turn; pass `--queue` to deliver it at the next turn",
+            current.id
+        )));
     }
     let at = now();
     let fact = Fact {
@@ -281,7 +291,7 @@ pub fn redirect_task(
         &event_key(&["worker_redirected", id.as_str(), &at.millis().to_string()]),
         &fact,
     )?;
-    task(&store, &project, &id)
+    Ok((task(&store, &project, &id)?, turn_running))
 }
 
 pub fn release_task(home: &DepotHome, selection: Option<&str>, id: &str) -> Result<Task> {
@@ -368,6 +378,20 @@ fn transition_refused(task: &Task, action: &str) -> Error {
         task.id,
         state_name(task.state)
     ))
+}
+
+fn turn_is_running(task: &Task) -> bool {
+    let Some(session) = task
+        .attempts
+        .last()
+        .and_then(|attempt| attempt.session.clone())
+    else {
+        return false;
+    };
+    matches!(
+        Boxr::new(Program::new("boxr")).status(&session),
+        Ok(crate::adapters::sessions::SessionState::Running)
+    )
 }
 
 fn apply(store: &Store, project: &Project, parts: &[&str], fact: &Fact) -> Result<()> {

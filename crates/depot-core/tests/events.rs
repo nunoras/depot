@@ -21,6 +21,8 @@ fn task(state: TaskState) -> Task {
         links: Vec::new(),
         branch_head: None,
         merge_refused: None,
+        redirect_text: None,
+        redirect_delivered: false,
         hold_pr: false,
         retry: None,
         acknowledged_at: None,

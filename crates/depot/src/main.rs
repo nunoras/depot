@@ -23,7 +23,7 @@ USAGE
   depot task stop <task-id> [--project <name>]
   depot task acknowledge <task-id> [--project <name>]
   depot task retry <task-id> [--project <name>]
-  depot task redirect <task-id> --text <direction> [--project <name>]
+  depot task redirect <task-id> --text <direction> [--queue] [--project <name>]
   depot ask --task <task-id> --project <name> [--relay] <question>
   depot submit --task <task-id> --project <name>
   depot inbox [--project <name>]
@@ -39,8 +39,8 @@ NOTES
   Multiple --depends-on need --base-dependency naming one of those tasks as the baseline.
   `--content -` reads a document from standard input.
   Landed, failed and cancelled tasks are history; `--history` shows them.
-  `task redirect` queues a new direction for a running worker; the daemon delivers it when the
-  worker's current turn ends.
+  `task redirect` refuses when the worker's current turn has ended unless `--queue` is passed;
+  the daemon delivers a queued or redirected direction when the worker's next turn starts.
   `task retry` sends a failed or cancelled task back to the approved queue; a worktree the task
   still leases is reused for the new attempt.
 ";
@@ -277,8 +277,8 @@ fn task_retry(arguments: &[String]) -> Result<String, Failure> {
 }
 
 fn task_redirect(arguments: &[String]) -> Result<String, Failure> {
-    let flags = Flags::parse(arguments, &[])?;
-    flags.reject_unknown(&["text", "project"])?;
+    let flags = Flags::parse(arguments, &["queue"])?;
+    flags.reject_unknown(&["text", "project", "queue"])?;
     let ids = flags.positionals();
     if ids.len() != 1 {
         return Err(Failure::Usage(
@@ -288,8 +288,18 @@ fn task_redirect(arguments: &[String]) -> Result<String, Failure> {
     let text = flags.required("text")?;
 
     let home = DepotHome::resolve()?;
-    let task = redirect_task(&home, flags.value("project"), &ids[0], text)?;
-    Ok(format!("redirected {}\n", task.id))
+    let (task, turn_running) = redirect_task(
+        &home,
+        flags.value("project"),
+        &ids[0],
+        text,
+        flags.has("queue"),
+    )?;
+    if turn_running {
+        Ok(format!("redirected {}\n", task.id))
+    } else {
+        Ok("queued, not yet delivered\n".to_string())
+    }
 }
 
 fn task_release(arguments: &[String]) -> Result<String, Failure> {

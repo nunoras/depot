@@ -19,6 +19,8 @@ fn task(title: &str, intent: &str, role: Role) -> Task {
         links: Vec::new(),
         branch_head: None,
         merge_refused: None,
+        redirect_text: None,
+        redirect_delivered: false,
         acknowledged_at: None,
         hold_pr: false,
         retry: None,

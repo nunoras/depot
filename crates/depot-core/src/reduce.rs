@@ -467,6 +467,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             task,
             command,
             commit,
+            base_commit,
             exit_code,
             duration,
             output_tail,
@@ -484,6 +485,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                     task.validations.push(ValidationRecord {
                         command: command.clone(),
                         commit: commit.clone(),
+                        base_commit: base_commit.clone(),
                         exit_code: *exit_code,
                         duration: *duration,
                         output_tail: output_tail.clone(),
@@ -794,6 +796,22 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             }
         }
 
+        FactKind::ValidationFailed { task, .. } => {
+            let accepting = next
+                .tasks
+                .get(task)
+                .is_some_and(|task| task.state == TaskState::Validating);
+            if accepting && let Some(task) = next.tasks.get_mut(task) {
+                task.state = TaskState::Failed;
+                task.retry = None;
+                task.updated_at = fact.at;
+                changed = true;
+                actions.push(Action::HoldForUser {
+                    task: task.id.clone(),
+                });
+            }
+        }
+
         FactKind::DescribeFailed { task, .. } => {
             let accepting = next
                 .tasks
@@ -824,6 +842,48 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                 actions.push(Action::HoldForUser {
                     task: task.id.clone(),
                 });
+            }
+        }
+
+        FactKind::DeliveryFailed { task, .. } => {
+            let accepting = next
+                .tasks
+                .get(task)
+                .is_some_and(|task| matches!(task.state, TaskState::Validated | TaskState::PrOpen));
+            if accepting && let Some(task) = next.tasks.get_mut(task) {
+                close_attempt(task, AttemptOutcome::Failed, fact.at);
+                task.state = TaskState::Failed;
+                task.retry = None;
+                task.updated_at = fact.at;
+                changed = true;
+                actions.push(Action::HoldForUser {
+                    task: task.id.clone(),
+                });
+            }
+        }
+
+        FactKind::TaskLandedOnBase { task, commit } => {
+            let accepting = next.tasks.get(task).is_some_and(|task| {
+                task.state == TaskState::Validated && task.validated_commit() == Some(commit)
+            });
+            if accepting && let Some(task) = next.tasks.get_mut(task) {
+                let stopped = close_attempt(task, AttemptOutcome::Submitted, fact.at);
+                task.state = TaskState::Landed;
+                task.updated_at = fact.at;
+                changed = true;
+                if stopped {
+                    actions.push(Action::StopSession {
+                        task: task.id.clone(),
+                    });
+                }
+                let fix_id = task.id.clone();
+                if let Some(lease) = take_last_worktree(task) {
+                    actions.push(Action::ReleaseWorktree {
+                        task: task.id.clone(),
+                        lease,
+                    });
+                }
+                close_rework_originals(&mut next, &fix_id, TaskState::Landed, fact.at);
             }
         }
 

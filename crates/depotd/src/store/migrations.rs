@@ -174,6 +174,7 @@ const MIGRATIONS: &[&str] = &[
     project_id   TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
     next_number  INTEGER NOT NULL
 );",
+    "ALTER TABLE task_validations ADD COLUMN base_commit TEXT;",
 ];
 
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;

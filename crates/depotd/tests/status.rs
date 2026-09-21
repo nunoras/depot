@@ -482,7 +482,7 @@ fn status_treats_a_stale_heartbeat_as_no_coverage() {
     let lock = depotd::InstanceLock::acquire(&fixture.home).expect("lock");
     lock.record_scope(&[first.project.clone(), second.project.clone()])
         .expect("scope");
-    let path = fixture.home.root().join(depotd::DAEMON_LOCK_FILE_NAME);
+    let path = fixture.home.root().join(depotd::DAEMON_SCOPE_FILE_NAME);
     let mut scope: depotd::DaemonScope =
         serde_json::from_slice(&std::fs::read(&path).expect("lock record")).expect("parsed scope");
     scope.heartbeat_millis -= 10 * 60 * 1000;
@@ -491,5 +491,27 @@ fn status_treats_a_stale_heartbeat_as_no_coverage() {
     assert!(
         rendered.contains("no daemon is driving this project"),
         "missing warning in\n{rendered}"
+    );
+}
+
+#[test]
+fn refresh_heartbeat_moves_the_recorded_heartbeat_past_the_start() {
+    let fixture = support::fixture();
+    let first = support::register(&fixture, "first");
+
+    let lock = depotd::InstanceLock::acquire(&fixture.home).expect("lock");
+    lock.record_scope(std::slice::from_ref(&first.project))
+        .expect("scope");
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    lock.refresh_heartbeat().expect("refresh");
+
+    let path = fixture.home.root().join(depotd::DAEMON_SCOPE_FILE_NAME);
+    let scope: depotd::DaemonScope =
+        serde_json::from_slice(&std::fs::read(&path).expect("scope record")).expect("parsed scope");
+    assert!(
+        scope.heartbeat_millis > scope.started_at_millis,
+        "heartbeat {} must move past started_at {}",
+        scope.heartbeat_millis,
+        scope.started_at_millis
     );
 }

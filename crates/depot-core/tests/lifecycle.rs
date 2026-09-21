@@ -144,6 +144,7 @@ fn validated(id: &str, commit_id: &str) -> Task {
     task.validations.push(ValidationRecord {
         command: "cargo test".to_owned(),
         commit: commit(commit_id),
+        base_commit: None,
         exit_code: 0,
         duration: Duration::from_secs(5),
         output_tail: "ok".to_owned(),
@@ -197,6 +198,7 @@ fn passed(task: &str, commit_id: &str) -> FactKind {
         task: task_id(task),
         command: "cargo test".to_owned(),
         commit: commit(commit_id),
+        base_commit: None,
         exit_code: 0,
         duration: Duration::from_secs(5),
         output_tail: "ok".to_owned(),
@@ -208,6 +210,7 @@ fn failed(task: &str, commit_id: &str) -> FactKind {
         task: task_id(task),
         command: "cargo test".to_owned(),
         commit: commit(commit_id),
+        base_commit: None,
         exit_code: 1,
         duration: Duration::from_secs(5),
         output_tail: "2 tests failed".to_owned(),
@@ -2681,6 +2684,7 @@ fn a_branch_behind_the_validated_commit_owes_the_push() {
     task.validations.push(ValidationRecord {
         command: "cargo test".to_owned(),
         commit: commit("c2"),
+        base_commit: None,
         exit_code: 0,
         duration: Duration::from_secs(5),
         output_tail: "ok".to_owned(),
@@ -4306,4 +4310,118 @@ fn rule_19_a_rework_holds_an_open_pull_request_until_the_fix_lands() {
         TaskState::Landed,
         "landing the fix closes the original task"
     );
+}
+
+#[test]
+fn rule_20_a_delivery_failure_holds_the_task_and_never_lands_it() {
+    run(vec![
+        case(
+            "a refused pull request fails the validated task and holds it",
+            state(vec![validated("t1", "c1")]),
+            vec![fact(
+                1_000,
+                FactKind::DeliveryFailed {
+                    task: task_id("t1"),
+                    commit: commit("c1"),
+                    reason: "GitHub answered 422".to_owned(),
+                },
+            )],
+        )
+        .when(
+            "t1",
+            TaskState::Failed,
+            vec![hold("t1"), Action::RenderChecklist],
+        ),
+        case(
+            "a refused delivery on an open pull request fails the task and holds it",
+            state(vec![pr_open("t1", "c1", 42)]),
+            vec![fact(
+                2_000,
+                FactKind::DeliveryFailed {
+                    task: task_id("t1"),
+                    commit: commit("c1"),
+                    reason: "GitHub answered 500".to_owned(),
+                },
+            )],
+        )
+        .when(
+            "t1",
+            TaskState::Failed,
+            vec![hold("t1"), Action::RenderChecklist],
+        ),
+        case(
+            "a landed task ignores a late delivery failure",
+            state(vec![task("t1", TaskState::Landed)]),
+            vec![fact(
+                3_000,
+                FactKind::DeliveryFailed {
+                    task: task_id("t1"),
+                    commit: commit("c1"),
+                    reason: "late".to_owned(),
+                },
+            )],
+        )
+        .when("t1", TaskState::Landed, vec![]),
+    ]);
+}
+
+#[test]
+fn rule_21_a_commit_already_on_the_base_lands_and_releases_its_worktree() {
+    run(vec![
+        case(
+            "a validated commit already on the base lands and releases the lease",
+            state(vec![with_attempt(
+                validated("t1", "c1"),
+                Attempt {
+                    last_seen_at: None,
+                    outcome: AttemptOutcome::Submitted,
+                    worktree: Some(lease("w1")),
+                    ..attempt(BUILD)
+                },
+            )]),
+            vec![fact(
+                1_000,
+                FactKind::TaskLandedOnBase {
+                    task: task_id("t1"),
+                    commit: commit("c1"),
+                },
+            )],
+        )
+        .when(
+            "t1",
+            TaskState::Landed,
+            vec![release("t1", "w1"), Action::RenderChecklist],
+        )
+        .checking(|state| {
+            subject(state, "t1").validated_commit() == Some(&commit("c1"))
+                && subject(state, "t1")
+                    .attempts
+                    .last()
+                    .is_some_and(|attempt| attempt.worktree.is_none())
+        }),
+        case(
+            "a commit that is not the validated revision never lands the task",
+            state(vec![validated("t1", "c2")]),
+            vec![fact(
+                2_000,
+                FactKind::TaskLandedOnBase {
+                    task: task_id("t1"),
+                    commit: commit("c1"),
+                },
+            )],
+        )
+        .when("t1", TaskState::Validated, vec![]),
+        case(
+            "an open pull request is left to the forge rather than landed by inference",
+            state(vec![pr_open("t1", "c1", 42)]),
+            vec![fact(
+                3_000,
+                FactKind::TaskLandedOnBase {
+                    task: task_id("t1"),
+                    commit: commit("c1"),
+                },
+            )],
+        )
+        .when("t1", TaskState::PrOpen, vec![]),
+    ]);
 }

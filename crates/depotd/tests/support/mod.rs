@@ -187,6 +187,7 @@ pub fn full_task(project: &ProjectId, id: &str) -> Task {
         validations: vec![ValidationRecord {
             command: "cargo test".to_string(),
             commit: CommitId::new("aaa111"),
+            base_commit: Some(CommitId::new("bbb222")),
             exit_code: 1,
             duration: Duration::from_millis(1234),
             output_tail: "boom".to_string(),

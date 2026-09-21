@@ -9,8 +9,8 @@ use depot_core::{
 use depotd::InstanceLock;
 use support::git;
 use support::{
-    ACCOUNT, BASE, BRANCH, Golden, HARNESS, LEASE, MODEL, PROFILE, REPOSITORY, SESSION, SLUG, TASK,
-    Validation, calls_to,
+    ACCOUNT, BASE, BRANCH, BRANCH_TWO, Golden, HARNESS, LEASE, LEASE_TWO, MODEL, PROFILE,
+    REPOSITORY, SESSION, SLUG, TASK, TASK_TWO, Validation, calls_to, validated_task,
 };
 
 const PROPOSED: &str = "task_proposed";
@@ -1630,6 +1630,7 @@ fn a_pull_request_branch_that_lags_the_validated_commit_is_pushed_forward() {
     task.validations.push(ValidationRecord {
         command: "cargo test".to_owned(),
         commit: CommitId::new(reworked.clone()),
+        base_commit: None,
         exit_code: 0,
         duration: std::time::Duration::from_secs(5),
         output_tail: "ok".to_owned(),
@@ -1711,6 +1712,7 @@ fn a_fix_role_push_overwrites_a_force_pushed_remote_branch() {
     task.validations.push(ValidationRecord {
         command: "cargo test".to_owned(),
         commit: CommitId::new(reworked.clone()),
+        base_commit: None,
         exit_code: 0,
         duration: std::time::Duration::from_secs(5),
         output_tail: "ok".to_owned(),
@@ -1756,6 +1758,7 @@ fn a_push_rejection_fails_the_task_and_the_daemon_keeps_running() {
     task.validations.push(ValidationRecord {
         command: "cargo test".to_owned(),
         commit: CommitId::new(reworked.clone()),
+        base_commit: None,
         exit_code: 0,
         duration: std::time::Duration::from_secs(5),
         output_tail: "ok".to_owned(),
@@ -1822,6 +1825,7 @@ fn an_opted_in_project_does_not_merge_while_a_dependency_pin_is_stale() {
     prerequisite.validations = vec![ValidationRecord {
         command: "cargo test".to_owned(),
         commit: CommitId::new("9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f"),
+        base_commit: None,
         exit_code: 0,
         duration: std::time::Duration::from_secs(5),
         output_tail: "ok".to_owned(),
@@ -2009,7 +2013,7 @@ fn user_section(rendered: &str) -> &str {
 fn the_on_event_hook_fires_once_per_blocking_event() {
     let golden = Golden::new(Validation::Passing);
     let log = golden.temp.path().join("hook.log");
-    let command = format!("cat >> {}; echo >> {}", log.display(), log.display());
+    let command = append_stdin_as_a_line_to(&log);
     golden
         .home
         .write_settings(&support::settings_with_on_event(Some(
@@ -2051,10 +2055,20 @@ fn the_on_event_hook_fires_once_per_blocking_event() {
     assert_eq!(hook_events(&log).len(), 1, "the same block fires once");
 }
 
+fn append_stdin_as_a_line_to(log: &std::path::Path) -> String {
+    let log = log.display();
+    if cfg!(windows) {
+        format!("findstr \"^\" >> \"{log}\" & echo.>> \"{log}\"")
+    } else {
+        format!("cat >> {log}; echo >> {log}")
+    }
+}
+
 fn hook_events(log: &std::path::Path) -> Vec<serde_json::Value> {
     std::fs::read_to_string(log)
         .expect("the hook log")
         .lines()
+        .filter(|line| !line.trim().is_empty())
         .map(|line| serde_json::from_str(line).expect("each hook line is a json payload"))
         .collect()
 }
@@ -2339,5 +2353,356 @@ fn a_project_without_describe_profile_opens_the_validation_only_pull_request() {
         !request.body.contains("## Why"),
         "the opt-out body stays validation-only: {:#}",
         request.body
+    );
+}
+
+#[test]
+fn the_validation_runs_on_the_fetched_base_and_catches_a_cross_branch_failure() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+
+    support::commit_file(&golden.repo, "base.txt", "a", "the base arrives");
+    git::git(&golden.repo, &["push", "origin", "HEAD:main"]);
+    git::git(&golden.lease, &["fetch", "origin"]);
+    git::git(&golden.lease, &["merge", "--ff-only", "origin/main"]);
+
+    support::commit_file(&golden.repo, "base.txt", "b", "the base moves on");
+    git::git(&golden.repo, &["push", "origin", "HEAD:main"]);
+
+    support::commit_file(
+        &golden.lease,
+        "impl.txt",
+        "a",
+        "the worker reads the old base",
+    );
+    support::write_compare_validation_script(&golden.lease);
+    git::git(&golden.lease, &["add", "."]);
+    git::git(&golden.lease, &["commit", "-m", "the project gate"]);
+    let worker_commit = golden.head();
+    golden.delete_local_base("main");
+
+    let submitted = golden.worker_submits();
+    assert_eq!(
+        submitted.status.code(),
+        Some(0),
+        "the submission failed: {}",
+        support::stderr(&submitted)
+    );
+    daemon
+        .tick()
+        .expect("the daemon validates the merged tree and holds the task");
+
+    let failed = golden.task();
+    assert_eq!(failed.state, TaskState::Failed);
+    let record = failed.validations.last().expect("the validation ran");
+    assert_ne!(
+        record.exit_code, 0,
+        "the merged tree fails the gate: {}",
+        record.output_tail
+    );
+    assert!(
+        !record.output_tail.trim().is_empty(),
+        "a failed gate keeps its output: {}",
+        record.output_tail
+    );
+    assert!(
+        record.base_commit.is_some(),
+        "the fetched base commit is recorded beside the evidence"
+    );
+    assert_eq!(
+        golden.head(),
+        worker_commit,
+        "the worker worktree keeps its head"
+    );
+    assert_eq!(git::git(&golden.lease, &["status", "--porcelain"]), "");
+    assert!(
+        !git::git(&golden.lease, &["worktree", "list"]).contains("depot-validation"),
+        "the scratch worktree is removed"
+    );
+    assert_eq!(golden.pull_requests_opened(), 0);
+}
+
+#[test]
+fn a_merge_conflict_with_the_fetched_base_is_a_validation_failure() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+
+    support::commit_file(&golden.repo, "base.txt", "start", "the base arrives");
+    git::git(&golden.repo, &["push", "origin", "HEAD:main"]);
+    git::git(&golden.lease, &["fetch", "origin"]);
+    git::git(&golden.lease, &["merge", "--ff-only", "origin/main"]);
+
+    support::commit_file(
+        &golden.repo,
+        "base.txt",
+        "the base version",
+        "the base changes",
+    );
+    git::git(&golden.repo, &["push", "origin", "HEAD:main"]);
+
+    support::commit_file(
+        &golden.lease,
+        "base.txt",
+        "the worker version",
+        "the worker changes the same file",
+    );
+    let worker_commit = golden.head();
+    golden.delete_local_base("main");
+
+    let submitted = golden.worker_submits();
+    assert_eq!(submitted.status.code(), Some(0));
+    daemon
+        .tick()
+        .expect("the daemon reports the conflict as a validation failure");
+
+    let failed = golden.task();
+    assert_eq!(failed.state, TaskState::Failed);
+    let record = failed
+        .validations
+        .last()
+        .expect("the conflict is recorded as validation evidence");
+    assert_ne!(record.exit_code, 0);
+    assert!(
+        record.output_tail.contains("CONFLICT"),
+        "the conflict keeps its output: {}",
+        record.output_tail
+    );
+    assert_eq!(golden.head(), worker_commit);
+    assert!(
+        !git::git(&golden.lease, &["worktree", "list"]).contains("depot-validation"),
+        "the scratch worktree is removed after a conflict"
+    );
+    assert_eq!(golden.pull_requests_opened(), 0);
+}
+
+#[test]
+fn a_project_describes_against_the_fetched_base_without_a_local_base_branch() {
+    let golden = Golden::new(Validation::Passing);
+    golden.set_describe_profile(PROFILE);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+
+    let submitted = golden.worker_commits_and_submits();
+    assert_eq!(submitted.status.code(), Some(0));
+    let commit = golden.head();
+    golden.script_pull_request(&commit);
+    golden.delete_local_base("main");
+
+    daemon
+        .tick()
+        .expect("the daemon fetches the base, describes and opens the pull request");
+
+    let opened = golden.task();
+    assert_eq!(opened.state, TaskState::PrOpen);
+    assert_eq!(golden.pull_requests_opened(), 1);
+    let request = golden
+        .forge
+        .requests()
+        .into_iter()
+        .find(|request| request.method == "POST")
+        .expect("the pull request opens");
+    assert!(request.body.contains("## Why"), "{:#}", request.body);
+    assert!(
+        request.body.contains("from the fetched base diff"),
+        "the describe worker ran against the fetched base: {:#}",
+        request.body
+    );
+}
+
+#[test]
+fn a_commit_already_on_the_base_branch_lands_without_a_pull_request() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_submits();
+    let commit = golden.head();
+    git::git(&golden.lease, &["push", "origin", "HEAD:main"]);
+
+    daemon
+        .tick()
+        .expect("the daemon sees the commit on the base and lands the task");
+
+    let landed = golden.task();
+    assert_eq!(landed.state, TaskState::Landed);
+    assert!(
+        golden
+            .history(TASK)
+            .contains(&"task_landed_on_base".to_string()),
+        "the landing is on the journal: {:?}",
+        golden.history(TASK)
+    );
+    assert!(
+        !golden.history(TASK).contains(&PUSHED.to_string()),
+        "a landed commit is never pushed as a delivery branch"
+    );
+    assert_eq!(
+        golden.pull_requests_opened(),
+        0,
+        "a landed commit opens no pull request"
+    );
+    assert!(
+        !calls_to(&golden.treehouse.calls(), "return").is_empty(),
+        "the landing releases the worktree"
+    );
+    assert_eq!(
+        landed.validated_commit().map(CommitId::as_str),
+        Some(commit.as_str())
+    );
+}
+
+#[test]
+fn a_commit_the_base_does_not_contain_is_pushed_and_opens_a_pull_request() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_submits();
+    let commit = golden.head();
+    golden.script_pull_request(&commit);
+
+    daemon
+        .tick()
+        .expect("the daemon validates, pushes and opens the pull request");
+
+    let opened = golden.task();
+    assert_eq!(opened.state, TaskState::PrOpen);
+    assert!(
+        golden.history(TASK).contains(&PUSHED.to_string()),
+        "a novel commit is pushed"
+    );
+    assert!(
+        golden.history(TASK).contains(&OPENED.to_string()),
+        "a novel commit opens a pull request"
+    );
+    assert_eq!(golden.pull_requests_opened(), 1);
+}
+
+#[test]
+fn a_base_that_cannot_be_read_holds_the_task_instead_of_landing_it() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_submits();
+    golden.set_pull_request_base("no-such-base");
+
+    daemon
+        .tick()
+        .expect("a base that cannot be read is recorded, not fatal");
+
+    let held = golden.task();
+    assert_eq!(held.state, TaskState::Failed);
+    assert!(
+        golden
+            .history(TASK)
+            .contains(&"validation_failed".to_string()),
+        "the failure is on the journal: {:?}",
+        golden.history(TASK)
+    );
+    assert!(
+        !golden
+            .history(TASK)
+            .contains(&"task_landed_on_base".to_string()),
+        "a base read that failed never lands the task"
+    );
+    assert!(
+        !golden.history(TASK).contains(&PUSHED.to_string()),
+        "a base read that failed never pushes the branch"
+    );
+    assert_eq!(golden.pull_requests_opened(), 0);
+
+    daemon.tick().expect("later ticks stay alive");
+    assert_eq!(
+        golden
+            .history(TASK)
+            .iter()
+            .filter(|kind| kind.as_str() == "validation_failed")
+            .count(),
+        1,
+        "a held task records one failure rather than one per tick"
+    );
+
+    let inbox = golden.depot_ok(&["inbox", "--project", SLUG]);
+    assert!(inbox.contains("the validation could not run"), "{inbox}");
+}
+
+#[test]
+fn a_refused_pull_request_holds_only_its_task_and_the_tick_survives() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_submits();
+    golden.script_pull_request_refused();
+
+    let second = golden.clone_second_lease("2", BRANCH_TWO);
+    std::fs::write(second.join("second.txt"), "the second task\n")
+        .expect("the second worktree file is written");
+    git::git(&second, &["add", "."]);
+    git::git(&second, &["commit", "-m", "the second task"]);
+    let second_commit = git::head(&second);
+    git::git(&second, &["push", "origin", "HEAD:main"]);
+    golden.hold_two_leases(&second, LEASE_TWO);
+    golden
+        .store
+        .put_task(&validated_task(
+            &golden.project.id,
+            TASK_TWO,
+            LEASE_TWO,
+            &second_commit,
+        ))
+        .expect("the second validated task is recorded");
+
+    daemon
+        .tick()
+        .expect("one refused pull request does not stop the tick");
+
+    let refused = golden.task();
+    assert_eq!(refused.state, TaskState::Failed);
+    assert!(
+        golden
+            .history(TASK)
+            .contains(&"delivery_failed".to_string()),
+        "the refused pull request is on the journal: {:?}",
+        golden.history(TASK)
+    );
+    assert!(
+        !golden.history(TASK).contains(&OPENED.to_string()),
+        "the forge answered 422, so the refused pull request is never mislabelled as opened: {:?}",
+        golden.history(TASK)
+    );
+
+    let landed = golden
+        .store
+        .task(&golden.project.id, &TaskId::new(TASK_TWO))
+        .expect("the second task is read")
+        .expect("the second task exists");
+    assert_eq!(
+        landed.state,
+        TaskState::Landed,
+        "the other task still reaches its end"
+    );
+
+    daemon.tick().expect("later ticks stay alive");
+    assert_eq!(
+        golden
+            .history(TASK)
+            .iter()
+            .filter(|kind| kind.as_str() == "delivery_failed")
+            .count(),
+        1,
+        "a held task records one failure rather than one per tick"
+    );
+
+    let inbox = golden.depot_ok(&["inbox", "--project", SLUG]);
+    assert!(
+        inbox.contains("422"),
+        "the reason names the forge answer: {inbox}"
     );
 }

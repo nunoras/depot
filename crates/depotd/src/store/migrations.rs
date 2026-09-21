@@ -193,11 +193,11 @@ pub fn check(conn: &Connection) -> Result<()> {
     }
     if current > SCHEMA_VERSION {
         return Err(Error::Schema(format!(
-            "the store is at schema {current} but this build understands schema {SCHEMA_VERSION}; reinstall depot to match it, then start the daemon"
+            "the store is at schema {current} but this build understands schema {SCHEMA_VERSION}; reinstall depot to match it, then restart the daemon (`depot daemon restart`)"
         )));
     }
     Err(Error::Schema(format!(
-        "the store is at schema {current} but this build understands schema {SCHEMA_VERSION}; start the daemon or run `depot store migrate` to move it forward"
+        "the store is at schema {current} but this build understands schema {SCHEMA_VERSION}; restart the daemon (`depot daemon restart`) or run `depot store migrate` to move it forward"
     )))
 }
 
@@ -205,7 +205,7 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     let current = current(conn)?;
     if current > SCHEMA_VERSION {
         return Err(Error::Schema(format!(
-            "the store is at schema {current} but this build understands schema {SCHEMA_VERSION}; reinstall depot to match it, then start the daemon"
+            "the store is at schema {current} but this build understands schema {SCHEMA_VERSION}; reinstall depot to match it, then restart the daemon (`depot daemon restart`)"
         )));
     }
     for (index, migration) in MIGRATIONS.iter().enumerate() {

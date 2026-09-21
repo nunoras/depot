@@ -7,8 +7,8 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use depot_core::{
-    Action, Baseline, Checks, CommitId, Dependency, Fact, FactKind, Liveness, MergePolicy, ProjectId,
-    Role, SessionId, Task, TaskId, TaskState, Timestamp, WorktreeLease,
+    Action, Baseline, Checks, CommitId, Dependency, Fact, FactKind, Liveness, MergePolicy,
+    ProjectId, Role, SessionId, Task, TaskId, TaskState, Timestamp, WorktreeLease,
 };
 use serde::{Deserialize, Serialize};
 

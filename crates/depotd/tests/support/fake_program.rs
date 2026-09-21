@@ -40,6 +40,7 @@ impl FakeProgram {
             return Vec::new();
         };
         recorded
+            .replace("\r\n", "\n")
             .split("\n\n")
             .filter(|call| !call.trim().is_empty())
             .map(|call| call.lines().collect::<Vec<_>>().join(" "))

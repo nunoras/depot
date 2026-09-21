@@ -1719,6 +1719,32 @@ fn a_pending_acquire_that_takes_the_owed_lease_back_does_not_return_it() {
 }
 
 #[test]
+fn a_running_task_keeps_the_lease_it_still_owes() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+
+    let mut running = golden.task();
+    running.release_pending.push(WorktreeLease::new(LEASE));
+    golden
+        .store
+        .put_task(&running)
+        .expect("the owed release is recorded");
+
+    daemon.tick().expect("a running task keeps its lease");
+
+    assert!(
+        calls_to(&golden.treehouse.calls(), "return").is_empty(),
+        "a lease a live attempt works in is never returned"
+    );
+    assert_eq!(
+        golden.task().release_pending,
+        vec![WorktreeLease::new(LEASE)]
+    );
+}
+
+#[test]
 fn a_lease_holding_unlanded_work_is_held_and_named_in_the_checklist() {
     let golden = Golden::new(Validation::Passing);
     let daemon = golden.daemon();

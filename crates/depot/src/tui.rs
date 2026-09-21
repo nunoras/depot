@@ -29,11 +29,11 @@ pub fn run(home: &DepotHome, selection: &StatusSelection) -> Result<(), Error> {
     let mut scroll = 0;
     let mut history = false;
     let mut tick: usize = 0;
-    let mut projects = collect(home, selection)?;
+    let (mut warning, mut projects) = collect(home, selection)?;
     let mut collected = std::time::Instant::now();
     loop {
         let viewport = terminal.viewport_height();
-        terminal.draw(&projects, tick, scroll, history)?;
+        terminal.draw(&projects, warning.as_deref(), tick, scroll, history)?;
         let deadline = std::time::Instant::now() + TICK;
         while std::time::Instant::now() < deadline {
             if poll(POLL)? {
@@ -70,7 +70,7 @@ pub fn run(home: &DepotHome, selection: &StatusSelection) -> Result<(), Error> {
         }
         tick = tick.wrapping_add(1);
         if collected.elapsed() >= REFRESH {
-            projects = collect(home, selection)?;
+            (warning, projects) = collect(home, selection)?;
             collected = std::time::Instant::now();
         }
     }
@@ -102,7 +102,10 @@ struct ProjectView {
     tasks: Vec<TaskView>,
 }
 
-fn collect(home: &DepotHome, selection: &StatusSelection) -> Result<Vec<ProjectView>, Error> {
+fn collect(
+    home: &DepotHome,
+    selection: &StatusSelection,
+) -> Result<(Option<String>, Vec<ProjectView>), Error> {
     let store = Store::open(home)?;
     let now = Timestamp::from_millis(unix_millis());
     let projects: Vec<Project> = match selection {
@@ -110,7 +113,15 @@ fn collect(home: &DepotHome, selection: &StatusSelection) -> Result<Vec<ProjectV
         StatusSelection::Project(name) => vec![select_project(&store, Some(name))?],
         StatusSelection::CurrentDirectory => vec![select_project(&store, None)?],
     };
-    projects
+    let warning = depotd::daemon_build_mismatch(home, now).map(|scope| {
+        format!(
+            "the running depotd (pid {}) was built from commit {}, but this depot is built from {}: restart it with `depot daemon restart`",
+            scope.pid,
+            scope.build_id,
+            depotd::BUILD_ID
+        )
+    });
+    let views = projects
         .into_iter()
         .map(|project| {
             let state = store.project_state(&project)?;
@@ -160,7 +171,8 @@ fn collect(home: &DepotHome, selection: &StatusSelection) -> Result<Vec<ProjectV
                 tasks,
             })
         })
-        .collect()
+        .collect::<Result<Vec<_>, Error>>()?;
+    Ok((warning, views))
 }
 
 fn session_steps(session: &SessionId) -> Option<u64> {
@@ -200,6 +212,7 @@ fn body(segments: Vec<Segment>) -> Line {
 
 fn frame(
     projects: &[ProjectView],
+    warning: Option<&str>,
     tick: usize,
     now: u64,
     width: usize,
@@ -207,6 +220,10 @@ fn frame(
 ) -> Vec<Line> {
     let mut lines = Vec::new();
     lines.push(pinned(vec![Segment::Dim(clock())]));
+    if let Some(warning) = warning {
+        lines.push(pinned(vec![Segment::Text(warning.to_string())]));
+        lines.push(pinned(vec![Segment::Text(String::new())]));
+    }
     let mut counts: BTreeMap<TaskState, usize> = BTreeMap::new();
     for project in projects {
         for task in &project.tasks {
@@ -438,6 +455,7 @@ impl Terminal {
     fn draw(
         &mut self,
         projects: &[ProjectView],
+        warning: Option<&str>,
         tick: usize,
         scroll: usize,
         history: bool,
@@ -446,7 +464,14 @@ impl Terminal {
             .map(|(width, height)| (width as usize, height as usize))
             .unwrap_or((80, 24));
         let now = unix_millis();
-        let lines = frame(projects, tick, now, width.saturating_sub(1), history);
+        let lines = frame(
+            projects,
+            warning,
+            tick,
+            now,
+            width.saturating_sub(1),
+            history,
+        );
         let pinned: Vec<&Line> = lines.iter().filter(|line| line.pinned).collect();
         let body: Vec<&Line> = lines.iter().filter(|line| !line.pinned).collect();
         let body_window = height.saturating_sub(1).saturating_sub(pinned.len()).max(1);
@@ -629,7 +654,7 @@ mod tests {
             "Rework the status TUI task layout",
             TaskState::Running,
         )]);
-        let lines = frame(&projects, 3, 130_000, 80, false);
+        let lines = frame(&projects, None, 3, 130_000, 80, false);
         assert!(
             matches!(&lines[3].segments[1], Segment::State(marker, TaskState::Running) if *marker == SPINNER[3])
         );
@@ -648,7 +673,7 @@ mod tests {
             "Rework the status TUI task layout",
             TaskState::WaitingOnQuestion,
         )]);
-        let lines = frame(&projects, 0, 0, 80, false);
+        let lines = frame(&projects, None, 0, 0, 80, false);
         assert_eq!(lines.len(), 7);
         assert!(matches!(&lines[3].segments[0], Segment::State(text, _) if text == "  needs you"));
         assert!(
@@ -661,7 +686,7 @@ mod tests {
         let mut task = view("t-1", "task t-1", TaskState::Running);
         task.steps = Some(42);
         let projects = project_view(vec![task]);
-        let lines = frame(&projects, 0, 130_000, 80, false);
+        let lines = frame(&projects, None, 0, 130_000, 80, false);
         assert!(
             matches!(&lines[5].segments[0], Segment::Dim(text) if text == "    up 2m10s, 42 steps, last seen 2m10s")
         );
@@ -671,7 +696,7 @@ mod tests {
     fn a_fresh_observation_reports_last_seen_age() {
         let mut task = view("t-1", "task t-1", TaskState::Running);
         task.last_seen_at = Some(Timestamp::from_millis(100_000));
-        let lines = frame(&project_view(vec![task]), 0, 130_000, 80, false);
+        let lines = frame(&project_view(vec![task]), None, 0, 130_000, 80, false);
         assert!(
             matches!(&lines[5].segments[0], Segment::Dim(text) if text == "    up 2m10s, last seen 30s")
         );
@@ -681,7 +706,7 @@ mod tests {
     fn a_stale_observation_reports_unobserved_age() {
         let mut task = view("t-1", "task t-1", TaskState::Running);
         task.last_seen_at = Some(Timestamp::from_millis(580_000));
-        let lines = frame(&project_view(vec![task]), 0, 1_000_000, 80, false);
+        let lines = frame(&project_view(vec![task]), None, 0, 1_000_000, 80, false);
         assert!(
             matches!(&lines[5].segments[0], Segment::Dim(text) if text == "    up 16m40s, unobserved for 7m00s")
         );
@@ -691,7 +716,7 @@ mod tests {
     fn a_missing_observation_reports_no_age() {
         let mut task = view("t-1", "task t-1", TaskState::Running);
         task.last_seen_at = None;
-        let lines = frame(&project_view(vec![task]), 0, 130_000, 80, false);
+        let lines = frame(&project_view(vec![task]), None, 0, 130_000, 80, false);
         assert!(
             matches!(&lines[5].segments[0], Segment::Dim(text) if text == "    up 2m10s, not yet observed")
         );
@@ -700,7 +725,7 @@ mod tests {
     #[test]
     fn an_uncovered_project_with_open_work_says_no_daemon_drives_it() {
         let projects = covered_project(false, vec![view("t-1", "task t-1", TaskState::Approved)]);
-        let (_, body) = split(&frame(&projects, 0, 0, 80, false));
+        let (_, body) = split(&frame(&projects, None, 0, 0, 80, false));
         assert!(
             body.iter()
                 .any(|line| line == "  no daemon is driving this project")
@@ -710,14 +735,14 @@ mod tests {
     #[test]
     fn a_covered_project_with_open_work_stays_quiet() {
         let projects = covered_project(true, vec![view("t-1", "task t-1", TaskState::Approved)]);
-        let (_, body) = split(&frame(&projects, 0, 0, 80, false));
+        let (_, body) = split(&frame(&projects, None, 0, 0, 80, false));
         assert!(!body.iter().any(|line| line.contains("no daemon")));
     }
 
     #[test]
     fn an_uncovered_project_without_open_work_stays_quiet() {
         let projects = covered_project(false, vec![view("t-1", "task t-1", TaskState::Proposed)]);
-        let (_, body) = split(&frame(&projects, 0, 0, 80, false));
+        let (_, body) = split(&frame(&projects, None, 0, 0, 80, false));
         assert!(!body.iter().any(|line| line.contains("no daemon")));
     }
 
@@ -733,15 +758,35 @@ mod tests {
             .put_task(&stored_task(TaskState::Running))
             .expect("task");
 
-        let projects =
+        let (_, projects) =
             collect(&home, &StatusSelection::Project(project.slug.clone())).expect("collected");
         assert_eq!(projects.len(), 1);
         assert!(!projects[0].daemon_scope_covers);
-        let (_, body) = split(&frame(&projects, 0, 0, 80, false));
+        let (_, body) = split(&frame(&projects, None, 0, 0, 80, false));
         assert!(
             body.iter()
                 .any(|line| line == "  no daemon is driving this project")
         );
+    }
+
+    #[test]
+    fn a_build_warning_is_pinned_above_the_projects() {
+        let projects = project_view(vec![view("t-1", "task t-1", TaskState::Running)]);
+        let lines = frame(
+            &projects,
+            Some("the running depotd was built from commit abc"),
+            0,
+            0,
+            80,
+            false,
+        );
+        let (pinned, body) = split(&lines);
+        assert!(
+            pinned
+                .iter()
+                .any(|line| line.contains("built from commit abc"))
+        );
+        assert!(!body.iter().any(|line| line.contains("built from commit")));
     }
 
     #[test]
@@ -755,7 +800,7 @@ mod tests {
     fn waiting_task_is_pinned_and_absent_from_the_scrolling_body() {
         let waiting = view("t-1", "task t-1", TaskState::WaitingOnQuestion);
         let running = view("t-2", "task t-2", TaskState::Running);
-        let lines = frame(&project_view(vec![waiting, running]), 0, 0, 80, false);
+        let lines = frame(&project_view(vec![waiting, running]), None, 0, 0, 80, false);
         let (pinned, body) = split(&lines);
         assert!(pinned.iter().any(|line| line.contains("needs you")));
         assert!(pinned.iter().any(|line| line.contains("t-1")));
@@ -767,7 +812,7 @@ mod tests {
     fn unanswered_question_rides_with_the_pinned_block() {
         let mut waiting = view("t-1", "task t-1", TaskState::WaitingOnQuestion);
         waiting.question = Some("which base branch".to_string());
-        let lines = frame(&project_view(vec![waiting]), 0, 0, 80, false);
+        let lines = frame(&project_view(vec![waiting]), None, 0, 0, 80, false);
         let (pinned, _) = split(&lines);
         assert!(pinned.iter().any(|line| line.contains("which base branch")));
     }
@@ -776,7 +821,7 @@ mod tests {
     fn pr_open_task_shows_clickable_pr_link() {
         let mut task = view("t-1", "task t-1", TaskState::PrOpen);
         task.pull_request = Some((42, "https://github.com/nunoras/depot/pull/42".to_string()));
-        let lines = frame(&project_view(vec![task]), 0, 0, 80, false);
+        let lines = frame(&project_view(vec![task]), None, 0, 0, 80, false);
         assert!(matches!(
             &lines[3].segments[2],
             Segment::Text(text) if text == " "
@@ -792,7 +837,7 @@ mod tests {
     fn non_pr_open_task_renders_no_link() {
         let mut task = view("t-1", "task t-1", TaskState::Running);
         task.pull_request = Some((42, "https://github.com/nunoras/depot/pull/42".to_string()));
-        let lines = frame(&project_view(vec![task]), 0, 0, 80, false);
+        let lines = frame(&project_view(vec![task]), None, 0, 0, 80, false);
         assert!(
             !lines[3]
                 .segments
@@ -805,7 +850,7 @@ mod tests {
     fn conflicting_task_names_the_base_it_conflicts_with() {
         let mut task = view("t-1", "task t-1", TaskState::PrOpen);
         task.conflict_base = Some("ba5eba11".to_string());
-        let lines = frame(&project_view(vec![task]), 0, 0, 80, false);
+        let lines = frame(&project_view(vec![task]), None, 0, 0, 80, false);
         assert!(
             matches!(&lines[5].segments[0], Segment::Dim(text) if text == "    conflicts with base ba5eba11")
         );
@@ -816,10 +861,10 @@ mod tests {
         let landed = view("t-1", "task t-1", TaskState::Landed);
         let running = view("t-2", "task t-2", TaskState::Running);
         let projects = project_view(vec![landed, running]);
-        let (pinned, body) = split(&frame(&projects, 0, 0, 80, false));
+        let (pinned, body) = split(&frame(&projects, None, 0, 0, 80, false));
         assert!(!body.iter().any(|line| line.contains("t-1")));
         assert!(pinned.iter().any(|line| line.contains("1 landed")));
-        let (_, body) = split(&frame(&projects, 0, 0, 80, true));
+        let (_, body) = split(&frame(&projects, None, 0, 0, 80, true));
         assert!(body.iter().any(|line| line.contains("t-1")));
     }
 }

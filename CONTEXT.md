@@ -75,6 +75,16 @@ _Avoid_: paused, errored
 The rendered view of a project's tasks, drawn from the records and never edited by hand.
 _Avoid_: status board, dashboard
 
+**Artifact**:
+A file depot copies into the depot home and hands to the machine's configured publish command, which returns the one URL that stands for it.
+depot keeps the copy and never hosts or serves it.
+_Avoid_: attachment, upload, asset
+
+**Build id**:
+The git commit a binary was built from, carried by both `depot` and `depotd` and reported by `--version`.
+A daemon whose build id differs from the client's is stale, and `depot status` says so.
+_Avoid_: version tag, revision
+
 ## People
 
 **Coordinator**:

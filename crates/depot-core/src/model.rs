@@ -94,6 +94,17 @@ impl TaskState {
             TaskState::Running | TaskState::WaitingOnQuestion | TaskState::Validating
         )
     }
+
+    pub fn settles_a_wait(self) -> bool {
+        matches!(
+            self,
+            TaskState::WaitingOnQuestion
+                | TaskState::PrOpen
+                | TaskState::Landed
+                | TaskState::Failed
+                | TaskState::Cancelled
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

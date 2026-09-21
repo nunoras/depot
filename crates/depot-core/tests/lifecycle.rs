@@ -4425,3 +4425,24 @@ fn rule_21_a_commit_already_on_the_base_lands_and_releases_its_worktree() {
         .when("t1", TaskState::PrOpen, vec![]),
     ]);
 }
+
+#[test]
+fn a_wait_settles_on_the_states_it_was_asked_for() {
+    let expected = [
+        (TaskState::Proposed, false),
+        (TaskState::Approved, false),
+        (TaskState::Running, false),
+        (TaskState::WaitingOnQuestion, true),
+        (TaskState::Validating, false),
+        (TaskState::Validated, false),
+        (TaskState::PrOpen, true),
+        (TaskState::ReworkPending, false),
+        (TaskState::Landed, true),
+        (TaskState::Failed, true),
+        (TaskState::Cancelled, true),
+    ];
+
+    for (state, settles) in expected {
+        assert_eq!(state.settles_a_wait(), settles, "{state:?}");
+    }
+}

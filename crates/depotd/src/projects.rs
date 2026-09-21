@@ -6,11 +6,12 @@ use crate::checklist::{render_checklist, render_checklist_observed};
 use crate::clock::now;
 use crate::commands::ensure_profiles_resolve;
 use crate::config::PROJECT_CONFIG_FILE_NAME;
-use crate::daemon::daemon_scope_covers;
+use crate::daemon::{daemon_build_mismatch, daemon_scope_covers};
 use crate::error::{Error, Result};
 use crate::home::{DepotHome, ProjectHome, slug_for};
 use crate::project::{LocationKind, Project};
 use crate::store::Store;
+use crate::vocabulary::role_name;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Added {
@@ -142,6 +143,46 @@ pub fn resolve_task(
     }
 }
 
+pub fn render_projects(home: &DepotHome) -> Result<String> {
+    let store = Store::open(home)?;
+    let projects = store.projects()?;
+    if projects.is_empty() {
+        return Ok("No projects registered.\n".to_string());
+    }
+    let settings = home.load_settings()?;
+    let mut out = String::new();
+    for (index, project) in projects.iter().enumerate() {
+        if index > 0 {
+            out.push('\n');
+        }
+        out.push_str(&format!("{}\n", project.slug));
+        let location = match project.kind {
+            LocationKind::Path => "path",
+            LocationKind::Url => "url",
+        };
+        out.push_str(&format!("  {location}: {}\n", project.id));
+        let profiles = store.project_config(project)?.profiles()?;
+        if profiles.is_empty() {
+            out.push_str("  profiles: none are mapped in .depot.toml\n");
+            continue;
+        }
+        let listed = profiles
+            .iter()
+            .map(|(role, profile)| {
+                let missing = if settings.profiles.contains_key(profile.as_str()) {
+                    String::new()
+                } else {
+                    " (not defined in machine-local settings)".to_string()
+                };
+                format!("{}={profile}{missing}", role_name(*role))
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        out.push_str(&format!("  profiles: {listed}\n"));
+    }
+    Ok(out)
+}
+
 pub fn render_status(
     home: &DepotHome,
     selection: &StatusSelection,
@@ -185,13 +226,22 @@ pub fn render_status_at(
     }
 
     let mut out = String::new();
-    let stale_after = home.load_settings()?.poll_interval().saturating_mul(3);
+    let settings = home.load_settings()?;
+    let stale_after = settings.poll_interval().saturating_mul(3);
+    if let Some(scope) = daemon_build_mismatch(home, now, stale_after) {
+        out.push_str(&format!(
+            "the running depotd (pid {}) was built from commit {}, but this depot is built from {}: restart it with `depot daemon restart`\n\n",
+            scope.pid,
+            scope.build_id,
+            crate::BUILD_ID
+        ));
+    }
     for (index, project) in projects.iter().enumerate() {
         if index > 0 {
             out.push('\n');
         }
         let state = store.project_state(project)?;
-        let covered = daemon_scope_covers(home, &project.id, now, stale_after)?;
+        let covered = daemon_scope_covers(home, &project.slug, now, stale_after)?;
         if !covered && needs_daemon(&state) {
             out.push_str("no daemon is driving this project\n\n");
         }

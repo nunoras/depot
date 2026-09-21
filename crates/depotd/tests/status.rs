@@ -493,3 +493,43 @@ fn status_treats_a_stale_heartbeat_as_no_coverage() {
         "missing warning in\n{rendered}"
     );
 }
+
+#[test]
+fn status_warns_when_the_running_daemon_was_built_from_another_commit() {
+    let fixture = support::fixture();
+    let added = support::register(&fixture, "example");
+    let lock = depotd::InstanceLock::acquire(&fixture.home).expect("lock");
+    lock.record_scope(std::slice::from_ref(&added.project))
+        .expect("scope");
+
+    let path = fixture.home.root().join(depotd::DAEMON_LOCK_FILE_NAME);
+    let mut scope: depotd::DaemonScope =
+        serde_json::from_slice(&std::fs::read(&path).expect("lock record")).expect("parsed scope");
+    scope.build_id = "0ldbu11d".to_string();
+    std::fs::write(&path, serde_json::to_vec(&scope).expect("encoded scope")).expect("rewritten");
+
+    let rendered = render_status(&fixture.home, &StatusSelection::All, false).expect("status");
+    assert!(
+        rendered.contains("was built from commit 0ldbu11d"),
+        "missing build warning in\n{rendered}"
+    );
+    assert!(
+        rendered.contains(depotd::BUILD_ID),
+        "the warning names this client build in\n{rendered}"
+    );
+}
+
+#[test]
+fn status_stays_quiet_when_the_running_daemon_matches_this_build() {
+    let fixture = support::fixture();
+    let added = support::register(&fixture, "example");
+    let lock = depotd::InstanceLock::acquire(&fixture.home).expect("lock");
+    lock.record_scope(std::slice::from_ref(&added.project))
+        .expect("scope");
+
+    let rendered = render_status(&fixture.home, &StatusSelection::All, false).expect("status");
+    assert!(
+        !rendered.contains("was built from commit"),
+        "unexpected build warning in\n{rendered}"
+    );
+}

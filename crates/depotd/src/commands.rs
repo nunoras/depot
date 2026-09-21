@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use depot_core::{AnsweredBy, CommitId, Dependency, Fact, FactKind, Role, Task, TaskId, TaskState};
 
@@ -350,6 +351,43 @@ pub fn release_task(home: &DepotHome, selection: Option<&str>, id: &str) -> Resu
     task(&store, &project, &id)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Waited {
+    pub task: Task,
+    pub timed_out: bool,
+}
+
+pub const MIN_WAIT_POLL: Duration = Duration::from_secs(1);
+
+pub fn wait_for_task(
+    home: &DepotHome,
+    selection: Option<&str>,
+    id: &str,
+    timeout: Option<Duration>,
+    poll: Duration,
+) -> Result<Waited> {
+    let store = Store::open(home)?;
+    let (project, id) = resolve_task(&store, selection, id)?;
+    let poll = poll.max(MIN_WAIT_POLL);
+    let deadline = timeout.map(|timeout| Instant::now() + timeout);
+    loop {
+        let found = task(&store, &project, &id)?;
+        if found.state.settles_a_wait() {
+            return Ok(Waited {
+                task: found,
+                timed_out: false,
+            });
+        }
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return Ok(Waited {
+                task: found,
+                timed_out: true,
+            });
+        }
+        std::thread::sleep(poll);
+    }
+}
+
 pub fn read_inbox(home: &DepotHome, selection: Option<&str>) -> Result<String> {
     let store = Store::open(home)?;
     let project = select_project(&store, selection)?;
@@ -382,6 +420,12 @@ fn prepare_approve(task: &Task) -> Result<Prepared> {
     match task.state {
         TaskState::Proposed => Ok(Prepared::Apply),
         TaskState::Approved => Ok(Prepared::AlreadyDone),
+        TaskState::Failed | TaskState::Cancelled => Err(Error::Project(format!(
+            "task `{}` is {} and cannot be approved; run `depot task retry {}` to send it back to the approved queue",
+            task.id,
+            state_name(task.state),
+            task.id
+        ))),
         _ => Err(transition_refused(task, "approved")),
     }
 }

@@ -64,6 +64,8 @@ Confirm everything answers:
 ```
 depot --help
 depotd --help
+depot --version
+depotd --version
 boxr --version
 treehouse status
 gh auth status
@@ -175,7 +177,18 @@ events = ["question", "failed", "merge_refused"]
 
 ### Dispatch rules
 
-When a task has no explicit `--role`, depot asks the Typesafe Choice API which of the project's dispatch rules matches the task title. A matching rule supplies the role and optionally pins a worker profile. `--role` is always the override.
+When a task has no explicit `--role`, depot asks the Typesafe Choice API which of the project's dispatch rules matches the task title. A matching rule supplies the role and optionally pins a worker profile. `--role` is always the override, and `--kind` is an alias for it.
+
+### Artifacts
+
+`depot artifact add <file>` copies a regular file into `<depot home>/artifacts` and hands the copy to a publish command you configure in `config.toml`:
+
+```toml
+[artifacts]
+publish_command = "my-uploader"
+```
+
+The command runs with `DEPOT_ARTIFACT_PATH` set to the staged copy and must print exactly one `http` or `https` URL, which depot prints. The file name never reaches the command line, so spaces and quotes in a name are safe. depot never hosts, serves or drives a browser: publishing is the command's job. When the command fails or prints no single URL, depot says so and keeps the staged copy. A second file with the same name lands beside the first as `<name>-1.<extension>`.
 
 ## Examples
 
@@ -216,12 +229,31 @@ Run the daemon for one project only:
 depotd --project my-project
 ```
 
+List the registered projects with their paths and resolved profiles:
+
+```
+depot project list
+```
+
+Block until a task reaches a state you can act on:
+
+```
+depot task wait t-3 --timeout 900
+```
+
+Restart the daemon in place, keeping the projects it covers:
+
+```
+depot daemon restart
+```
+
 ## Limitations
 
 - depot requires [boxr](https://github.com/nunoras/boxr) for session launches and [treehouse](https://github.com/kunchenguid/treehouse) for worktree pooling. Both must be installed and on `PATH`.
 - Only GitHub is supported as a forge. Other forges have no adapter.
 - Dispatch rules require a Typesafe API key. Without one, every task needs an explicit `--role`.
 - The SQLite store does not replicate. depot is a single-machine tool.
+- Artifact publishing needs a command you configure; depot ships no uploader and hosts nothing.
 - Rebase on conflict is limited to one attempt per task and requires a fix profile.
 - There is no web dashboard. The checklist is a rendered Markdown file in the project home.
 - Automatic merge is opt-in: `merge = "manual"` (default), `"after_checks"` or `"after_review"`. `pull_request.auto_merge` is deprecated and maps to `"after_checks"` when true.
@@ -234,6 +266,7 @@ depotd --project my-project
 - [Context and glossary](CONTEXT.md) - the domain language depot uses.
 - [Architecture decisions](docs/adr/) - recorded decisions that shape the code.
 - [Daily driver guide](docs/daily-driver.md) - how to open depot as the main agent coordinator for a real project.
+- [Daemon operations](docs/daemon-operations.md) - running, restarting and supervising the daemon.
 - [boxr contract](docs/boxr-contract.md) - what depot requires of boxr, command by command.
 - [First real project report](docs/first-real-project-report.md) - what the first end-to-end run proved.
 

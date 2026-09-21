@@ -1,11 +1,13 @@
 use std::io::Read;
+use std::time::Duration;
 
 mod tui;
 
 use depotd::{
-    DepotHome, Error, StatusSelection, TaskRequest, acknowledge_task, add_project, add_task,
-    answer_question, approve_tasks, ask_question, read_inbox, redirect_task, release_task,
-    render_status, retry_task, rework_task, stop_task, submit_task, write_narrative,
+    DepotHome, Error, StatusSelection, TaskRequest, acknowledge_task, add_artifact, add_project,
+    add_task, answer_question, approve_tasks, ask_question, read_inbox, redirect_task,
+    release_task, render_projects, render_status, restart_daemon, retry_task, rework_task,
+    stop_task, submit_task, wait_for_task, write_narrative,
 };
 
 const USAGE: &str = "\
@@ -13,8 +15,11 @@ depot - coordinate a project's agent work
 
 USAGE
   depot project add <path-or-url>
+  depot project list
   depot status [--project <name>] [--all] [--history] [--tui]
+  depot daemon restart [--timeout <seconds>]
   depot task add --title <title> --intent <intent> [--role <plan|build|review|fix>]
+                 [--kind <plan|build|review|fix>]
                  [--depends-on <task>@<commit>]...
                  [--base-dependency <task-id>] [--hold-pr] [--project <name>]
   depot task approve <task-id>... [--project <name>]
@@ -25,10 +30,13 @@ USAGE
   depot task retry <task-id> [--project <name>]
   depot task redirect <task-id> --text <direction> [--queue] [--project <name>]
   depot task rework <task-id> --text <findings> [--project <name>]
+  depot task wait <task-id> [--timeout <seconds>] [--project <name>]
   depot ask --task <task-id> --project <name> [--relay] <question>
   depot submit --task <task-id> --project <name>
   depot inbox [--project <name>]
+  depot artifact add <file>
   depot doc write <name> --content <text|-> [--project <name>]
+  depot --version
 
 SELECTION
   A task id may be qualified as `<slug>/<task-id>`, which works from any directory.
@@ -42,8 +50,16 @@ NOTES
   says so next to the affected projects.
   A task lands held. Approving it is what lets it run.
   A role resolves to a profile through the project's machine-local .depot.toml; an unmapped role is refused.
+  `--kind` is an alias for `--role` on `task add`; passing both with different values is refused.
   Multiple --depends-on need --base-dependency naming one of those tasks as the baseline.
+  `task wait` blocks until the task is pr_open, landed, failed, cancelled or waiting_on_question,
+  then prints where it stands. Without --timeout it waits forever; it never reads the inbox.
   `--content -` reads a document from standard input.
+  `artifact add` copies the file into <depot home>/artifacts and runs the [artifacts] publish
+  command from <depot home>/config.toml with DEPOT_ARTIFACT_PATH set; it prints the staged path
+  and the one URL that command returned.
+  `daemon restart` stops the running daemon by pid and starts the installed depotd again with the
+  same project scope, appending its log to <depot home>/depotd.log.
   Landed, failed and cancelled tasks are history; `--history` shows them.
   `task redirect` refuses when the worker's current turn has ended unless `--queue` is passed;
   the daemon delivers a queued or redirected direction when the worker's next turn starts.
@@ -91,6 +107,7 @@ impl From<Error> for Failure {
 fn dispatch(arguments: &[String]) -> Result<String, Failure> {
     match arguments.first().map(String::as_str) {
         None | Some("help") | Some("--help") | Some("-h") => Ok(USAGE.to_string()),
+        Some("--version") | Some("-V") => Ok(format!("{}\n", depotd::version_line("depot"))),
         Some("project") => {
             require_coordinator()?;
             project_command(&arguments[1..])
@@ -105,6 +122,11 @@ fn dispatch(arguments: &[String]) -> Result<String, Failure> {
         Some("inbox") => {
             require_coordinator()?;
             inbox_command(&arguments[1..])
+        }
+        Some("artifact") => artifact_command(&arguments[1..]),
+        Some("daemon") => {
+            require_coordinator()?;
+            daemon_command(&arguments[1..])
         }
         Some("status") => status_command(&arguments[1..]),
         Some(other) => Err(Failure::Usage(format!("unknown command `{other}`"))),
@@ -127,11 +149,21 @@ fn require_coordinator() -> Result<(), Failure> {
 fn project_command(arguments: &[String]) -> Result<String, Failure> {
     match arguments.first().map(String::as_str) {
         Some("add") => project_add(&arguments[1..]),
+        Some("list") => project_list(&arguments[1..]),
         Some(other) => Err(Failure::Usage(format!("unknown project command `{other}`"))),
         None => Err(Failure::Usage(
-            "`depot project` needs a subcommand: try `depot project add <path-or-url>`".to_string(),
+            "`depot project` needs a subcommand: try `depot project add <path-or-url>` or `depot project list`"
+                .to_string(),
         )),
     }
+}
+
+fn project_list(arguments: &[String]) -> Result<String, Failure> {
+    let flags = Flags::parse(arguments, &[])?;
+    flags.reject_unknown(&[])?;
+    flags.reject_positionals()?;
+    let home = DepotHome::resolve()?;
+    Ok(render_projects(&home)?)
 }
 
 fn project_add(arguments: &[String]) -> Result<String, Failure> {
@@ -170,9 +202,10 @@ fn task_command(arguments: &[String]) -> Result<String, Failure> {
         Some("redirect") => task_redirect(&arguments[1..]),
         Some("rework") => task_rework(&arguments[1..]),
         Some("release") => task_release(&arguments[1..]),
+        Some("wait") => task_wait(&arguments[1..]),
         Some(other) => Err(Failure::Usage(format!("unknown task command `{other}`"))),
         None => Err(Failure::Usage(
-            "`depot task` needs a subcommand: add, approve, answer, stop, retry, rework or release"
+            "`depot task` needs a subcommand: add, approve, answer, stop, retry, rework, release or wait"
                 .to_string(),
         )),
     }
@@ -184,6 +217,7 @@ fn task_add(arguments: &[String]) -> Result<String, Failure> {
         "title",
         "intent",
         "role",
+        "kind",
         "depends-on",
         "base-dependency",
         "hold-pr",
@@ -194,7 +228,7 @@ fn task_add(arguments: &[String]) -> Result<String, Failure> {
     let request = TaskRequest {
         title: flags.required("title")?.to_string(),
         intent: flags.required("intent")?.to_string(),
-        role: flags.value("role").unwrap_or_default().to_string(),
+        role: resolved_role(&flags)?,
         dependencies: flags.all("depends-on"),
         base_dependency: flags.value("base-dependency").map(str::to_string),
         hold_pr: flags.has("hold-pr"),
@@ -202,6 +236,17 @@ fn task_add(arguments: &[String]) -> Result<String, Failure> {
     let home = DepotHome::resolve()?;
     let task = add_task(&home, flags.value("project"), &request)?;
     Ok(format!("added {}\n", task.id))
+}
+
+fn resolved_role(flags: &Flags) -> Result<String, Failure> {
+    match (flags.value("role"), flags.value("kind")) {
+        (Some(role), Some(kind)) if role != kind => Err(Failure::Usage(format!(
+            "`--role {role}` and `--kind {kind}` disagree: pass one role, or pass both with the same value"
+        ))),
+        (Some(role), _) => Ok(role.to_string()),
+        (None, Some(kind)) => Ok(kind.to_string()),
+        (None, None) => Ok(String::new()),
+    }
 }
 
 fn task_approve(arguments: &[String]) -> Result<String, Failure> {
@@ -340,6 +385,145 @@ fn task_release(arguments: &[String]) -> Result<String, Failure> {
     let home = DepotHome::resolve()?;
     let task = release_task(&home, flags.value("project"), &ids[0])?;
     Ok(format!("released {}\n", task.id))
+}
+
+fn task_wait(arguments: &[String]) -> Result<String, Failure> {
+    let flags = Flags::parse(arguments, &[])?;
+    flags.reject_unknown(&["timeout", "project"])?;
+    let ids = flags.positionals();
+    if ids.len() != 1 {
+        return Err(Failure::Usage(
+            "`depot task wait` needs exactly one task id".to_string(),
+        ));
+    }
+    let seconds = match flags.value("timeout") {
+        Some(value) => value.parse::<u64>().map_err(|_| {
+            Failure::Usage(format!(
+                "`--timeout` needs a whole number of seconds, not `{value}`"
+            ))
+        })?,
+        None => 0,
+    };
+    let home = DepotHome::resolve()?;
+    let waited = wait_for_task(
+        &home,
+        flags.value("project"),
+        &ids[0],
+        (seconds > 0).then(|| Duration::from_secs(seconds)),
+        depotd::MIN_WAIT_POLL,
+    )?;
+    if waited.timed_out {
+        return Err(Error::Project(format!(
+            "task `{}` is still {} after {seconds}s: pass a larger --timeout, or read where it stands with `depot status`",
+            waited.task.id,
+            depotd::state_name(waited.task.state)
+        ))
+        .into());
+    }
+    let mut out = format!(
+        "{} {}\n",
+        waited.task.id,
+        depotd::state_name(waited.task.state)
+    );
+    if let Some(question) = waited
+        .task
+        .questions
+        .iter()
+        .rev()
+        .find(|question| question.answer.is_none())
+    {
+        out.push_str(&format!("{}\n", question.text));
+    }
+    Ok(out)
+}
+
+fn artifact_command(arguments: &[String]) -> Result<String, Failure> {
+    match arguments.first().map(String::as_str) {
+        Some("add") => artifact_add(&arguments[1..]),
+        Some(other) => Err(Failure::Usage(format!(
+            "unknown artifact command `{other}`"
+        ))),
+        None => Err(Failure::Usage(
+            "`depot artifact` needs a subcommand: try `depot artifact add <file>`".to_string(),
+        )),
+    }
+}
+
+fn artifact_add(arguments: &[String]) -> Result<String, Failure> {
+    let flags = Flags::parse(arguments, &[])?;
+    flags.reject_unknown(&[])?;
+    let files = flags.positionals();
+    if files.len() != 1 {
+        return Err(Failure::Usage(
+            "`depot artifact add` needs exactly one file".to_string(),
+        ));
+    }
+    let home = DepotHome::resolve()?;
+    let staged = add_artifact(&home, std::path::Path::new(&files[0]))?;
+    Ok(format!(
+        "staged {}\n{}\n",
+        staged.path.display(),
+        staged.url
+    ))
+}
+
+fn daemon_command(arguments: &[String]) -> Result<String, Failure> {
+    match arguments.first().map(String::as_str) {
+        Some("restart") => daemon_restart(&arguments[1..]),
+        Some(other) => Err(Failure::Usage(format!("unknown daemon command `{other}`"))),
+        None => Err(Failure::Usage(
+            "`depot daemon` needs a subcommand: try `depot daemon restart`".to_string(),
+        )),
+    }
+}
+
+fn daemon_restart(arguments: &[String]) -> Result<String, Failure> {
+    let flags = Flags::parse(arguments, &[])?;
+    flags.reject_unknown(&["timeout"])?;
+    flags.reject_positionals()?;
+    let home = DepotHome::resolve()?;
+    let timeout = match flags.value("timeout") {
+        Some(value) => value.parse::<u64>().map_err(|_| {
+            Failure::Usage(format!(
+                "`--timeout` needs a whole number of seconds, not `{value}`"
+            ))
+        })?,
+        None => 0,
+    };
+    let timeout = if timeout > 0 {
+        Duration::from_secs(timeout)
+    } else {
+        home.load_settings()?
+            .poll_interval()
+            .saturating_mul(2)
+            .saturating_add(Duration::from_secs(10))
+    };
+    let restarted = restart_daemon(
+        &home,
+        &depotd::RestartOptions {
+            program: depotd::installed_daemon()?,
+            timeout,
+        },
+    )?;
+    let mut out = String::new();
+    match restarted.stopped {
+        Some(pid) => out.push_str(&format!("stopped depotd pid {pid}\n")),
+        None => out.push_str("no daemon was running\n"),
+    }
+    if restarted.projects.is_empty() {
+        out.push_str(&format!(
+            "started depotd pid {} covering all registered projects\n",
+            restarted.pid
+        ));
+    } else {
+        out.push_str(&format!(
+            "started depotd pid {} covering {}\n",
+            restarted.pid,
+            restarted.projects.join(", ")
+        ));
+    }
+    out.push_str(&format!("log: {}\n", restarted.log.display()));
+    Ok(out)
 }
 
 fn ask_command(arguments: &[String]) -> Result<String, Failure> {

@@ -9,6 +9,7 @@ pub const HOME_ENV: &str = "DEPOT_HOME";
 pub const SETTINGS_FILE_NAME: &str = "config.toml";
 pub const DATABASE_FILE_NAME: &str = "depot.db";
 pub const PROJECTS_DIR_NAME: &str = "projects";
+pub const ARTIFACTS_DIR_NAME: &str = "artifacts";
 pub const CHECKLIST_FILE_NAME: &str = "checklist.md";
 pub const ARCHIVE_DIR_NAME: &str = "archive";
 pub const DOCUMENTS_DIR_NAME: &str = "docs";
@@ -56,6 +57,10 @@ impl DepotHome {
         self.root.join(PROJECTS_DIR_NAME)
     }
 
+    pub fn artifacts_dir(&self) -> PathBuf {
+        self.root.join(ARTIFACTS_DIR_NAME)
+    }
+
     pub fn project_root(&self, slug: &str) -> PathBuf {
         self.projects_dir().join(slug)
     }
@@ -66,6 +71,7 @@ impl DepotHome {
 
     pub fn ensure(&self) -> Result<()> {
         std::fs::create_dir_all(self.projects_dir())?;
+        std::fs::create_dir_all(self.artifacts_dir())?;
         if !self.config_path().exists() {
             self.write_settings(&Settings::default())?;
         }

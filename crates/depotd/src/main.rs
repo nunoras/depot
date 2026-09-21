@@ -10,9 +10,13 @@ use depotd::{
     ShellValidation, Store, Supervisor, select_project,
 };
 
-const USAGE: &str = "depotd [--project <project>]\n\n  --project narrows the daemon to one project. It is a debugging flag: the single\n  daemon lock means no other registered project is driven while it runs.\n";
+const USAGE: &str = "depotd [--project <project>]... [--version]\n\n  --project narrows the daemon to one project. It is a debugging flag: the single\n  daemon lock means no other registered project is driven while it runs.\n  Without --project the daemon covers every registered project.\n";
 
 fn main() {
+    if matches!(std::env::args().nth(1).as_deref(), Some("--version" | "-V")) {
+        println!("{}", depotd::version_line("depotd"));
+        return;
+    }
     match run() {
         Ok(()) => {}
         Err(error) => {
@@ -28,7 +32,13 @@ fn run() -> depotd::Result<()> {
     let lock = InstanceLock::acquire(&home)?;
     let store = Store::open(&home)?;
     let projects = match filter {
-        Some(name) => vec![select_project(&store, Some(&name))?],
+        Some(names) => {
+            let mut projects = Vec::new();
+            for name in names {
+                projects.push(select_project(&store, Some(&name))?);
+            }
+            projects
+        }
         None => store.projects()?,
     };
     if projects.is_empty() {
@@ -57,9 +67,13 @@ fn run() -> depotd::Result<()> {
         hook,
     );
     supervisor.recover()?;
-    lock.record_scope(supervisor.projects())?;
+    let scope = lock.record_scope(supervisor.projects())?;
     let mut turn: usize = 0;
     loop {
+        if depotd::stop_requested(&home, scope.pid, scope.started_at_millis)? {
+            depotd::clear_stop_request(&home)?;
+            break;
+        }
         if let Err(error) = supervisor.tick(turn) {
             if error.is_project() || error.is_lock_contention() {
                 eprintln!("depotd: {error}; continuing");
@@ -71,18 +85,17 @@ fn run() -> depotd::Result<()> {
         turn = turn.wrapping_add(1);
         thread::sleep(home.load_settings()?.poll_interval());
     }
+    Ok(())
 }
 
-fn arguments() -> depotd::Result<Option<String>> {
+fn arguments() -> depotd::Result<Option<Vec<String>>> {
     let mut values = std::env::args().skip(1);
-    let mut project = None;
+    let mut projects = Vec::new();
     while let Some(argument) = values.next() {
         match argument.as_str() {
-            "--project" => {
-                project = Some(values.next().ok_or_else(|| {
-                    depotd::Error::Project(format!("--project needs a value\n{USAGE}"))
-                })?)
-            }
+            "--project" => projects.push(values.next().ok_or_else(|| {
+                depotd::Error::Project(format!("--project needs a value\n{USAGE}"))
+            })?),
             "--help" | "-h" => return Err(depotd::Error::Project(USAGE.to_string())),
             other => {
                 return Err(depotd::Error::Project(format!(
@@ -91,5 +104,5 @@ fn arguments() -> depotd::Result<Option<String>> {
             }
         }
     }
-    Ok(project)
+    Ok((!projects.is_empty()).then_some(projects))
 }

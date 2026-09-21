@@ -35,7 +35,7 @@ const MACHINE_LOCAL_ONLY_KEYS: [&str; 8] = [
     "credentials",
 ];
 
-const MACHINE_LOCAL_KEYS: [&str; 9] = [
+const MACHINE_LOCAL_KEYS: [&str; 10] = [
     "typesafe_base_url",
     "concurrency",
     "run_duration_minutes",
@@ -45,6 +45,7 @@ const MACHINE_LOCAL_KEYS: [&str; 9] = [
     "coordinator_context_tokens",
     "credentials",
     "profiles",
+    "artifacts",
 ];
 
 #[test]
@@ -155,6 +156,7 @@ fn registering_a_project_never_writes_machine_local_settings_into_the_repository
                 },
             )]),
             on_event: None,
+            artifacts: depotd::ArtifactsSettings::default(),
         })
         .expect("machine-local settings");
 

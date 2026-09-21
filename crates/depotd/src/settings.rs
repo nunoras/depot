@@ -22,9 +22,16 @@ pub struct Settings {
     pub credentials: BTreeMap<String, String>,
     pub profiles: BTreeMap<String, ProfileSettings>,
     pub on_event: Option<OnEventSettings>,
+    pub artifacts: ArtifactsSettings,
 }
 
 pub const DEFAULT_ON_EVENTS: [&str; 3] = ["question", "failed", "merge_refused"];
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ArtifactsSettings {
+    pub publish_command: String,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -64,6 +71,7 @@ impl Default for Settings {
             credentials: BTreeMap::new(),
             profiles: BTreeMap::new(),
             on_event: None,
+            artifacts: ArtifactsSettings::default(),
         }
     }
 }

@@ -8,8 +8,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use depot_core::{
-    Action, Baseline, Checks, CommitId, Dependency, Fact, FactKind, Liveness, MergePolicy,
-    ProjectId, Role, SessionId, Task, TaskId, TaskState, Timestamp, WorktreeLease,
+    Action, Baseline, Checks, CommitId, Dependency, Fact, FactKind, Liveness, MergePolicy, Role,
+    SessionId, Task, TaskId, TaskState, Timestamp, WorktreeLease,
 };
 use serde::{Deserialize, Serialize};
 
@@ -27,7 +27,7 @@ use crate::factcodec::payload_field;
 use crate::home::DepotHome;
 use crate::project::{LocationKind, Project};
 use crate::store::{EventOutcome, RecordedEvent, Store, event_key};
-use crate::vocabulary::{FactTag, checks_name, fact_tag_name};
+use crate::vocabulary::{FactTag, checks_name, fact_tag, fact_tag_name};
 
 pub const DAEMON_LOCK_FILE_NAME: &str = "depotd.lock";
 const MAX_RESUME_ATTEMPTS: u32 = 3;
@@ -38,23 +38,35 @@ pub struct DaemonScope {
     pub started_at_millis: u64,
     pub projects: Vec<String>,
     pub heartbeat_millis: u64,
+    #[serde(default)]
+    pub build_id: String,
 }
 
+impl DaemonScope {
+    pub fn new(projects: &[Project], pid: u32, at: Timestamp) -> Self {
+        Self {
+            pid,
+            started_at_millis: at.millis(),
+            projects: projects
+                .iter()
+                .map(|project| project.slug.clone())
+                .collect(),
+            heartbeat_millis: at.millis(),
+            build_id: crate::BUILD_ID.to_string(),
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct InstanceLock {
     file: File,
 }
 
 impl InstanceLock {
-    pub fn record_scope(&self, projects: &[Project]) -> Result<()> {
-        self.write_scope(&DaemonScope {
-            pid: std::process::id(),
-            started_at_millis: now().millis(),
-            projects: projects
-                .iter()
-                .map(|project| project.id.to_string())
-                .collect(),
-            heartbeat_millis: now().millis(),
-        })
+    pub fn record_scope(&self, projects: &[Project]) -> Result<DaemonScope> {
+        let scope = DaemonScope::new(projects, std::process::id(), now());
+        self.write_scope(&scope)?;
+        Ok(scope)
     }
 
     pub fn refresh_heartbeat(&self) -> Result<()> {
@@ -81,40 +93,72 @@ impl InstanceLock {
         home.ensure()?;
         let path = home.root().join(DAEMON_LOCK_FILE_NAME);
         let file = OpenOptions::new()
+            .read(true)
             .write(true)
             .create(true)
             .truncate(false)
             .open(&path)?;
+        let scope = read_scope_file(&file);
         file.try_lock_exclusive().map_err(|error| {
             Error::Home(format!(
-                "another depot daemon already holds {}: {error}",
-                path.display()
+                "{} ({error})",
+                lock_held_message(&path, scope.as_ref())
             ))
         })?;
         Ok(Self { file })
     }
 }
 
+fn lock_held_message(path: &Path, scope: Option<&DaemonScope>) -> String {
+    let held = format!("another depot daemon already holds {}", path.display());
+    match scope {
+        Some(scope) if scope.pid != 0 => {
+            let covering = if scope.projects.is_empty() {
+                "no recorded projects".to_string()
+            } else {
+                scope.projects.join(", ")
+            };
+            format!(
+                "{held}: pid {pid} covering {covering}; restart it with `depot daemon restart` or stop pid {pid}",
+                pid = scope.pid
+            )
+        }
+        _ => format!(
+            "{held}: the lock record names no daemon, so depot cannot identify the holder; stop the process holding it by hand"
+        ),
+    }
+}
+
+pub fn daemon_scope(home: &DepotHome) -> Option<DaemonScope> {
+    let bytes = std::fs::read(home.root().join(DAEMON_LOCK_FILE_NAME)).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+fn scope_is_fresh(scope: &DaemonScope, now: Timestamp, stale_after: Duration) -> bool {
+    now.millis().saturating_sub(scope.heartbeat_millis) <= stale_after.as_millis() as u64
+}
+
+pub fn daemon_build_mismatch(
+    home: &DepotHome,
+    now: Timestamp,
+    stale_after: Duration,
+) -> Option<DaemonScope> {
+    let scope = daemon_scope(home)?;
+    let mismatched = !scope.build_id.is_empty() && scope.build_id != crate::BUILD_ID;
+    (mismatched && scope_is_fresh(&scope, now, stale_after)).then_some(scope)
+}
+
 pub fn daemon_scope_covers(
     home: &DepotHome,
-    project: &ProjectId,
+    slug: &str,
     now: Timestamp,
     stale_after: Duration,
 ) -> Result<bool> {
-    let path = home.root().join(DAEMON_LOCK_FILE_NAME);
-    let Ok(bytes) = std::fs::read(&path) else {
+    let Some(scope) = daemon_scope(home) else {
         return Ok(false);
     };
-    let Ok(scope) = serde_json::from_slice::<DaemonScope>(&bytes) else {
-        return Ok(false);
-    };
-    let fresh =
-        now.millis().saturating_sub(scope.heartbeat_millis) <= stale_after.as_millis() as u64;
-    Ok(fresh
-        && scope
-            .projects
-            .iter()
-            .any(|covered| covered == project.as_str()))
+    Ok(scope_is_fresh(&scope, now, stale_after)
+        && scope.projects.iter().any(|covered| covered == slug))
 }
 
 fn read_scope_file(file: &File) -> Option<DaemonScope> {
@@ -816,7 +860,9 @@ where
     }
 
     pub fn record(&self, key: &str, fact: Fact) -> Result<()> {
-        log("fact", key);
+        if logs_fact(&fact.kind) {
+            log("fact", key);
+        }
         let applied = self.store.apply_fact(&self.project, key, &fact)?;
         if applied.outcome == EventOutcome::Recorded {
             for action in applied.actions {
@@ -2373,6 +2419,10 @@ fn log(kind: &str, value: &str) {
     eprintln!("{{\"kind\":\"{}\",\"value\":{:?}}}", kind, value);
 }
 
+pub(crate) fn logs_fact(kind: &FactKind) -> bool {
+    fact_tag(kind) != FactTag::Polled
+}
+
 pub(crate) fn log_project_error(slug: &str, error: &Error) {
     log("project-error", &format!("{slug}: {error}"));
 }
@@ -2380,10 +2430,31 @@ pub(crate) fn log_project_error(slug: &str, error: &Error) {
 #[cfg(test)]
 mod tests {
     use super::{
-        EventHook, EventNotice, ShellEventHook, ShellValidation, ValidationRunner, repo_slug,
+        EventHook, EventNotice, ShellEventHook, ShellValidation, ValidationRunner, logs_fact,
+        repo_slug,
     };
-    use depot_core::CommitId;
+    use depot_core::{CommitId, FactKind};
     use tempfile::TempDir;
+
+    #[test]
+    fn polling_is_not_logged_and_every_other_fact_is() {
+        use depot_core::{Role, TaskId};
+
+        assert!(!logs_fact(&FactKind::Polled));
+        assert!(logs_fact(&FactKind::TaskApproved {
+            task: TaskId::new("t-1"),
+        }));
+        assert!(logs_fact(&FactKind::TaskProposed {
+            task: TaskId::new("t-1"),
+            title: "a task".to_string(),
+            intent: "why".to_string(),
+            role: Role::Build,
+            dispatch_profile: None,
+            dependencies: Vec::new(),
+            base_dependency: None,
+            hold_pr: false,
+        }));
+    }
 
     fn git(path: &std::path::Path, args: &[&str]) -> String {
         let output = std::process::Command::new("git")

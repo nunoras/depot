@@ -199,6 +199,14 @@ fn failed(task: &str, commit_id: &str) -> FactKind {
     }
 }
 
+fn validation_failed(task: &str, commit_id: &str, reason: &str) -> FactKind {
+    FactKind::ValidationFailed {
+        task: task_id(task),
+        commit: commit(commit_id),
+        reason: reason.to_owned(),
+    }
+}
+
 fn submitted(task: &str, commit_id: &str) -> FactKind {
     FactKind::WorkerSubmitted {
         task: task_id(task),
@@ -3473,6 +3481,109 @@ fn a_describe_failure_fails_the_task_and_holds_it_for_the_user() {
             )],
         )
         .when("t1", TaskState::PrOpen, vec![]),
+    ]);
+}
+
+#[test]
+fn a_validation_failure_fails_a_validating_task_and_is_ignored_in_every_other_state() {
+    let submitted_validating = || {
+        with_attempt(
+            task("t1", TaskState::Validating),
+            Attempt {
+                last_seen_at: None,
+                outcome: AttemptOutcome::Submitted,
+                finished_at: Some(at(0)),
+                ..attempt(BUILD)
+            },
+        )
+    };
+
+    run(vec![
+        case(
+            "a validation that cannot run fails the task and holds it",
+            state(vec![submitted_validating()]),
+            vec![fact(
+                1_000,
+                validation_failed("t1", "c1", "the base branch could not be fetched"),
+            )],
+        )
+        .when(
+            "t1",
+            TaskState::Failed,
+            vec![hold("t1"), Action::RenderChecklist],
+        )
+        .checking(|state| {
+            subject(state, "t1").retry.is_none()
+                && subject(state, "t1").validations.is_empty()
+                && holds(state, "t1", AttemptOutcome::Submitted)
+        }),
+        case(
+            "a proposed task ignores a validation failure",
+            state(vec![task("t1", TaskState::Proposed)]),
+            vec![fact(2_000, validation_failed("t1", "c1", "late"))],
+        )
+        .when("t1", TaskState::Proposed, vec![]),
+        case(
+            "an approved task waiting on a dependency ignores a validation failure",
+            state(vec![
+                depending_on(task("t1", TaskState::Approved), "t0", "c1"),
+                validating("t0"),
+            ]),
+            vec![fact(3_000, validation_failed("t1", "c1", "late"))],
+        )
+        .when("t1", TaskState::Approved, vec![]),
+        case(
+            "a running task ignores a validation failure",
+            state(vec![running("t1")]),
+            vec![fact(4_000, validation_failed("t1", "c1", "late"))],
+        )
+        .when("t1", TaskState::Running, vec![]),
+        case(
+            "a task waiting on an answer ignores a validation failure",
+            state(vec![with_question(
+                running("t1"),
+                TaskState::WaitingOnQuestion,
+                "which database?",
+            )]),
+            vec![fact(5_000, validation_failed("t1", "c1", "late"))],
+        )
+        .when("t1", TaskState::WaitingOnQuestion, vec![]),
+        case(
+            "a validated task ignores a validation failure",
+            state(vec![validated("t1", "c1")]),
+            vec![fact(6_000, validation_failed("t1", "c1", "late"))],
+        )
+        .when("t1", TaskState::Validated, vec![]),
+        case(
+            "a pr-open task ignores a validation failure",
+            state(vec![pr_open("t1", "c1", 1)]),
+            vec![fact(7_000, validation_failed("t1", "c1", "late"))],
+        )
+        .when("t1", TaskState::PrOpen, vec![]),
+        case(
+            "a rework-pending task ignores a validation failure",
+            state(vec![task("t1", TaskState::ReworkPending)]),
+            vec![fact(8_000, validation_failed("t1", "c1", "late"))],
+        )
+        .when("t1", TaskState::ReworkPending, vec![]),
+        case(
+            "a landed task ignores a validation failure",
+            state(vec![task("t1", TaskState::Landed)]),
+            vec![fact(9_000, validation_failed("t1", "c1", "late"))],
+        )
+        .when("t1", TaskState::Landed, vec![]),
+        case(
+            "a failed task ignores a second validation failure",
+            state(vec![task("t1", TaskState::Failed)]),
+            vec![fact(10_000, validation_failed("t1", "c1", "late"))],
+        )
+        .when("t1", TaskState::Failed, vec![]),
+        case(
+            "a cancelled task ignores a validation failure",
+            state(vec![task("t1", TaskState::Cancelled)]),
+            vec![fact(11_000, validation_failed("t1", "c1", "late"))],
+        )
+        .when("t1", TaskState::Cancelled, vec![]),
     ]);
 }
 

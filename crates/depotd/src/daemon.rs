@@ -2102,7 +2102,8 @@ fn log(kind: &str, value: &str) {
 #[cfg(test)]
 mod tests {
     use super::{
-        EventHook, EventNotice, ShellEventHook, ShellValidation, ValidationRunner, repo_slug,
+        EventHook, EventNotice, ShellEventHook, ShellValidation, ValidationRunner, delivery_branch,
+        repo_slug,
     };
     use depot_core::CommitId;
     use tempfile::TempDir;
@@ -2171,6 +2172,56 @@ mod tests {
                 .validate(&task, path, &wrong, "true")
                 .is_err()
         );
+    }
+
+    #[test]
+    fn a_detached_worktree_falls_back_to_a_conventional_delivery_branch() {
+        let temp = TempDir::new().expect("temporary directory");
+        let path = temp.path();
+        git(path, &["init"]);
+        git(path, &["config", "user.email", "depot@example.test"]);
+        git(path, &["config", "user.name", "Depot"]);
+        std::fs::write(path.join("answer"), "42").expect("fixture is written");
+        git(path, &["add", "."]);
+        git(path, &["commit", "-m", "fixture"]);
+        git(path, &["checkout", "--detach", "HEAD"]);
+        assert_eq!(git(path, &["branch", "--show-current"]), "");
+
+        let task = depot_core::Task {
+            id: depot_core::TaskId::new("t-64"),
+            project: depot_core::ProjectId::new("test"),
+            title: "Align branch naming".to_owned(),
+            intent: "Correct the branch name claims.".to_owned(),
+            role: depot_core::Role::Build,
+            dispatch_profile: None,
+            state: depot_core::TaskState::Running,
+            dependencies: Vec::new(),
+            base_dependency: None,
+            attempts: Vec::new(),
+            questions: Vec::new(),
+            validations: Vec::new(),
+            submission: None,
+            artifacts: Vec::new(),
+            links: Vec::new(),
+            branch_head: None,
+            merge_refused: None,
+            redirect_text: None,
+            redirect_delivered: false,
+            acknowledged_at: None,
+            hold_pr: false,
+            rework_of: None,
+            retry: None,
+            created_at: depot_core::Timestamp::from_millis(0),
+            updated_at: depot_core::Timestamp::from_millis(0),
+        };
+
+        let branch = delivery_branch(path, &task).expect("a detached worktree names a branch");
+        assert_eq!(branch, "feat/align-branch-naming");
+        assert!(
+            !branch.starts_with("depot-"),
+            "{branch} names the lease holder"
+        );
+        assert_eq!(git(path, &["branch", "--show-current"]), branch);
     }
 
     #[test]

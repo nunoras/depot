@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use depot_core::{ProfileId, Role};
+use depot_core::{MergePolicy, ProfileId, Role};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -82,9 +82,50 @@ pub struct ValidationConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct PullRequestConfig {
     pub base: String,
-    pub auto_merge: bool,
+    pub merge: Option<MergePolicyConfig>,
+    pub auto_merge: Option<bool>,
     pub describe_profile: Option<String>,
     pub describe_timeout_seconds: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MergePolicyConfig {
+    Manual,
+    AfterChecks,
+    AfterReview,
+}
+
+impl PullRequestConfig {
+    pub fn merge_policy(&self) -> MergePolicy {
+        match self.merge {
+            Some(MergePolicyConfig::Manual) => MergePolicy::Manual,
+            Some(MergePolicyConfig::AfterChecks) => MergePolicy::AfterChecks,
+            Some(MergePolicyConfig::AfterReview) => MergePolicy::AfterReview,
+            None => match self.auto_merge {
+                Some(enabled) => {
+                    warn_deprecated_auto_merge(enabled);
+                    if enabled {
+                        MergePolicy::AfterChecks
+                    } else {
+                        MergePolicy::Manual
+                    }
+                }
+                None => MergePolicy::Manual,
+            },
+        }
+    }
+}
+
+fn warn_deprecated_auto_merge(enabled: bool) {
+    use std::sync::Once;
+    static WARNED: Once = Once::new();
+    WARNED.call_once(|| {
+        let policy = if enabled { "after_checks" } else { "manual" };
+        eprintln!(
+            "warning: [pull_request] auto_merge is deprecated; it maps to merge = \"{policy}\" and will stop working in a future release"
+        );
+    });
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -142,7 +183,8 @@ impl Default for PullRequestConfig {
     fn default() -> Self {
         Self {
             base: "main".to_string(),
-            auto_merge: false,
+            merge: None,
+            auto_merge: None,
             describe_profile: None,
             describe_timeout_seconds: default_describe_timeout_seconds(),
         }

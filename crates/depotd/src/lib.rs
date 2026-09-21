@@ -28,8 +28,8 @@ pub use commands::{
     submit_task, write_narrative,
 };
 pub use config::{
-    EvidenceConfig, PROJECT_CONFIG_FILE_NAME, ProjectConfig, PullRequestConfig, QuestionsConfig,
-    ValidationConfig,
+    EvidenceConfig, MergePolicyConfig, PROJECT_CONFIG_FILE_NAME, ProjectConfig, PullRequestConfig,
+    QuestionsConfig, ValidationConfig,
 };
 pub use coordinator::{
     BRIEF_TEMPLATE, COORDINATOR_KICKOFF_TEMPLATE, COORDINATOR_POLICY, CoordinatorContext, Launch,

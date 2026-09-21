@@ -25,8 +25,8 @@ use depotd::adapters::forge::GitHub;
 use depotd::adapters::sessions::{Boxr, Sessions};
 use depotd::adapters::worktrees::Treehouse;
 use depotd::{
-    Daemon, DepotHome, ForgeDelivery, HOME_ENV, OnEventSettings, ProfileSettings, Project,
-    RecordedEvent, Settings, ShellValidation, Store,
+    Daemon, DepotHome, ForgeDelivery, HOME_ENV, InstanceLock, OnEventSettings, ProfileSettings,
+    Project, RecordedEvent, Settings, ShellValidation, Store,
 };
 use depotd::{EventHook, NoEventHook, ShellEventHook};
 use fake_forge::FakeForge;
@@ -89,6 +89,7 @@ pub struct Golden {
     pub forge: FakeForge,
     pub boxr: FakeBoxr,
     pub treehouse: FakeProgram,
+    _lock: Option<InstanceLock>,
 }
 
 impl Golden {
@@ -210,6 +211,10 @@ impl Golden {
             .expect("the project is registered");
         assert_eq!(project.slug, SLUG);
 
+        let lock = depotd::InstanceLock::acquire(&home).expect("the daemon takes the single lock");
+        lock.record_scope(std::slice::from_ref(&project))
+            .expect("the daemon scope is recorded");
+
         Self {
             temp,
             home,
@@ -224,7 +229,22 @@ impl Golden {
             forge,
             boxr,
             treehouse,
+            _lock: Some(lock),
         }
+    }
+
+    pub fn restart_lock(&mut self) {
+        self._lock = None;
+        for _ in 0..500 {
+            match InstanceLock::acquire(&self.home) {
+                Ok(lock) => {
+                    self._lock = Some(lock);
+                    return;
+                }
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(10)),
+            }
+        }
+        panic!("the lock is free once the first daemon stops");
     }
 
     pub fn pass_validation_in_worktree(&self) {

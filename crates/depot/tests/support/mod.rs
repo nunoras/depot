@@ -568,11 +568,19 @@ impl Golden {
     }
 
     pub fn status(&self) -> String {
+        self.refresh_daemon_heartbeat();
         self.depot_ok(&["status", "--project", SLUG])
     }
 
     pub fn status_history(&self) -> String {
+        self.refresh_daemon_heartbeat();
         self.depot_ok(&["status", "--project", SLUG, "--history"])
+    }
+
+    fn refresh_daemon_heartbeat(&self) {
+        if let Some(lock) = &self._lock {
+            lock.refresh_heartbeat().expect("the daemon heartbeat");
+        }
     }
 
     pub fn status_matches_checklist(&self, rendered: &str) {

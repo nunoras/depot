@@ -131,6 +131,7 @@ pub enum FactTag {
     PullRequestMerged,
     PullRequestClosedUnmerged,
     PullRequestMergeRefused,
+    DescribeFailed,
     EvidencePosted,
     EvidenceFailed,
     PushFailed,
@@ -176,6 +177,7 @@ pub fn fact_tag(kind: &FactKind) -> FactTag {
         FactKind::PullRequestMerged { .. } => FactTag::PullRequestMerged,
         FactKind::PullRequestClosedUnmerged { .. } => FactTag::PullRequestClosedUnmerged,
         FactKind::PullRequestMergeRefused { .. } => FactTag::PullRequestMergeRefused,
+        FactKind::DescribeFailed { .. } => FactTag::DescribeFailed,
         FactKind::EvidencePosted { .. } => FactTag::EvidencePosted,
         FactKind::EvidenceFailed { .. } => FactTag::EvidenceFailed,
         FactKind::PushFailed { .. } => FactTag::PushFailed,
@@ -222,6 +224,7 @@ pub fn fact_tag_name(tag: FactTag) -> &'static str {
         FactTag::PullRequestMerged => "pull_request_merged",
         FactTag::PullRequestClosedUnmerged => "pull_request_closed_unmerged",
         FactTag::PullRequestMergeRefused => "pull_request_merge_refused",
+        FactTag::DescribeFailed => "describe_failed",
         FactTag::EvidencePosted => "evidence_posted",
         FactTag::EvidenceFailed => "evidence_failed",
         FactTag::PushFailed => "push_failed",
@@ -267,6 +270,7 @@ pub fn fact_tag_from_name(name: &str) -> Result<FactTag> {
         "pull_request_merged" => FactTag::PullRequestMerged,
         "pull_request_closed_unmerged" => FactTag::PullRequestClosedUnmerged,
         "pull_request_merge_refused" => FactTag::PullRequestMergeRefused,
+        "describe_failed" => FactTag::DescribeFailed,
         "evidence_posted" => FactTag::EvidencePosted,
         "evidence_failed" => FactTag::EvidenceFailed,
         "push_failed" => FactTag::PushFailed,
@@ -317,6 +321,7 @@ pub fn fact_task(kind: &FactKind) -> Option<TaskId> {
         | FactKind::PullRequestMerged { task, .. }
         | FactKind::PullRequestMergeRefused { task, .. }
         | FactKind::PullRequestClosedUnmerged { task }
+        | FactKind::DescribeFailed { task, .. }
         | FactKind::EvidencePosted { task, .. }
         | FactKind::EvidenceFailed { task, .. }
         | FactKind::PushFailed { task, .. }

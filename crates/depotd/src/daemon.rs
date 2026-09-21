@@ -470,6 +470,12 @@ pub struct ValidationResult {
     pub output_tail: String,
 }
 
+enum DescribeOutcome {
+    Output(describe::DescribeOutput),
+    OptOut,
+    HeldForUser,
+}
+
 impl<'a, S, W, V, D, H> Daemon<'a, S, W, V, D, H>
 where
     S: Sessions,
@@ -953,16 +959,32 @@ where
         let worktree = self.lease_for(&task_record)?.path;
         let config = self.store.project_config(&self.project)?;
         let base = config.pull_request.base.clone();
-        let describe = self.describe_pull_request(&task_record, &worktree, &config);
-        let (title, body) = describe::assemble(describe, &task_record, &commit);
-        let (number, url) = self.delivery.open_pull_request(
-            &task_record,
-            &worktree,
-            &commit,
-            &base,
-            &title,
-            &body,
-        )?;
+        match self.describe_pull_request(&task_record, &worktree, &commit, &config)? {
+            DescribeOutcome::Output(describe) => {
+                let (title, body) = describe::assemble(Some(describe), &task_record, &commit);
+                self.open_pull_request_with(&task_record, &worktree, &commit, &base, &title, &body)
+            }
+            DescribeOutcome::OptOut => {
+                let (title, body) = describe::assemble(None, &task_record, &commit);
+                self.open_pull_request_with(&task_record, &worktree, &commit, &base, &title, &body)
+            }
+            DescribeOutcome::HeldForUser => Ok(()),
+        }
+    }
+
+    fn open_pull_request_with(
+        &self,
+        task_record: &Task,
+        worktree: &Path,
+        commit: &CommitId,
+        base: &str,
+        title: &str,
+        body: &str,
+    ) -> Result<()> {
+        let task = task_record.id.clone();
+        let (number, url) =
+            self.delivery
+                .open_pull_request(task_record, worktree, commit, base, title, body)?;
         self.record(
             &event_key(&["pull_request_opened", task.as_str(), &number.to_string()]),
             Fact {
@@ -976,19 +998,44 @@ where
         &self,
         task: &Task,
         worktree: &Path,
+        commit: &CommitId,
         config: &crate::config::ProjectConfig,
-    ) -> Option<describe::DescribeOutput> {
-        let profile = config
+    ) -> Result<DescribeOutcome> {
+        let Some(profile) = config
             .pull_request
             .describe_profile
             .as_deref()
             .map(str::trim)
-            .filter(|name| !name.is_empty())?;
+            .filter(|name| !name.is_empty())
+        else {
+            return Ok(DescribeOutcome::OptOut);
+        };
+        let first = self.run_describer(task, worktree, config, profile);
+        if let Ok(output) = first {
+            return Ok(DescribeOutcome::Output(output));
+        }
+        log("describe_retry", task.id.as_str());
         match self.run_describer(task, worktree, config, profile) {
-            Ok(output) => Some(output),
+            Ok(output) => Ok(DescribeOutcome::Output(output)),
             Err(error) => {
-                log("describe_failed", &error.to_string());
-                None
+                let reason = error.to_string();
+                log("describe_failed", &reason);
+                self.record(
+                    &event_key(&[
+                        "describe_failed",
+                        task.id.as_str(),
+                        commit.as_str(),
+                        &now().millis().to_string(),
+                    ]),
+                    Fact {
+                        at: now(),
+                        kind: FactKind::DescribeFailed {
+                            task: task.id.clone(),
+                            reason,
+                        },
+                    },
+                )?;
+                Ok(DescribeOutcome::HeldForUser)
             }
         }
     }

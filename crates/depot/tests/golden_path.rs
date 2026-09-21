@@ -261,6 +261,61 @@ fn the_whole_journey_runs_from_proposal_to_a_released_worktree() {
 }
 
 #[test]
+fn a_merged_pull_request_lands_a_task_that_is_waiting_on_a_rework() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_submits();
+    let commit = golden.head();
+    golden.script_pull_request(&commit);
+    daemon
+        .tick()
+        .expect("the daemon validates the commit and opens the pull request");
+    assert_eq!(golden.task().state, TaskState::PrOpen);
+
+    assert_eq!(
+        golden.depot_ok(&[
+            "task",
+            "rework",
+            TASK,
+            "--text",
+            "address the review",
+            "--project",
+            SLUG,
+        ]),
+        format!("rework filed against {TASK}\n")
+    );
+    assert_eq!(golden.task().state, TaskState::ReworkPending);
+
+    golden.script_merge(&commit);
+    daemon
+        .tick()
+        .expect("the daemon observes the merge while the rework is pending");
+
+    assert_eq!(
+        golden.task().state,
+        TaskState::Landed,
+        "a merged pull request lands the task whether or not its rework started"
+    );
+    let fix = golden
+        .store
+        .task(&golden.project.id, &TaskId::new(TASK_TWO))
+        .expect("the rework is read")
+        .expect("the rework exists");
+    assert_eq!(
+        fix.state,
+        TaskState::Cancelled,
+        "a rework whose pull request already merged is cancelled"
+    );
+    assert_eq!(
+        calls_to(&golden.treehouse.calls(), "return").len(),
+        1,
+        "the worktree returns to the pool once"
+    );
+}
+
+#[test]
 fn a_worker_question_is_relayed_answered_and_the_worker_resumes_with_the_answer() {
     let golden = Golden::new(Validation::Passing);
     let daemon = golden.daemon();

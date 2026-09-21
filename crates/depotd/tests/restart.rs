@@ -1,36 +1,88 @@
 mod support;
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use depot_core::Timestamp;
 use depotd::{
-    DAEMON_LOG_FILE_NAME, DAEMON_STOP_FILE_NAME, InstanceLock, RestartOptions, clear_stop_request,
-    daemon_build_mismatch, daemon_scope, launch_spec, restart_daemon, stop_requested,
+    DAEMON_LOG_FILE_NAME, DAEMON_SCOPE_FILE_NAME, DAEMON_STOP_FILE_NAME, InstanceLock,
+    RestartOptions, clear_stop_request, daemon_build_mismatch, daemon_scope, launch_spec,
+    restart_daemon, stop_requested,
 };
 
-fn script(directory: &Path, name: &str, command: &str) -> PathBuf {
-    if cfg!(windows) {
-        let path = directory.join(format!("{name}.cmd"));
-        std::fs::write(&path, format!("@echo off\r\n{command}\r\n"))
-            .expect("the program is written");
-        return path;
-    }
-    let path = directory.join(name);
-    std::fs::write(&path, format!("#!/bin/sh\n{command}\n")).expect("the program is written");
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-        .expect("the program is executable");
-    path
+const SCOPE_WRITING_DAEMON: &str = r#"
+use std::io::Write;
+
+fn main() {
+    let cwd = std::env::current_dir().expect("cwd");
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let projects = args
+        .iter()
+        .filter(|argument| argument.as_str() != "--project")
+        .map(|project| format!("\"{project}\""))
+        .collect::<Vec<_>>()
+        .join(",");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_millis() as u64;
+    let body = format!(
+        "{{\"pid\":{},\"started_at_millis\":{now},\"projects\":[{projects}],\"heartbeat_millis\":{now},\"build_id\":\"\"}}",
+        std::process::id()
+    );
+    let mut scope = std::fs::File::create(cwd.join("depotd.scope.json")).expect("scope");
+    scope.write_all(body.as_bytes()).expect("scope");
+    println!("args: {}", args.join(" "));
+    println!("cwd: {}", cwd.display());
+}
+"#;
+
+const SILENT_DAEMON: &str = r#"
+fn main() {
+    std::thread::sleep(std::time::Duration::from_secs(5));
+}
+"#;
+
+fn compile_daemon(name: &str, source: &str) -> PathBuf {
+    let directory = Path::new(env!("CARGO_TARGET_TMPDIR")).join("restart-daemons");
+    std::fs::create_dir_all(&directory).expect("the helper directory");
+    let source_path = directory.join(format!("{name}.rs"));
+    std::fs::write(&source_path, source).expect("the daemon source");
+    let binary = directory.join(if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        name.to_string()
+    });
+    let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
+    let output = std::process::Command::new(rustc)
+        .arg("--edition")
+        .arg("2024")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("rustc runs");
+    assert!(
+        output.status.success(),
+        "the fake daemon {name} could not be built: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    binary
 }
 
-fn announcing_daemon(directory: &Path) -> PathBuf {
-    let command = if cfg!(windows) {
-        "echo args: %*\r\ncd"
-    } else {
-        "printf 'args: %s\\n' \"$*\"\nprintf 'cwd: %s\\n' \"$PWD\""
-    };
-    script(directory, "fake-depotd", command)
+fn recording_daemon() -> PathBuf {
+    static COMPILED: OnceLock<PathBuf> = OnceLock::new();
+    COMPILED
+        .get_or_init(|| compile_daemon("scope_writing_daemon", SCOPE_WRITING_DAEMON))
+        .clone()
+}
+
+fn silent_daemon() -> PathBuf {
+    static COMPILED: OnceLock<PathBuf> = OnceLock::new();
+    COMPILED
+        .get_or_init(|| compile_daemon("silent_daemon", SILENT_DAEMON))
+        .clone()
 }
 
 fn wait_for_log(log: &Path) -> String {
@@ -86,12 +138,13 @@ fn a_restart_stops_the_recorded_daemon_and_relaunches_with_its_scope() {
         })
     };
 
-    let program = announcing_daemon(fixture.temp.path());
+    let program = recording_daemon();
     let restarted = restart_daemon(
         &home,
         &RestartOptions {
             program,
             timeout: Duration::from_secs(10),
+            takeover_timeout: Duration::from_secs(10),
         },
     )
     .expect("the daemon restarts");
@@ -126,12 +179,13 @@ fn a_restart_gives_up_after_the_bound_and_never_touches_the_holder() {
         .record_scope(std::slice::from_ref(&project.project))
         .expect("the scope");
 
-    let program = announcing_daemon(fixture.temp.path());
+    let program = recording_daemon();
     let error = restart_daemon(
         &fixture.home,
         &RestartOptions {
             program,
             timeout: Duration::from_millis(300),
+            takeover_timeout: Duration::from_secs(5),
         },
     )
     .expect_err("a holder that never stops ends the wait");
@@ -153,22 +207,21 @@ fn a_restart_gives_up_after_the_bound_and_never_touches_the_holder() {
 }
 
 #[test]
-fn a_restart_leaves_a_scope_record_it_cannot_read_alone() {
+fn a_restart_leaves_a_lock_record_it_cannot_read_alone() {
     let fixture = support::fixture();
     let lock = InstanceLock::acquire(&fixture.home).expect("the lock");
-    lock.record_scope(&[]).expect("the scope");
-    let path = fixture.home.root().join(depotd::DAEMON_SCOPE_FILE_NAME);
-    let intact = std::fs::read(&path).expect("the scope record");
+    let path = fixture.home.root().join(DAEMON_SCOPE_FILE_NAME);
     std::fs::write(&path, b"{}").expect("a record without a pid");
 
     assert!(daemon_scope(&fixture.home).is_none());
 
-    let program = announcing_daemon(fixture.temp.path());
+    let program = recording_daemon();
     let restarted = restart_daemon(
         &fixture.home,
         &RestartOptions {
             program,
             timeout: Duration::from_millis(300),
+            takeover_timeout: Duration::from_secs(5),
         },
     )
     .expect("an unreadable record is not a reason to fail the launch");
@@ -182,12 +235,36 @@ fn a_restart_leaves_a_scope_record_it_cannot_read_alone() {
         InstanceLock::acquire(&fixture.home).is_err(),
         "the unidentified holder keeps the lock"
     );
-    assert!(
-        lock.refresh_heartbeat().is_err(),
-        "a corrupt scope record cannot be refreshed"
-    );
-    std::fs::write(&path, intact).expect("the scope record is restored");
     assert!(lock.refresh_heartbeat().is_ok());
+}
+
+#[test]
+fn a_restart_fails_when_the_new_daemon_never_takes_the_instance_lock() {
+    let fixture = support::fixture();
+    let _lock = InstanceLock::acquire(&fixture.home).expect("the lock");
+
+    let error = restart_daemon(
+        &fixture.home,
+        &RestartOptions {
+            program: silent_daemon(),
+            timeout: Duration::from_millis(300),
+            takeover_timeout: Duration::from_millis(300),
+        },
+    )
+    .expect_err("a daemon that never takes the lock ends the wait");
+    let message = error.to_string();
+    assert!(
+        message.contains("did not take the instance lock"),
+        "the refusal says the new daemon never took over, got {message}"
+    );
+    assert!(
+        !fixture.home.root().join(DAEMON_SCOPE_FILE_NAME).exists(),
+        "the silent daemon must not have recorded a scope"
+    );
+    assert!(
+        daemon_scope(&fixture.home).is_none(),
+        "no scope names the launched daemon"
+    );
 }
 
 #[test]
@@ -270,22 +347,21 @@ fn a_build_mismatch_is_reported_only_for_a_fresh_lock_from_another_commit() {
             .expect("the record")
             .heartbeat_millis,
     );
-    let stale_after = Duration::from_secs(90);
-    assert!(daemon_build_mismatch(&fixture.home, now, stale_after).is_none());
+    assert!(daemon_build_mismatch(&fixture.home, now).is_none());
 
-    let path = fixture.home.root().join(depotd::DAEMON_SCOPE_FILE_NAME);
+    let path = fixture.home.root().join(DAEMON_SCOPE_FILE_NAME);
     let mut scope: depotd::DaemonScope =
         serde_json::from_slice(&std::fs::read(&path).expect("record")).expect("parsed");
     scope.build_id = "0ldbu11d".to_string();
     std::fs::write(&path, serde_json::to_vec(&scope).expect("encoded")).expect("rewritten");
 
-    let mismatch = daemon_build_mismatch(&fixture.home, now, stale_after).expect("a mismatch");
+    let mismatch = daemon_build_mismatch(&fixture.home, now).expect("a mismatch");
     assert_eq!(mismatch.build_id, "0ldbu11d");
 
     scope.heartbeat_millis = 0;
     std::fs::write(&path, serde_json::to_vec(&scope).expect("encoded")).expect("rewritten");
     assert!(
-        daemon_build_mismatch(&fixture.home, now, stale_after).is_none(),
+        daemon_build_mismatch(&fixture.home, now).is_none(),
         "a stale heartbeat means no daemon is running"
     );
 }
@@ -295,7 +371,7 @@ fn a_record_without_a_build_id_stays_quiet() {
     let fixture = support::fixture();
     let home = &fixture.home;
     std::fs::write(
-        home.root().join(depotd::DAEMON_SCOPE_FILE_NAME),
+        home.root().join(DAEMON_SCOPE_FILE_NAME),
         br#"{"pid":41,"started_at_millis":1,"projects":["example"],"heartbeat_millis":1}"#,
     )
     .expect("a legacy record");
@@ -304,14 +380,16 @@ fn a_record_without_a_build_id_stays_quiet() {
     assert_eq!(scope.build_id, "");
     assert_eq!(scope.projects, vec!["example"]);
     assert!(
-        daemon_build_mismatch(home, Timestamp::from_millis(1), Duration::from_secs(90)).is_none(),
+        daemon_build_mismatch(home, Timestamp::from_millis(1)).is_none(),
         "a legacy lock cannot be compared and must not warn"
     );
 }
 
 #[test]
 fn a_missing_daemon_beside_the_client_says_how_to_install_it() {
-    let error = depotd::installed_daemon().expect_err("the test binary has no depotd beside it");
+    let directory = tempfile::tempdir().expect("an empty directory");
+    let client = directory.path().join("depot");
+    let error = depotd::daemon_beside(&client).expect_err("the client has no depotd beside it");
     let message = error.to_string();
     assert!(message.contains("depotd"), "got {message}");
     assert!(message.contains("cargo install"), "got {message}");

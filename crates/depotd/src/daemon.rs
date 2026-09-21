@@ -8,14 +8,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use depot_core::{
-    Action, Baseline, Checks, CommitId, Dependency, Fact, FactKind, Liveness, MergePolicy, Role,
-    SessionId, Task, TaskId, TaskState, Timestamp, WorktreeLease,
+    Action, Baseline, Checks, CommitId, Dependency, Fact, FactKind, Liveness, MergePolicy,
+    ProjectId, Role, SessionId, Task, TaskId, TaskState, Timestamp, WorktreeLease,
 };
 use serde::{Deserialize, Serialize};
 
-use crate::adapters::forge::{
-    Forge, NewPullRequest, PrState, RepoSlug, UserAssetUpload, content_type_for,
-};
+use crate::adapters::forge::{Forge, NewPullRequest, PrState, RepoSlug};
 use crate::adapters::profiles::ProfileResolver;
 use crate::adapters::sessions::{LaunchRequest, SessionProfile, Sessions};
 use crate::adapters::worktrees::{AcquireRequest, Lease, Worktrees};
@@ -51,7 +49,7 @@ impl DaemonScope {
             started_at_millis: at.millis(),
             projects: projects
                 .iter()
-                .map(|project| project.slug.clone())
+                .map(|project| project.id.to_string())
                 .collect(),
             heartbeat_millis: at.millis(),
             build_id: crate::BUILD_ID.to_string(),
@@ -115,7 +113,6 @@ impl InstanceLock {
         home.ensure()?;
         let path = home.root().join(DAEMON_LOCK_FILE_NAME);
         let file = OpenOptions::new()
-            .read(true)
             .write(true)
             .create(true)
             .truncate(false)
@@ -124,7 +121,7 @@ impl InstanceLock {
         file.try_lock_exclusive().map_err(|error| {
             Error::Home(format!(
                 "{} ({error})",
-                lock_held_message(&path, scope.as_ref())
+                lock_held_message(home, &path, scope.as_ref())
             ))
         })?;
         Ok(Self {
@@ -134,14 +131,14 @@ impl InstanceLock {
     }
 }
 
-fn lock_held_message(path: &Path, scope: Option<&DaemonScope>) -> String {
+fn lock_held_message(home: &DepotHome, path: &Path, scope: Option<&DaemonScope>) -> String {
     let held = format!("another depot daemon already holds {}", path.display());
     match scope {
         Some(scope) if scope.pid != 0 => {
             let covering = if scope.projects.is_empty() {
                 "no recorded projects".to_string()
             } else {
-                scope.projects.join(", ")
+                project_slugs(home, &scope.projects).join(", ")
             };
             format!(
                 "{held}: pid {pid} covering {covering}; restart it with `depot daemon restart` or stop pid {pid}",
@@ -163,27 +160,39 @@ fn scope_is_fresh(scope: &DaemonScope, now: Timestamp, stale_after: Duration) ->
     now.millis().saturating_sub(scope.heartbeat_millis) <= stale_after.as_millis() as u64
 }
 
-pub fn daemon_build_mismatch(
-    home: &DepotHome,
-    now: Timestamp,
-    stale_after: Duration,
-) -> Option<DaemonScope> {
+pub fn daemon_build_mismatch(home: &DepotHome, now: Timestamp) -> Option<DaemonScope> {
+    let stale_after = home.load_settings().ok()?.poll_interval().saturating_mul(3);
     let scope = daemon_scope(home)?;
     let mismatched = !scope.build_id.is_empty() && scope.build_id != crate::BUILD_ID;
     (mismatched && scope_is_fresh(&scope, now, stale_after)).then_some(scope)
 }
 
-pub fn daemon_scope_covers(
-    home: &DepotHome,
-    slug: &str,
-    now: Timestamp,
-    stale_after: Duration,
-) -> Result<bool> {
+pub fn daemon_scope_covers(home: &DepotHome, project: &ProjectId, now: Timestamp) -> Result<bool> {
+    let stale_after = home.load_settings()?.poll_interval().saturating_mul(3);
     let Some(scope) = daemon_scope(home) else {
         return Ok(false);
     };
     Ok(scope_is_fresh(&scope, now, stale_after)
-        && scope.projects.iter().any(|covered| covered == slug))
+        && scope
+            .projects
+            .iter()
+            .any(|covered| covered == project.as_str()))
+}
+
+pub(crate) fn project_slugs(home: &DepotHome, ids: &[String]) -> Vec<String> {
+    let Ok(store) = Store::open(home) else {
+        return ids.to_vec();
+    };
+    ids.iter()
+        .map(|id| {
+            store
+                .project(&ProjectId::new(id.clone()))
+                .ok()
+                .flatten()
+                .map(|project| project.slug)
+                .unwrap_or_else(|| id.clone())
+        })
+        .collect()
 }
 
 pub trait ValidationRunner {
@@ -229,7 +238,6 @@ pub trait Delivery {
         repo: &RepoSlug,
         number: u64,
     ) -> Result<(String, String)>;
-    fn upload_user_asset(&self, task: &Task, path: &Path) -> Result<String>;
     fn observe_pull_request(
         &self,
         task: &Task,
@@ -370,10 +378,13 @@ impl<F: Forge> Delivery for ForgeDelivery<F> {
                     .forge
                     .pull_request_text(&repo, opened.number)
                     .map_err(|error| Error::Project(error.to_string()))?;
-                let body = evidence::preserve_proof(existing.as_deref().unwrap_or_default(), body);
-                self.forge
-                    .update_pull_request(&repo, opened.number, title, &body)
-                    .map_err(|error| Error::Project(error.to_string()))?;
+                let existing = existing.unwrap_or_default();
+                if evidence::is_managed(&existing) {
+                    let body = evidence::preserve_proof(&existing, &evidence::mark_managed(body));
+                    self.forge
+                        .update_pull_request(&repo, opened.number, title, &body)
+                        .map_err(|error| Error::Project(error.to_string()))?;
+                }
                 opened
             }
             None => self
@@ -381,7 +392,7 @@ impl<F: Forge> Delivery for ForgeDelivery<F> {
                 .open_pull_request(&NewPullRequest {
                     repo,
                     title: title.to_owned(),
-                    body: body.to_owned(),
+                    body: evidence::mark_managed(body),
                     head,
                     base: base.to_owned(),
                 })
@@ -414,15 +425,6 @@ impl<F: Forge> Delivery for ForgeDelivery<F> {
             .pull_request_text(repo, number)
             .map_err(|error| Error::Project(error.to_string()))?;
         Ok((title, body.unwrap_or_default()))
-    }
-
-    fn upload_user_asset(&self, _task: &Task, path: &Path) -> Result<String> {
-        self.forge
-            .upload_user_asset(&UserAssetUpload {
-                path: path.to_path_buf(),
-                content_type: content_type_for(path),
-            })
-            .map_err(|error| Error::Project(error.to_string()))
     }
 
     fn observe_pull_request(
@@ -508,7 +510,14 @@ fn delivery_branch(worktree: &Path, task: &Task) -> Result<String> {
     if !current.is_empty() {
         return Ok(current.to_owned());
     }
-    let branch = depot_core::delivery_branch(task, &[]);
+    let listed = git_output(worktree, &["branch", "--format=%(refname:short)"])?;
+    let taken: Vec<String> = listed
+        .lines()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .collect();
+    let branch = depot_core::delivery_branch(task, &taken);
     git_output(worktree, &["checkout", "-B", &branch])?;
     Ok(branch)
 }
@@ -2099,28 +2108,30 @@ where
     ) -> Result<()> {
         let key = event_key(&["evidence", task.id.as_str(), commit.as_str()]);
         let required = config.evidence.required;
-        let outcome = self.lease_for(task).and_then(|lease| {
-            self.evidence.run(
-                command,
-                &lease.path,
-                &config.pull_request.base,
-                Duration::from_secs(config.evidence.timeout_seconds),
-            )
-        });
-        let result: std::result::Result<(), String> = match outcome {
-            Err(error) => Err(error.to_string()),
-            Ok(output) if output.exit_code != 0 => {
-                Err(format!("the evidence command exited {}", output.exit_code))
-            }
-            Ok(output) => self
-                .publish_evidence(
-                    task,
-                    number,
-                    repo,
-                    &evidence::parse_manifest(&output.stdout),
+        let result: std::result::Result<(), String> = (|| {
+            let lease = self.lease_for(task).map_err(|error| error.to_string())?;
+            let output = self
+                .evidence
+                .run(
+                    command,
+                    &lease.path,
+                    &config.pull_request.base,
+                    Duration::from_secs(config.evidence.timeout_seconds),
                 )
-                .map_err(|error| error.to_string()),
-        };
+                .map_err(|error| error.to_string())?;
+            if output.exit_code != 0 {
+                return Err(format!("the evidence command exited {}", output.exit_code));
+            }
+            self.publish_evidence(
+                task,
+                number,
+                repo,
+                &lease.path,
+                &evidence::parse_manifest(&output.stdout),
+                required,
+            )
+            .map_err(|error| error.to_string())
+        })();
         match result {
             Ok(()) => self.record(
                 &key,
@@ -2155,35 +2166,22 @@ where
         task: &Task,
         number: u64,
         repo: &RepoSlug,
+        worktree: &Path,
         artifacts: &[EvidenceArtifact],
+        required: bool,
     ) -> Result<()> {
-        let resolved = self.resolve_evidence(task, artifacts)?;
+        let resolved = evidence::resolve_artifacts(worktree, artifacts);
+        if required && !resolved.iter().any(ResolvedArtifact::is_url) {
+            return Err(Error::Project(
+                "the evidence command produced nothing attachable: a local file cannot be attached to a pull request, so publish each artifact at a URL"
+                    .to_owned(),
+            ));
+        }
         let proof = evidence::render_proof(&resolved);
         let (title, existing) = self.delivery.pull_request_content(task, repo, number)?;
         let body = evidence::upsert_proof(&existing, &proof);
         self.delivery
             .update_pull_request(task, repo, number, &title, &body)
-    }
-
-    fn resolve_evidence(
-        &self,
-        task: &Task,
-        artifacts: &[EvidenceArtifact],
-    ) -> Result<Vec<ResolvedArtifact>> {
-        let mut resolved = Vec::new();
-        for artifact in artifacts {
-            let url = match artifact {
-                EvidenceArtifact::Url { url, .. } => url.clone(),
-                EvidenceArtifact::File { path, .. } => {
-                    self.delivery.upload_user_asset(task, path)?
-                }
-            };
-            resolved.push(ResolvedArtifact {
-                url,
-                caption: artifact.caption().to_owned(),
-            });
-        }
-        Ok(resolved)
     }
 
     fn reconcile_forge(&self) -> Result<()> {
@@ -2603,16 +2601,19 @@ pub(crate) fn log_project_error(slug: &str, error: &Error) {
 #[cfg(test)]
 mod tests {
     use super::{
-        EventHook, EventNotice, ShellEventHook, ShellValidation, ValidationRunner, logs_fact,
-        repo_slug,
+        EventHook, EventNotice, ShellEventHook, ShellValidation, ValidationRunner, delivery_branch,
+        logs_fact, repo_slug,
     };
-    use depot_core::{CommitId, FactKind};
+    use std::collections::BTreeMap;
+
+    use depot_core::{
+        CommitId, Fact, FactKind, Limits, MergePolicy, ProjectId, ProjectState, Role, Task, TaskId,
+        Timestamp,
+    };
     use tempfile::TempDir;
 
     #[test]
     fn polling_is_not_logged_and_every_other_fact_is() {
-        use depot_core::{Role, TaskId};
-
         assert!(!logs_fact(&FactKind::Polled));
         assert!(logs_fact(&FactKind::TaskApproved {
             task: TaskId::new("t-1"),
@@ -2642,6 +2643,41 @@ mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
         String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    }
+
+    fn task(id: &str, title: &str, intent: &str) -> Task {
+        let state = ProjectState {
+            project: ProjectId::new("test"),
+            slug: "test".to_owned(),
+            tasks: BTreeMap::new(),
+            coordinator: None,
+            profiles: BTreeMap::new(),
+            fallback_profiles: Vec::new(),
+            limits: Limits::default(),
+            always_relay_questions: false,
+            merge_policy: MergePolicy::Manual,
+        };
+        let (state, _) = depot_core::reduce(
+            &state,
+            &Fact {
+                at: Timestamp::from_millis(0),
+                kind: FactKind::TaskProposed {
+                    task: TaskId::new(id),
+                    title: title.to_owned(),
+                    intent: intent.to_owned(),
+                    role: Role::Build,
+                    dispatch_profile: None,
+                    dependencies: Vec::new(),
+                    base_dependency: None,
+                    hold_pr: false,
+                },
+            },
+        );
+        state
+            .tasks
+            .get(&TaskId::new(id))
+            .cloned()
+            .expect("the proposed task is in the state")
     }
 
     #[cfg(windows)]
@@ -2681,35 +2717,7 @@ mod tests {
             ],
         );
         git(&path, &["push", "origin", "HEAD:main"]);
-        let task = depot_core::Task {
-            id: depot_core::TaskId::new("T1"),
-            project: depot_core::ProjectId::new("test"),
-            title: "test".to_owned(),
-            intent: "test validation".to_owned(),
-            role: depot_core::Role::Build,
-            dispatch_profile: None,
-            state: depot_core::TaskState::Proposed,
-            dependencies: Vec::new(),
-            base_dependency: None,
-            attempts: Vec::new(),
-            questions: Vec::new(),
-            validations: Vec::new(),
-            submission: None,
-            artifacts: Vec::new(),
-            links: Vec::new(),
-            branch_head: None,
-            merge_refused: None,
-            conflict_base: None,
-            failure: None,
-            redirect_text: None,
-            redirect_delivered: false,
-            acknowledged_at: None,
-            hold_pr: false,
-            rework_of: None,
-            retry: None,
-            created_at: depot_core::Timestamp::from_millis(0),
-            updated_at: depot_core::Timestamp::from_millis(0),
-        };
+        let task = task("T1", "test", "test validation");
         let result = ShellValidation
             .validate(&task, &path, &commit, "main", PRINT_VALIDATED_AND_EXIT_7)
             .expect("validation runs");
@@ -2725,6 +2733,65 @@ mod tests {
                 .validate(&task, &path, &wrong, "main", "true")
                 .is_err()
         );
+    }
+
+    #[test]
+    fn a_detached_worktree_falls_back_to_a_conventional_delivery_branch() {
+        let temp = TempDir::new().expect("temporary directory");
+        let path = temp.path();
+        git(path, &["init"]);
+        git(path, &["config", "user.email", "depot@example.test"]);
+        git(path, &["config", "user.name", "Depot"]);
+        std::fs::write(path.join("answer"), "42").expect("fixture is written");
+        git(path, &["add", "."]);
+        git(path, &["commit", "-m", "fixture"]);
+        git(path, &["checkout", "--detach", "HEAD"]);
+        assert_eq!(git(path, &["branch", "--show-current"]), "");
+
+        let task = task(
+            "t-64",
+            "Align branch naming",
+            "Correct the branch name claims.",
+        );
+
+        let branch = delivery_branch(path, &task).expect("a detached worktree names a branch");
+        assert_eq!(branch, "feat/align-branch-naming");
+        assert!(
+            !branch.starts_with("depot-"),
+            "{branch} names the lease holder"
+        );
+        assert_eq!(git(path, &["branch", "--show-current"]), branch);
+    }
+
+    #[test]
+    fn two_tasks_with_the_same_slug_get_distinct_delivery_branches() {
+        let temp = TempDir::new().expect("temporary directory");
+        let path = temp.path();
+        git(path, &["init"]);
+        git(path, &["config", "user.email", "depot@example.test"]);
+        git(path, &["config", "user.name", "Depot"]);
+        std::fs::write(path.join("answer"), "42").expect("fixture is written");
+        git(path, &["add", "."]);
+        git(path, &["commit", "-m", "fixture"]);
+        git(path, &["checkout", "--detach", "HEAD"]);
+
+        let first = task(
+            "t-64",
+            "Align branch naming",
+            "Correct the branch name claims.",
+        );
+        let branch = delivery_branch(path, &first).expect("the first task names a branch");
+        assert_eq!(branch, "feat/align-branch-naming");
+
+        git(path, &["checkout", "--detach", "HEAD"]);
+        let second = task(
+            "t-65",
+            "Align branch naming",
+            "Correct the branch name claims.",
+        );
+        let suffixed = delivery_branch(path, &second).expect("the second task names a branch");
+        assert_eq!(suffixed, "feat/align-branch-naming-2");
+        assert_ne!(branch, suffixed);
     }
 
     #[test]

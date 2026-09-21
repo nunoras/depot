@@ -8,7 +8,7 @@ mod temp;
 use depot_core::{Checks, CommitId};
 use depotd::adapters::forge::{
     CredentialSource, Forge, GitHub, NewPullRequest, PrState, RepoSlug, TOKEN_FILE,
-    UserAssetUpload, resolve_credentials,
+    resolve_credentials,
 };
 use fake_forge::FakeForge;
 use fake_program::FakeProgram;
@@ -704,108 +704,4 @@ fn surfaces_a_refused_pull_request_update() {
         .update_pull_request(&repo(), 7, "title", "body")
         .expect_err("a refused update is an error");
     assert!(error.to_string().contains("422"), "{error}");
-}
-
-#[test]
-fn uploads_a_user_asset_through_the_policy_and_upload_exchange() {
-    let forge_endpoint = FakeForge::start();
-    let base = forge_endpoint.base_url();
-    forge_endpoint.route(
-        "POST",
-        "/upload/policies/assets",
-        200,
-        &format!(
-            "{{\"upload_url\":\"{base}/upload/user-assets/abc\",\"asset\":{{\"href\":\"https://github.com/user-attachments/assets/uuid\",\"content_type\":\"video/mp4\"}},\"form\":{{\"key\":\"assets/uuid\"}},\"header\":{{\"x-amz-acl\":\"public-read\"}}}}"
-        ),
-    );
-    forge_endpoint.route("POST", "/upload/user-assets/abc", 200, "{}");
-
-    let temp = TempDir::new("upload");
-    let file = temp.path().join("clip.mp4");
-    std::fs::write(&file, b"video bytes").expect("the evidence file is written");
-    let url = GitHub::new(base.clone(), "token-1")
-        .upload_user_asset(&UserAssetUpload {
-            path: file.clone(),
-            content_type: "video/mp4".to_owned(),
-        })
-        .expect("the asset uploads");
-    assert_eq!(url, "https://github.com/user-attachments/assets/uuid");
-
-    let policy = forge_endpoint.request_to("/upload/policies/assets");
-    assert!(policy.body.contains("clip.mp4"), "{}", policy.body);
-    assert!(policy.body.contains("video/mp4"), "{}", policy.body);
-    assert!(
-        policy
-            .body
-            .contains(&format!("\"size\":{}", "video bytes".len())),
-        "{}",
-        policy.body
-    );
-
-    let upload = forge_endpoint.request_to("/upload/user-assets/abc");
-    assert_eq!(upload.method, "POST");
-    assert!(
-        upload.header("authorization").is_none(),
-        "the GitHub credential never reaches the upload host: {:?}",
-        upload.headers
-    );
-    assert_eq!(upload.header("x-amz-acl"), Some("public-read"));
-    assert!(
-        upload
-            .header("content-type")
-            .is_some_and(|value| value.starts_with("multipart/form-data; boundary=")),
-        "{:?}",
-        upload.header("content-type")
-    );
-    assert!(upload.body.contains("assets/uuid"), "{}", upload.body);
-    assert!(upload.body.contains("video bytes"), "{}", upload.body);
-}
-
-#[test]
-fn refuses_an_upload_when_the_policy_endpoint_rejects_the_credential() {
-    let forge_endpoint = FakeForge::start();
-    forge_endpoint.route(
-        "POST",
-        "/upload/policies/assets",
-        422,
-        "<!DOCTYPE html><html><body>Oh no</body></html>",
-    );
-
-    let temp = TempDir::new("upload-refused");
-    let file = temp.path().join("clip.mp4");
-    std::fs::write(&file, b"video bytes").expect("the evidence file is written");
-    let error = GitHub::new(forge_endpoint.base_url(), "token-1")
-        .upload_user_asset(&UserAssetUpload {
-            path: file,
-            content_type: "video/mp4".to_owned(),
-        })
-        .expect_err("a refused policy is an error");
-    let message = error.to_string();
-    assert!(message.contains("user-attachments"), "{message}");
-    assert!(message.contains("browser session"), "{message}");
-}
-
-#[test]
-fn refuses_a_policy_whose_asset_content_type_does_not_match() {
-    let forge_endpoint = FakeForge::start();
-    let base = forge_endpoint.base_url();
-    forge_endpoint.route(
-        "POST",
-        "/upload/policies/assets",
-        200,
-        &format!(
-            "{{\"upload_url\":\"{base}/upload/user-assets/abc\",\"asset\":{{\"href\":\"https://github.com/user-attachments/assets/uuid\",\"content_type\":\"text/plain\"}},\"form\":{{}}}}"
-        ),
-    );
-
-    let temp = TempDir::new("upload-mismatch");
-    let file = temp.path().join("clip.mp4");
-    std::fs::write(&file, b"video bytes").expect("the evidence file is written");
-    let error = GitHub::new(base, "token-1")
-        .upload_user_asset(&UserAssetUpload {
-            path: file,
-            content_type: "video/mp4".to_owned(),
-        })
-        .expect_err("a mismatched content type is an error");
-    assert!(error.to_string().contains("content type"), "{error}");
 }

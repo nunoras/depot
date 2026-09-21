@@ -27,7 +27,7 @@ fn artifact(directory: &Path, name: &str) -> PathBuf {
 fn publish_command(record: &Path, url: &str) -> String {
     if cfg!(windows) {
         format!(
-            "echo %DEPOT_ARTIFACT_PATH% > {} & echo {url}",
+            ">\"{}\" <nul set /p=%DEPOT_ARTIFACT_PATH%& echo {url}",
             record.display()
         )
     } else {

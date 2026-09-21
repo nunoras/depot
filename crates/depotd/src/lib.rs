@@ -26,7 +26,9 @@ mod vocabulary;
 
 pub use artifacts::{Staged, add_artifact, exactly_one_url};
 pub use build_info::{BUILD_ID, VERSION, version_line};
-pub use checklist::{format_timestamp, render_checklist, render_checklist_observed};
+pub use checklist::{
+    UNOBSERVED_AFTER_MILLIS, format_timestamp, render_checklist, render_checklist_observed,
+};
 pub use commands::{
     MIN_WAIT_POLL, TaskRequest, Waited, acknowledge_task, add_task, answer_question, approve_tasks,
     ask_question, ensure_profiles_resolve, read_inbox, redirect_task, release_task, retry_task,
@@ -58,13 +60,13 @@ pub use home::{
 pub use inbox::{InboxEntry, Need, inbox_entries, render_inbox};
 pub use project::{LocationKind, Project};
 pub use projects::{
-    Added, StatusSelection, add_project, render_projects, render_status, render_status_at,
-    select_project,
+    Added, StatusSelection, add_project, needs_daemon, render_projects, render_status,
+    render_status_at, select_project,
 };
 pub use restart::{
     DAEMON_LOG_FILE_NAME, DAEMON_STOP_FILE_NAME, LaunchSpec, RestartOptions, Restarted,
-    clear_stop_request, installed_daemon, launch_detached, launch_spec, restart_daemon,
-    stop_requested,
+    clear_stop_request, daemon_beside, installed_daemon, launch_detached, launch_spec,
+    restart_daemon, stop_requested,
 };
 pub use settings::{
     ArtifactsSettings, DEFAULT_ON_EVENTS, OnEventSettings, ProfileSettings, Settings,

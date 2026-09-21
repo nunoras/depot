@@ -72,12 +72,6 @@ pub struct OpenedPullRequest {
     pub url: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UserAssetUpload {
-    pub path: PathBuf,
-    pub content_type: String,
-}
-
 pub trait Forge {
     fn pull_request(&self, repo: &RepoSlug, number: u64) -> Result<PullRequest, ForgeError>;
     fn pull_request_text(
@@ -98,7 +92,6 @@ pub trait Forge {
         title: &str,
         body: &str,
     ) -> Result<(), ForgeError>;
-    fn upload_user_asset(&self, upload: &UserAssetUpload) -> Result<String, ForgeError>;
     fn merge_pull_request(
         &self,
         repo: &RepoSlug,
@@ -106,27 +99,6 @@ pub trait Forge {
         head: &CommitId,
     ) -> Result<(), ForgeError>;
     fn delete_branch(&self, repo: &RepoSlug, branch: &str) -> Result<(), ForgeError>;
-}
-
-pub fn content_type_for(path: &Path) -> String {
-    let extension = path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    match extension.as_str() {
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "mp4" => "video/mp4",
-        "mov" => "video/quicktime",
-        "webm" => "video/webm",
-        "pdf" => "application/pdf",
-        "txt" | "log" => "text/plain",
-        _ => "application/octet-stream",
-    }
-    .to_owned()
 }
 
 #[derive(Debug, Clone)]
@@ -152,18 +124,6 @@ impl GitHub {
 
     fn url(&self, path: &str) -> String {
         format!("{}{path}", self.api)
-    }
-
-    fn web_url(&self, path: &str) -> String {
-        format!("{}{path}", self.web_base())
-    }
-
-    fn web_base(&self) -> String {
-        let base = self.api.trim_end_matches('/');
-        if let Some(enterprise) = base.strip_suffix("/api/v3") {
-            return enterprise.to_owned();
-        }
-        base.replacen("//api.github.com", "//github.com", 1)
     }
 
     fn with_headers<T>(&self, request: ureq::RequestBuilder<T>) -> ureq::RequestBuilder<T> {
@@ -558,25 +518,6 @@ impl Forge for GitHub {
         }
     }
 
-    fn upload_user_asset(&self, upload: &UserAssetUpload) -> Result<String, ForgeError> {
-        let bytes = fs::read(&upload.path).map_err(|error| ForgeError::Request {
-            url: upload.path.display().to_string(),
-            detail: error.to_string(),
-        })?;
-        let name = upload
-            .path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| ForgeError::Request {
-                url: upload.path.display().to_string(),
-                detail: "the evidence file has no usable name".to_owned(),
-            })?
-            .to_owned();
-        let policy = self.user_asset_policy(&name, bytes.len(), &upload.content_type)?;
-        self.post_user_asset(&policy, &name, &upload.content_type, &bytes)?;
-        Ok(policy.asset_url)
-    }
-
     fn merge_pull_request(
         &self,
         repo: &RepoSlug,
@@ -616,163 +557,6 @@ impl Forge for GitHub {
             }),
         }
     }
-}
-
-#[derive(Debug, Clone)]
-struct UserAssetPolicy {
-    upload_url: String,
-    asset_url: String,
-    form: Vec<(String, String)>,
-    header: Vec<(String, String)>,
-}
-
-impl GitHub {
-    fn user_asset_policy(
-        &self,
-        name: &str,
-        size: usize,
-        content_type: &str,
-    ) -> Result<UserAssetPolicy, ForgeError> {
-        let url = self.web_url("/upload/policies/assets");
-        let payload =
-            json!({ "name": name, "size": size, "content_type": content_type }).to_string();
-        let (status, response) = self.call("POST", &url, Some(payload))?;
-        if status != 200 {
-            return Err(ForgeError::UploadUnavailable {
-                url,
-                status,
-                body: truncated(&response),
-            });
-        }
-        let value: Value =
-            serde_json::from_str(&response).map_err(|_| ForgeError::UploadUnavailable {
-                url: url.clone(),
-                status,
-                body: truncated(&response),
-            })?;
-        let upload_url = string(&url, &value, "upload_url", &response)?;
-        let asset = value
-            .get("asset")
-            .and_then(Value::as_object)
-            .ok_or_else(|| ForgeError::Malformed {
-                url: url.clone(),
-                detail: format!("no asset in {}", truncated(&response)),
-            })?;
-        let asset_url = asset
-            .get("href")
-            .or_else(|| asset.get("url"))
-            .and_then(Value::as_str)
-            .filter(|href| !href.is_empty())
-            .ok_or_else(|| ForgeError::Malformed {
-                url: url.clone(),
-                detail: format!("no asset url in {}", truncated(&response)),
-            })?
-            .to_owned();
-        let asset_content_type = asset
-            .get("content_type")
-            .and_then(Value::as_str)
-            .ok_or_else(|| ForgeError::Malformed {
-                url: url.clone(),
-                detail: format!("no asset content type in {}", truncated(&response)),
-            })?;
-        if asset_content_type != content_type {
-            return Err(ForgeError::Malformed {
-                url,
-                detail: format!(
-                    "the upload policy returned content type {asset_content_type:?} for a {content_type:?} upload"
-                ),
-            });
-        }
-        if !asset_url.starts_with("http") {
-            return Err(ForgeError::Malformed {
-                url,
-                detail: format!("the upload policy returned a relative asset url {asset_url:?}"),
-            });
-        }
-        Ok(UserAssetPolicy {
-            upload_url,
-            asset_url,
-            form: string_map(&value, "form", &url)?,
-            header: string_map(&value, "header", &url).unwrap_or_default(),
-        })
-    }
-
-    fn post_user_asset(
-        &self,
-        policy: &UserAssetPolicy,
-        name: &str,
-        content_type: &str,
-        bytes: &[u8],
-    ) -> Result<(), ForgeError> {
-        let (boundary, body) = multipart_body(&policy.form, name, content_type, bytes);
-        let mut request = self.agent.post(&policy.upload_url);
-        for (header, value) in &policy.header {
-            request = request.header(header, value);
-        }
-        let response = request
-            .header(
-                "Content-Type",
-                &format!("multipart/form-data; boundary={boundary}"),
-            )
-            .send(body)
-            .map_err(|error| ForgeError::Request {
-                url: policy.upload_url.clone(),
-                detail: error.to_string(),
-            })?;
-        let status = response.status().as_u16();
-        if (200..300).contains(&status) {
-            return Ok(());
-        }
-        Err(ForgeError::Status {
-            url: policy.upload_url.clone(),
-            status,
-            body: String::new(),
-        })
-    }
-}
-
-fn string_map(value: &Value, name: &str, url: &str) -> Result<Vec<(String, String)>, ForgeError> {
-    let Some(map) = value.get(name).and_then(Value::as_object) else {
-        return Ok(Vec::new());
-    };
-    map.iter()
-        .map(|(key, value)| {
-            value
-                .as_str()
-                .map(|value| (key.clone(), value.to_owned()))
-                .ok_or_else(|| ForgeError::Malformed {
-                    url: url.to_owned(),
-                    detail: format!("the {name} field {key:?} is not a string"),
-                })
-        })
-        .collect()
-}
-
-fn multipart_body(
-    fields: &[(String, String)],
-    file_name: &str,
-    content_type: &str,
-    bytes: &[u8],
-) -> (String, Vec<u8>) {
-    let boundary = format!("depot-boundary-{}", std::process::id());
-    let mut body = Vec::new();
-    for (name, value) in fields {
-        body.extend_from_slice(
-            format!(
-                "--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n"
-            )
-            .as_bytes(),
-        );
-    }
-    body.extend_from_slice(
-        format!(
-            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{file_name}\"\r\nContent-Type: {content_type}\r\n\r\n"
-        )
-        .as_bytes(),
-    );
-    body.extend_from_slice(bytes);
-    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
-    (boundary, body)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1151,11 +935,6 @@ pub enum ForgeError {
         url: String,
         detail: String,
     },
-    UploadUnavailable {
-        url: String,
-        status: u16,
-        body: String,
-    },
 }
 
 impl fmt::Display for ForgeError {
@@ -1192,10 +971,6 @@ impl fmt::Display for ForgeError {
             ForgeError::Malformed { url, detail } => {
                 write!(f, "the answer from {url} is not what depot reads: {detail}")
             }
-            ForgeError::UploadUnavailable { url, status, body } => write!(
-                f,
-                "GitHub answered {status} for the user-attachments upload endpoint {url}: {body}; that endpoint belongs to the github.com web application and needs a signed-in browser session, and the API token depot reads from the gh CLI or the depot home is not accepted there, so a local evidence file cannot be uploaded and must be published as a URL instead"
-            ),
         }
     }
 }

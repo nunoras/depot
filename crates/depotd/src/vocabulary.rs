@@ -126,6 +126,8 @@ pub enum FactTag {
     PullRequestMerged,
     PullRequestClosedUnmerged,
     PullRequestMergeRefused,
+    EvidencePosted,
+    EvidenceFailed,
     PushFailed,
     RebaseScheduled,
     RunDurationExceeded,
@@ -168,6 +170,8 @@ pub fn fact_tag(kind: &FactKind) -> FactTag {
         FactKind::PullRequestMerged { .. } => FactTag::PullRequestMerged,
         FactKind::PullRequestClosedUnmerged { .. } => FactTag::PullRequestClosedUnmerged,
         FactKind::PullRequestMergeRefused { .. } => FactTag::PullRequestMergeRefused,
+        FactKind::EvidencePosted { .. } => FactTag::EvidencePosted,
+        FactKind::EvidenceFailed { .. } => FactTag::EvidenceFailed,
         FactKind::PushFailed { .. } => FactTag::PushFailed,
         FactKind::RebaseScheduled { .. } => FactTag::RebaseScheduled,
         FactKind::RunDurationExceeded { .. } => FactTag::RunDurationExceeded,
@@ -211,6 +215,8 @@ pub fn fact_tag_name(tag: FactTag) -> &'static str {
         FactTag::PullRequestMerged => "pull_request_merged",
         FactTag::PullRequestClosedUnmerged => "pull_request_closed_unmerged",
         FactTag::PullRequestMergeRefused => "pull_request_merge_refused",
+        FactTag::EvidencePosted => "evidence_posted",
+        FactTag::EvidenceFailed => "evidence_failed",
         FactTag::PushFailed => "push_failed",
         FactTag::RebaseScheduled => "rebase_scheduled",
         FactTag::RunDurationExceeded => "run_duration_exceeded",
@@ -254,6 +260,8 @@ pub fn fact_tag_from_name(name: &str) -> Result<FactTag> {
         "pull_request_merged" => FactTag::PullRequestMerged,
         "pull_request_closed_unmerged" => FactTag::PullRequestClosedUnmerged,
         "pull_request_merge_refused" => FactTag::PullRequestMergeRefused,
+        "evidence_posted" => FactTag::EvidencePosted,
+        "evidence_failed" => FactTag::EvidenceFailed,
         "push_failed" => FactTag::PushFailed,
         "rebase_scheduled" => FactTag::RebaseScheduled,
         "run_duration_exceeded" => FactTag::RunDurationExceeded,
@@ -301,6 +309,8 @@ pub fn fact_task(kind: &FactKind) -> Option<TaskId> {
         | FactKind::PullRequestMerged { task, .. }
         | FactKind::PullRequestMergeRefused { task, .. }
         | FactKind::PullRequestClosedUnmerged { task }
+        | FactKind::EvidencePosted { task, .. }
+        | FactKind::EvidenceFailed { task, .. }
         | FactKind::PushFailed { task, .. }
         | FactKind::RebaseScheduled { task, .. }
         | FactKind::RunDurationExceeded { task }

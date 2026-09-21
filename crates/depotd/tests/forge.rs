@@ -625,3 +625,83 @@ fn surfaces_a_refused_branch_delete() {
         .expect_err("a refused delete is an error");
     assert!(error.to_string().contains("refused"), "{error}");
 }
+
+#[test]
+fn finds_only_the_comment_carrying_the_marker() {
+    let forge_endpoint = FakeForge::start();
+    forge_endpoint.route_query(
+        "GET",
+        "/repos/acme/widget/issues/7/comments",
+        Some("per_page=100"),
+        200,
+        r#"[{"id":3,"body":"looks good to me"},{"id":9,"body":"title\n<!-- depot-evidence -->\nevidence"}]"#,
+    );
+
+    let found = GitHub::new(forge_endpoint.base_url(), "token-1")
+        .find_comment(&repo(), 7, "<!-- depot-evidence -->")
+        .expect("the comment is found");
+    assert_eq!(found, Some(9));
+
+    let recorded = forge_endpoint.request_to("/repos/acme/widget/issues/7/comments");
+    assert_eq!(recorded.query.as_deref(), Some("per_page=100"));
+}
+
+#[test]
+fn finds_no_comment_when_the_marker_is_absent() {
+    let forge_endpoint = FakeForge::start();
+    forge_endpoint.route_query(
+        "GET",
+        "/repos/acme/widget/issues/7/comments",
+        Some("per_page=100"),
+        200,
+        r#"[{"id":3,"body":"looks good to me"}]"#,
+    );
+
+    let found = GitHub::new(forge_endpoint.base_url(), "token-1")
+        .find_comment(&repo(), 7, "<!-- depot-evidence -->")
+        .expect("the comment list is read");
+    assert_eq!(found, None);
+}
+
+#[test]
+fn creates_a_comment_and_reads_its_id() {
+    let forge_endpoint = FakeForge::start();
+    forge_endpoint.route(
+        "POST",
+        "/repos/acme/widget/issues/7/comments",
+        201,
+        r#"{"id":55,"body":"evidence"}"#,
+    );
+
+    let id = GitHub::new(forge_endpoint.base_url(), "token-1")
+        .create_comment(&repo(), 7, "evidence")
+        .expect("the comment is created");
+    assert_eq!(id, 55);
+
+    let recorded = forge_endpoint.request_to("/repos/acme/widget/issues/7/comments");
+    assert_eq!(recorded.method, "POST");
+    assert!(recorded.body.contains("\"body\""), "{}", recorded.body);
+}
+
+#[test]
+fn edits_the_marked_comment_in_place() {
+    let forge_endpoint = FakeForge::start();
+    forge_endpoint.route(
+        "PATCH",
+        "/repos/acme/widget/issues/comments/9",
+        200,
+        r#"{"id":9,"body":"evidence"}"#,
+    );
+
+    GitHub::new(forge_endpoint.base_url(), "token-1")
+        .update_comment(&repo(), 9, "updated evidence")
+        .expect("the comment is edited");
+
+    let recorded = forge_endpoint.request_to("/repos/acme/widget/issues/comments/9");
+    assert_eq!(recorded.method, "PATCH");
+    assert!(
+        recorded.body.contains("updated evidence"),
+        "{}",
+        recorded.body
+    );
+}

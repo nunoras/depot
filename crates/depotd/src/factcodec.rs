@@ -208,6 +208,26 @@ pub fn encode_payload(kind: &FactKind) -> String {
             ("checks", quoted(checks_name(*checks))),
             ("reason", quoted(reason)),
         ]),
+        FactKind::EvidencePosted {
+            task,
+            commit,
+            comment_id,
+        } => object(vec![
+            ("task", quoted(task.as_str())),
+            ("commit", quoted(commit.as_str())),
+            ("comment_id", numeric(comment_id)),
+        ]),
+        FactKind::EvidenceFailed {
+            task,
+            commit,
+            reason,
+            required,
+        } => object(vec![
+            ("task", quoted(task.as_str())),
+            ("commit", quoted(commit.as_str())),
+            ("reason", quoted(reason)),
+            ("required", boolean(*required)),
+        ]),
         FactKind::PushFailed {
             task,
             commit,

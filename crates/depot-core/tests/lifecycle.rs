@@ -2995,6 +2995,58 @@ fn push_failure_fails_the_task_and_holds_it_for_the_user() {
 }
 
 #[test]
+fn a_required_evidence_failure_holds_the_task_and_an_optional_one_does_not() {
+    run(vec![
+        case(
+            "a required evidence failure in pr-open fails the task and holds it",
+            state(vec![task("t1", TaskState::PrOpen)]),
+            vec![fact(
+                1_000,
+                FactKind::EvidenceFailed {
+                    task: task_id("t1"),
+                    commit: commit("c1"),
+                    reason: "the capture tool crashed".to_owned(),
+                    required: true,
+                },
+            )],
+        )
+        .when(
+            "t1",
+            TaskState::Failed,
+            vec![hold("t1"), Action::RenderChecklist],
+        ),
+        case(
+            "an optional evidence failure leaves the pull request open",
+            state(vec![task("t1", TaskState::PrOpen)]),
+            vec![fact(
+                2_000,
+                FactKind::EvidenceFailed {
+                    task: task_id("t1"),
+                    commit: commit("c1"),
+                    reason: "the capture tool crashed".to_owned(),
+                    required: false,
+                },
+            )],
+        )
+        .when("t1", TaskState::PrOpen, vec![]),
+        case(
+            "a landed task ignores an evidence failure",
+            state(vec![task("t1", TaskState::Landed)]),
+            vec![fact(
+                3_000,
+                FactKind::EvidenceFailed {
+                    task: task_id("t1"),
+                    commit: commit("c1"),
+                    reason: "the capture tool crashed".to_owned(),
+                    required: true,
+                },
+            )],
+        )
+        .when("t1", TaskState::Landed, vec![]),
+    ]);
+}
+
+#[test]
 fn merge_closes_an_open_attempt_before_landing() {
     run(vec![
         case(

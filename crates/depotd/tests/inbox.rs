@@ -201,6 +201,7 @@ fn the_inbox_payload_names_the_task_state_and_the_owner_of_each_fact() {
             task: TaskId::new("t-1"),
             command: "cargo test".to_string(),
             commit: CommitId::new("abc123"),
+            base_commit: None,
             exit_code: 0,
             duration: std::time::Duration::from_millis(1_200),
             output_tail: "ok".to_string(),
@@ -261,6 +262,7 @@ fn a_failed_validation_reaches_the_user_from_the_inbox() {
             task: TaskId::new("t-1"),
             command: "cargo test".to_string(),
             commit: CommitId::new("abc123"),
+            base_commit: None,
             exit_code: 101,
             duration: std::time::Duration::from_millis(1_200),
             output_tail: "boom".to_string(),
@@ -314,6 +316,7 @@ fn a_describe_failure_reaches_the_user_from_the_inbox() {
             task: TaskId::new("t-1"),
             command: "cargo test".to_string(),
             commit: CommitId::new("abc123"),
+            base_commit: None,
             exit_code: 0,
             duration: std::time::Duration::from_millis(1_200),
             output_tail: String::new(),
@@ -438,6 +441,7 @@ fn a_merge_that_held_the_task_reaches_the_user_from_the_inbox() {
     delivered.validations = vec![ValidationRecord {
         command: "cargo test".to_string(),
         commit: CommitId::new("aaa111"),
+        base_commit: None,
         exit_code: 0,
         duration: std::time::Duration::from_millis(1),
         output_tail: "ok".to_string(),
@@ -603,6 +607,7 @@ fn a_long_no_action_section_collapses_behind_a_count_and_keeps_the_user_first() 
             task: TaskId::new("t-1"),
             command: "cargo test".to_string(),
             commit: CommitId::new("bad000"),
+            base_commit: None,
             exit_code: 101,
             duration: std::time::Duration::from_millis(1),
             output_tail: "boom".to_string(),
@@ -714,5 +719,140 @@ fn inbox_lines_name_the_task_by_its_qualified_id() {
         entries
             .iter()
             .all(|entry| !entry.task.is_some() || entry.line.contains("example/t-1"))
+    );
+}
+
+#[test]
+fn a_delivery_failure_reaches_the_user_and_a_landing_on_base_needs_nobody() {
+    let fixture = support::fixture();
+    let added = support::register_with_config(&fixture, "example", BUILD_ONLY);
+    let store = Store::open(&fixture.home).expect("store");
+    let project = &added.project.id;
+
+    apply(
+        &store,
+        project,
+        "task_proposed:t-1",
+        1_000,
+        proposed("t-1", "Wire the store"),
+    );
+    apply(&store, project, "task_approved:t-1", 2_000, approved("t-1"));
+    apply(
+        &store,
+        project,
+        "worker_submitted:t-1",
+        3_000,
+        FactKind::WorkerSubmitted {
+            task: TaskId::new("t-1"),
+            commit: CommitId::new("abc123"),
+        },
+    );
+    apply(
+        &store,
+        project,
+        "validation_finished:t-1",
+        4_000,
+        FactKind::ValidationFinished {
+            task: TaskId::new("t-1"),
+            command: "cargo test".to_string(),
+            commit: CommitId::new("abc123"),
+            base_commit: None,
+            exit_code: 0,
+            duration: std::time::Duration::from_millis(1_200),
+            output_tail: String::new(),
+        },
+    );
+    apply(
+        &store,
+        project,
+        "delivery_failed:t-1:abc123",
+        5_000,
+        FactKind::DeliveryFailed {
+            task: TaskId::new("t-1"),
+            commit: CommitId::new("abc123"),
+            reason: "GitHub answered 422 for the pull request".to_string(),
+        },
+    );
+
+    apply(
+        &store,
+        project,
+        "task_proposed:t-2",
+        6_000,
+        proposed("t-2", "Second task"),
+    );
+    apply(&store, project, "task_approved:t-2", 7_000, approved("t-2"));
+    apply(
+        &store,
+        project,
+        "worker_submitted:t-2",
+        8_000,
+        FactKind::WorkerSubmitted {
+            task: TaskId::new("t-2"),
+            commit: CommitId::new("def456"),
+        },
+    );
+    apply(
+        &store,
+        project,
+        "validation_finished:t-2",
+        9_000,
+        FactKind::ValidationFinished {
+            task: TaskId::new("t-2"),
+            command: "cargo test".to_string(),
+            commit: CommitId::new("def456"),
+            base_commit: None,
+            exit_code: 0,
+            duration: std::time::Duration::from_millis(1_200),
+            output_tail: String::new(),
+        },
+    );
+    apply(
+        &store,
+        project,
+        "task_landed_on_base:t-2:def456",
+        10_000,
+        FactKind::TaskLandedOnBase {
+            task: TaskId::new("t-2"),
+            commit: CommitId::new("def456"),
+        },
+    );
+
+    let events = store.events(project).expect("journal");
+    let failure = events
+        .iter()
+        .find(|event| event.kind == "delivery_failed")
+        .expect("the delivery failure is persisted");
+    assert!(
+        failure.payload.contains("\"reason\":\"GitHub answered 422"),
+        "the failure carries its reason: {}",
+        failure.payload
+    );
+    let landed = events
+        .iter()
+        .find(|event| event.kind == "task_landed_on_base")
+        .expect("the landing is persisted");
+    assert!(
+        landed.payload.contains("\"commit\":\"def456\""),
+        "the landing carries the landed commit: {}",
+        landed.payload
+    );
+
+    let payload = read_inbox(&fixture.home, Some("example")).expect("inbox");
+
+    let user = section(&payload, "For the user");
+    assert!(
+        user.contains("the delivery failed: GitHub answered 422 for the pull request"),
+        "a delivery failure is a decision, got\n{payload}"
+    );
+    assert!(
+        user.contains("(failed)"),
+        "the entry reports where the task stands now, got\n{payload}"
+    );
+
+    let nothing = section(&payload, "No action");
+    assert!(
+        nothing.contains("already on the base branch"),
+        "a landing on the base needs nobody, got\n{payload}"
     );
 }

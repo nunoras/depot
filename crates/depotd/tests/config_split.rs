@@ -67,6 +67,31 @@ fn the_committed_project_file_holds_only_project_knowledge() {
 }
 
 #[test]
+fn the_describe_style_defaults_to_empty_and_round_trips() {
+    assert_eq!(ProjectConfig::default().pull_request.describe_style, "");
+
+    let absent = ProjectConfig::from_toml("[pull_request]\nbase = \"main\"\n")
+        .expect("a config without a describe style parses");
+    assert_eq!(absent.pull_request.describe_style, "");
+
+    let written = ProjectConfig::from_toml(
+        "[pull_request]\ndescribe_style = \"Write in the house voice.\"\n",
+    )
+    .expect("a configured describe style parses");
+    assert_eq!(
+        written.pull_request.describe_style,
+        "Write in the house voice."
+    );
+
+    let round_tripped = ProjectConfig::from_toml(&written.to_toml().expect("toml"))
+        .expect("the config round trips");
+    assert_eq!(
+        round_tripped.pull_request.describe_style,
+        "Write in the house voice."
+    );
+}
+
+#[test]
 fn the_machine_local_file_holds_only_machine_local_settings() {
     let settings = Settings {
         pool_root: Some("/pool".into()),

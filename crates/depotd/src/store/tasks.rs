@@ -311,13 +311,14 @@ impl Store {
 
     fn validations(&self, project: &ProjectId, task: &str) -> Result<Vec<ValidationRecord>> {
         let mut statement = self.connection().prepare(
-            "SELECT command, commit_id, exit_code, duration_millis, output_tail
+            "SELECT command, commit_id, base_commit, exit_code, duration_millis, output_tail
              FROM task_validations WHERE project_id = ?1 AND task_id = ?2 ORDER BY position",
         )?;
         let rows = statement.query_map(params![project.as_str(), task], |row| {
             Ok(RawValidation {
                 command: row.get("command")?,
                 commit: row.get("commit_id")?,
+                base_commit: row.get("base_commit")?,
                 exit_code: row.get("exit_code")?,
                 duration_millis: row.get("duration_millis")?,
                 output_tail: row.get("output_tail")?,
@@ -329,6 +330,7 @@ impl Store {
             validations.push(ValidationRecord {
                 command: raw.command,
                 commit: CommitId::new(raw.commit),
+                base_commit: raw.base_commit.map(CommitId::new),
                 exit_code: raw.exit_code,
                 duration: Duration::from_millis(raw.duration_millis.max(0) as u64),
                 output_tail: raw.output_tail,
@@ -430,6 +432,7 @@ struct RawQuestion {
 struct RawValidation {
     command: String,
     commit: String,
+    base_commit: Option<String>,
     exit_code: i32,
     duration_millis: i64,
     output_tail: String,
@@ -551,15 +554,16 @@ pub(super) fn write_task(transaction: &Transaction<'_>, task: &Task) -> Result<(
     for (position, record) in task.validations.iter().enumerate() {
         transaction.execute(
             "INSERT INTO task_validations (
-                    project_id, task_id, position, command, commit_id, exit_code,
+                    project_id, task_id, position, command, commit_id, base_commit, exit_code,
                     duration_millis, output_tail
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 task.project.as_str(),
                 task.id.as_str(),
                 position as i64,
                 record.command,
                 record.commit.as_str(),
+                record.base_commit.as_ref().map(CommitId::as_str),
                 record.exit_code,
                 record.duration.as_millis() as i64,
                 record.output_tail,

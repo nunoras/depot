@@ -38,9 +38,9 @@ pub use coordinator::{
     WorkerLaunch, render_template,
 };
 pub use daemon::{
-    DAEMON_LOCK_FILE_NAME, Daemon, DaemonScope, Delivery, EventHook, EventNotice, ForgeDelivery,
-    InstanceLock, NoEventHook, ObservedPullRequest, ShellEventHook, ShellValidation,
-    ValidationResult, ValidationRunner, daemon_scope_covers, resume_prompt,
+    DAEMON_LOCK_FILE_NAME, DAEMON_SCOPE_FILE_NAME, Daemon, DaemonScope, Delivery, EventHook,
+    EventNotice, ForgeDelivery, InstanceLock, NoEventHook, ObservedPullRequest, ShellEventHook,
+    ShellValidation, ValidationResult, ValidationRunner, daemon_scope_covers, resume_prompt,
 };
 pub use depot_core::{ProjectState, Role, SessionId, Task, TaskId, TaskState, Timestamp};
 pub use documents::{document_path, write_document};

@@ -384,7 +384,9 @@ fn a_record_without_a_build_id_stays_quiet() {
 
 #[test]
 fn a_missing_daemon_beside_the_client_says_how_to_install_it() {
-    let error = depotd::installed_daemon().expect_err("the test binary has no depotd beside it");
+    let directory = tempfile::tempdir().expect("an empty directory");
+    let client = directory.path().join("depot");
+    let error = depotd::daemon_beside(&client).expect_err("the client has no depotd beside it");
     let message = error.to_string();
     assert!(message.contains("depotd"), "got {message}");
     assert!(message.contains("cargo install"), "got {message}");

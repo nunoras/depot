@@ -65,8 +65,8 @@ pub use projects::{
 };
 pub use restart::{
     DAEMON_LOG_FILE_NAME, DAEMON_STOP_FILE_NAME, LaunchSpec, RestartOptions, Restarted,
-    clear_stop_request, installed_daemon, launch_detached, launch_spec, restart_daemon,
-    stop_requested,
+    clear_stop_request, daemon_beside, installed_daemon, launch_detached, launch_spec,
+    restart_daemon, stop_requested,
 };
 pub use settings::{
     ArtifactsSettings, DEFAULT_ON_EVENTS, OnEventSettings, ProfileSettings, Settings,

@@ -1,5 +1,5 @@
 use std::fs::OpenOptions;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -95,7 +95,10 @@ fn wait_for_takeover(
 }
 
 pub fn installed_daemon() -> Result<PathBuf> {
-    let current = std::env::current_exe()?;
+    daemon_beside(&std::env::current_exe()?)
+}
+
+pub fn daemon_beside(current: &Path) -> Result<PathBuf> {
     let directory = current.parent().ok_or_else(|| {
         Error::Home(format!(
             "cannot locate the installed daemon beside {}",

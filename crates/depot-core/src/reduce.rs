@@ -311,9 +311,12 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                 && let Some(task) = next.tasks.get_mut(task)
             {
                 if let Some(attempt) = task.attempts.last_mut()
-                    && attempt.outcome == AttemptOutcome::Unknown
+                    && attempt.outcome.is_open()
                 {
-                    attempt.outcome = AttemptOutcome::InFlight;
+                    if attempt.outcome == AttemptOutcome::Unknown {
+                        attempt.outcome = AttemptOutcome::InFlight;
+                    }
+                    attempt.last_seen_at = Some(fact.at);
                     changed = true;
                 }
                 task.updated_at = fact.at;
@@ -493,6 +496,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                         });
                     }
                     task.attempts.push(Attempt {
+                        last_seen_at: None,
                         session: None,
                         profile: profile.clone(),
                         worktree: Some(lease.clone()),
@@ -887,6 +891,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             if scheduled && let Some(task) = next.tasks.get_mut(task) {
                 let lease = take_last_worktree(task);
                 task.attempts.push(Attempt {
+                    last_seen_at: None,
                     session: None,
                     profile: profile.clone(),
                     worktree: lease,
@@ -991,6 +996,7 @@ fn start_ready_tasks(
         task.retry = None;
         task.updated_at = at;
         task.attempts.push(Attempt {
+            last_seen_at: None,
             session: None,
             profile: profile.clone(),
             worktree: None,

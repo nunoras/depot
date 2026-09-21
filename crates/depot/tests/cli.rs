@@ -826,6 +826,7 @@ fn worker_ask_records_a_relayed_question_from_explicit_context() {
     let store = Store::open(&cli.depot_home()).expect("store");
     let mut seeded = task(added.project.id.as_str(), "t-1", TaskState::Running, 1);
     seeded.attempts.push(depot_core::Attempt {
+        last_seen_at: None,
         session: Some(depot_core::SessionId::new("session-1")),
         profile: depot_core::ProfileId::new("build"),
         worktree: Some(depot_core::WorktreeLease::new("attempt-1")),
@@ -866,6 +867,7 @@ fn worker_commentary_does_not_change_task_state() {
     let store = Store::open(&cli.depot_home()).expect("store");
     let mut seeded = task(added.project.id.as_str(), "t-1", TaskState::Running, 1);
     seeded.attempts.push(depot_core::Attempt {
+        last_seen_at: None,
         session: Some(depot_core::SessionId::new("session-1")),
         profile: depot_core::ProfileId::new("build"),
         worktree: Some(depot_core::WorktreeLease::new("attempt-1")),
@@ -911,6 +913,7 @@ fn worker_context_refuses_coordinator_state_commands() {
     let store = Store::open(&cli.depot_home()).expect("store");
     let mut seeded = task(added.project.id.as_str(), "t-1", TaskState::Running, 1);
     seeded.attempts.push(depot_core::Attempt {
+        last_seen_at: None,
         session: Some(depot_core::SessionId::new("session-1")),
         profile: depot_core::ProfileId::new("build"),
         worktree: Some(depot_core::WorktreeLease::new("attempt-1")),
@@ -954,6 +957,7 @@ fn worker_submit_records_its_summary_artifacts_and_starts_validation() {
     let store = Store::open(&cli.depot_home()).expect("store");
     let mut seeded = task(added.project.id.as_str(), "t-1", TaskState::Running, 1);
     seeded.attempts.push(depot_core::Attempt {
+        last_seen_at: None,
         session: Some(depot_core::SessionId::new("session-1")),
         profile: depot_core::ProfileId::new("build"),
         worktree: Some(depot_core::WorktreeLease::new("attempt-1")),

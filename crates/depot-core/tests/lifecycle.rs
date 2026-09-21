@@ -166,6 +166,7 @@ fn with_base(mut task: Task, prerequisite: &str) -> Task {
 fn base() -> ProjectState {
     ProjectState {
         project: ProjectId::from("depot"),
+        slug: "depot".to_string(),
         tasks: BTreeMap::new(),
         coordinator: None,
         profiles: BTreeMap::from([(Role::Build, profile(BUILD)), (Role::Plan, profile(PLAN))]),

@@ -84,6 +84,19 @@ pub trait Forge {
         number: u64,
         head: &CommitId,
     ) -> Result<(), ForgeError>;
+    fn find_comment(
+        &self,
+        repo: &RepoSlug,
+        number: u64,
+        marker: &str,
+    ) -> Result<Option<u64>, ForgeError>;
+    fn create_comment(&self, repo: &RepoSlug, number: u64, body: &str) -> Result<u64, ForgeError>;
+    fn update_comment(
+        &self,
+        repo: &RepoSlug,
+        comment_id: u64,
+        body: &str,
+    ) -> Result<(), ForgeError>;
     fn delete_branch(&self, repo: &RepoSlug, branch: &str) -> Result<(), ForgeError>;
 }
 
@@ -136,6 +149,7 @@ impl GitHub {
             ("GET", None) => self.with_headers(self.agent.get(url)).call(),
             ("POST", Some(body)) => self.with_headers(self.agent.post(url)).send(body),
             ("PUT", Some(body)) => self.with_headers(self.agent.put(url)).send(body),
+            ("PATCH", Some(body)) => self.with_headers(self.agent.patch(url)).send(body),
             ("DELETE", None) => self.with_headers(self.agent.delete(url)).call(),
             _ => return Err(invalid_method()),
         }
@@ -494,6 +508,84 @@ impl Forge for GitHub {
             401 | 403 => Err(ForgeError::Unauthorized { url }),
             404 => Err(ForgeError::NotFound { url }),
             status => Err(ForgeError::Refused {
+                url,
+                status,
+                body: response.trim().to_owned(),
+            }),
+        }
+    }
+
+    fn find_comment(
+        &self,
+        repo: &RepoSlug,
+        number: u64,
+        marker: &str,
+    ) -> Result<Option<u64>, ForgeError> {
+        let url = self.url(&format!(
+            "/repos/{}/issues/{number}/comments?per_page=100",
+            repo.path()
+        ));
+        let body = self.read(&url)?;
+        let value: Value = serde_json::from_str(&body).map_err(|error| ForgeError::Malformed {
+            url: url.clone(),
+            detail: error.to_string(),
+        })?;
+        if value.as_array().is_none() {
+            return Err(ForgeError::Malformed {
+                url,
+                detail: "the comment list is not an array".to_owned(),
+            });
+        }
+        Ok(crate::evidence::comment_id_with_marker(&body, marker))
+    }
+
+    fn create_comment(&self, repo: &RepoSlug, number: u64, body: &str) -> Result<u64, ForgeError> {
+        let url = self.url(&format!("/repos/{}/issues/{number}/comments", repo.path()));
+        let payload = json!({ "body": body }).to_string();
+        let (status, response) = self.call("POST", &url, Some(payload))?;
+        match status {
+            201 => {}
+            401 | 403 => return Err(ForgeError::Unauthorized { url }),
+            404 => return Err(ForgeError::NotFound { url }),
+            status => {
+                return Err(ForgeError::Status {
+                    url,
+                    status,
+                    body: response.trim().to_owned(),
+                });
+            }
+        }
+        let value: Value =
+            serde_json::from_str(&response).map_err(|error| ForgeError::Malformed {
+                url: url.clone(),
+                detail: error.to_string(),
+            })?;
+        value
+            .get("id")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| ForgeError::Malformed {
+                url,
+                detail: format!("no comment id in {}", truncated(&response)),
+            })
+    }
+
+    fn update_comment(
+        &self,
+        repo: &RepoSlug,
+        comment_id: u64,
+        body: &str,
+    ) -> Result<(), ForgeError> {
+        let url = self.url(&format!(
+            "/repos/{}/issues/comments/{comment_id}",
+            repo.path()
+        ));
+        let payload = json!({ "body": body }).to_string();
+        let (status, response) = self.call("PATCH", &url, Some(payload))?;
+        match status {
+            200 => Ok(()),
+            401 | 403 => Err(ForgeError::Unauthorized { url }),
+            404 => Err(ForgeError::NotFound { url }),
+            status => Err(ForgeError::Status {
                 url,
                 status,
                 body: response.trim().to_owned(),

@@ -18,6 +18,7 @@ use crate::adapters::worktrees::{AcquireRequest, Lease, Worktrees};
 use crate::clock::now;
 use crate::describe::{self, Describer};
 use crate::error::{Error, Result};
+use crate::evidence::{self, EVIDENCE_MARKER, EvidenceArtifact, EvidenceRunner, ShellEvidence};
 use crate::factcodec::payload_field;
 use crate::home::DepotHome;
 use crate::project::{LocationKind, Project};
@@ -84,6 +85,21 @@ pub trait Delivery {
         head: &CommitId,
     ) -> Result<()>;
     fn delete_branch(&self, repo: &RepoSlug, branch: &str) -> Result<()>;
+    fn find_marked_comment(
+        &self,
+        task: &Task,
+        repo: &RepoSlug,
+        number: u64,
+        marker: &str,
+    ) -> Result<Option<u64>>;
+    fn create_comment(&self, task: &Task, repo: &RepoSlug, number: u64, body: &str) -> Result<u64>;
+    fn update_comment(
+        &self,
+        task: &Task,
+        repo: &RepoSlug,
+        comment_id: u64,
+        body: &str,
+    ) -> Result<()>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -227,6 +243,42 @@ impl<F: Forge> Delivery for ForgeDelivery<F> {
             .delete_branch(repo, branch)
             .map_err(|error| Error::Project(error.to_string()))
     }
+
+    fn find_marked_comment(
+        &self,
+        _task: &Task,
+        repo: &RepoSlug,
+        number: u64,
+        marker: &str,
+    ) -> Result<Option<u64>> {
+        self.forge
+            .find_comment(repo, number, marker)
+            .map_err(|error| Error::Project(error.to_string()))
+    }
+
+    fn create_comment(
+        &self,
+        _task: &Task,
+        repo: &RepoSlug,
+        number: u64,
+        body: &str,
+    ) -> Result<u64> {
+        self.forge
+            .create_comment(repo, number, body)
+            .map_err(|error| Error::Project(error.to_string()))
+    }
+
+    fn update_comment(
+        &self,
+        _task: &Task,
+        repo: &RepoSlug,
+        comment_id: u64,
+        body: &str,
+    ) -> Result<()> {
+        self.forge
+            .update_comment(repo, comment_id, body)
+            .map_err(|error| Error::Project(error.to_string()))
+    }
 }
 
 impl EventHook for Box<dyn EventHook> {
@@ -241,20 +293,27 @@ impl EventHook for std::sync::Arc<dyn EventHook> {
     }
 }
 
-fn shell(command: &str, worktree: &Path) -> Result<std::process::Output> {
+pub(crate) fn shell_command(command: &str) -> Command {
     #[cfg(windows)]
-    let mut process = {
+    let process = {
         let mut process = Command::new("cmd");
         process.args(["/C", command]);
         process
     };
     #[cfg(not(windows))]
-    let mut process = {
+    let process = {
         let mut process = Command::new("sh");
         process.args(["-c", command]);
         process
     };
-    process.current_dir(worktree).output().map_err(Error::Io)
+    process
+}
+
+fn shell(command: &str, worktree: &Path) -> Result<std::process::Output> {
+    shell_command(command)
+        .current_dir(worktree)
+        .output()
+        .map_err(Error::Io)
 }
 
 fn delivery_branch(worktree: &Path, task: &Task) -> Result<String> {
@@ -401,6 +460,7 @@ pub struct Daemon<'a, S, W, V, D, H> {
     validation: V,
     delivery: D,
     hook: H,
+    evidence: Box<dyn EvidenceRunner>,
     budget: Cell<usize>,
 }
 
@@ -435,8 +495,14 @@ where
             validation,
             delivery,
             hook,
+            evidence: Box::new(ShellEvidence),
             budget: Cell::new(usize::MAX),
         }
+    }
+
+    pub fn with_evidence_runner(mut self, evidence: Box<dyn EvidenceRunner>) -> Self {
+        self.evidence = evidence;
+        self
     }
 
     pub fn recover(&self) -> Result<()> {
@@ -477,6 +543,7 @@ where
         self.reconcile_sessions()?;
         self.reconcile_validation()?;
         self.reconcile_delivery()?;
+        self.reconcile_evidence()?;
         self.reconcile_forge()?;
         self.reconcile_notify()?;
         Ok(self.budget.get())
@@ -1307,6 +1374,134 @@ where
             }
         }
         Ok(())
+    }
+
+    fn reconcile_evidence(&self) -> Result<()> {
+        let config = self.store.project_config(&self.project)?;
+        let Some(command) = config
+            .evidence
+            .command
+            .as_deref()
+            .map(str::trim)
+            .filter(|command| !command.is_empty())
+        else {
+            return Ok(());
+        };
+        let Ok(repo) = self.project_repo() else {
+            return Ok(());
+        };
+        let state = self.store.project_state(&self.project)?;
+        for task in state.tasks.values() {
+            if task.state != TaskState::PrOpen || depot_core::publication_blocked(&state, &task.id)
+            {
+                continue;
+            }
+            let Some(commit) = task.validated_commit().cloned() else {
+                continue;
+            };
+            let Some((number, _, _)) = task.pull_request() else {
+                continue;
+            };
+            if self.evidence_recorded(&task.id, &commit)? {
+                continue;
+            }
+            self.capture_evidence(task, &commit, number, &repo, command, &config)?;
+        }
+        Ok(())
+    }
+
+    fn evidence_recorded(&self, task: &TaskId, commit: &CommitId) -> Result<bool> {
+        Ok(self
+            .store
+            .event(
+                &self.project.id,
+                &event_key(&["evidence", task.as_str(), commit.as_str()]),
+            )?
+            .is_some())
+    }
+
+    fn capture_evidence(
+        &self,
+        task: &Task,
+        commit: &CommitId,
+        number: u64,
+        repo: &RepoSlug,
+        command: &str,
+        config: &crate::config::ProjectConfig,
+    ) -> Result<()> {
+        let key = event_key(&["evidence", task.id.as_str(), commit.as_str()]);
+        let required = config.evidence.required;
+        let outcome = self.lease_for(task).and_then(|lease| {
+            self.evidence.run(
+                command,
+                &lease.path,
+                &config.pull_request.base,
+                Duration::from_secs(config.evidence.timeout_seconds),
+            )
+        });
+        let result: std::result::Result<u64, String> = match outcome {
+            Err(error) => Err(error.to_string()),
+            Ok(output) if output.exit_code != 0 => {
+                Err(format!("the evidence command exited {}", output.exit_code))
+            }
+            Ok(output) => self
+                .publish_evidence(
+                    task,
+                    number,
+                    repo,
+                    &evidence::parse_manifest(&output.stdout),
+                )
+                .map_err(|error| error.to_string()),
+        };
+        match result {
+            Ok(comment_id) => self.record(
+                &key,
+                Fact {
+                    at: now(),
+                    kind: FactKind::EvidencePosted {
+                        task: task.id.clone(),
+                        commit: commit.clone(),
+                        comment_id,
+                    },
+                },
+            ),
+            Err(reason) => {
+                log("evidence_failed", &reason);
+                self.record(
+                    &key,
+                    Fact {
+                        at: now(),
+                        kind: FactKind::EvidenceFailed {
+                            task: task.id.clone(),
+                            commit: commit.clone(),
+                            reason,
+                            required,
+                        },
+                    },
+                )
+            }
+        }
+    }
+
+    fn publish_evidence(
+        &self,
+        task: &Task,
+        number: u64,
+        repo: &RepoSlug,
+        artifacts: &[EvidenceArtifact],
+    ) -> Result<u64> {
+        let body = evidence::comment_body(artifacts);
+        match self
+            .delivery
+            .find_marked_comment(task, repo, number, EVIDENCE_MARKER)?
+        {
+            Some(comment_id) => {
+                self.delivery
+                    .update_comment(task, repo, comment_id, &body)?;
+                Ok(comment_id)
+            }
+            None => self.delivery.create_comment(task, repo, number, &body),
+        }
     }
 
     fn reconcile_forge(&self) -> Result<()> {

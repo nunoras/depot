@@ -3,7 +3,8 @@ use std::time::Duration;
 
 use depot_core::{
     Answer, Artifact, Attempt, Checks, CommitId, Dependency, Link, ProfileId, ProjectId, Question,
-    Retry, SessionId, Submission, Task, TaskId, Timestamp, ValidationRecord, WorktreeLease,
+    ReleaseHold, Retry, SessionId, Submission, Task, TaskId, Timestamp, ValidationRecord,
+    WorktreeLease,
 };
 use rusqlite::{OptionalExtension, Row, Transaction, params};
 
@@ -96,7 +97,7 @@ impl Store {
 }
 
 const TASK_COLUMNS: &str = "project_id, id, title, intent, role, state, base_dependency, \
-     branch_head, retry_profile, retry_not_before, submission_summary, merge_refused, conflict_base, failure, redirect_text, redirect_delivered, created_at, updated_at, dispatch_profile, acknowledged_at, hold_pr, rework_of";
+     branch_head, retry_profile, retry_not_before, submission_summary, merge_refused, conflict_base, failure, redirect_text, redirect_delivered, created_at, updated_at, dispatch_profile, acknowledged_at, hold_pr, rework_of, release_pending, release_held";
 
 struct RawTask {
     project_id: String,
@@ -119,6 +120,8 @@ struct RawTask {
     acknowledged_at: Option<i64>,
     hold_pr: bool,
     rework_of: Option<String>,
+    release_pending: Option<String>,
+    release_held: Option<String>,
     created_at: i64,
     updated_at: i64,
 }
@@ -146,6 +149,8 @@ impl RawTask {
             acknowledged_at: row.get("acknowledged_at")?,
             hold_pr: row.get("hold_pr")?,
             rework_of: row.get("rework_of")?,
+            release_pending: row.get("release_pending")?,
+            release_held: row.get("release_held")?,
             created_at: row.get("created_at")?,
             updated_at: row.get("updated_at")?,
         })
@@ -208,6 +213,8 @@ impl RawTask {
                 .map(Timestamp::from_millis),
             rework_of: self.rework_of.map(TaskId::new),
             hold_pr: self.hold_pr,
+            release_pending: pending_leases(self.release_pending.as_deref())?,
+            release_held: held_releases(self.release_held.as_deref())?,
             retry,
             created_at: millis(self.created_at)?,
             updated_at: millis(self.updated_at)?,
@@ -454,7 +461,81 @@ fn millis(value: i64) -> Result<Timestamp> {
         .map_err(|_| Error::Schema(format!("{value} is not a millisecond count")))
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+struct StoredHold {
+    reason: String,
+    at: u64,
+}
+
+fn pending_leases(raw: Option<&str>) -> Result<Vec<WorktreeLease>> {
+    let Some(raw) = raw else {
+        return Ok(Vec::new());
+    };
+    if raw.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let names: Vec<String> =
+        serde_json::from_str(raw).map_err(|error| Error::Schema(error.to_string()))?;
+    Ok(names.into_iter().map(WorktreeLease::new).collect())
+}
+
+fn encode_pending(leases: &[WorktreeLease]) -> Result<Option<String>> {
+    if leases.is_empty() {
+        return Ok(None);
+    }
+    let names: Vec<&str> = leases.iter().map(WorktreeLease::as_str).collect();
+    let encoded =
+        serde_json::to_string(&names).map_err(|error| Error::Schema(error.to_string()))?;
+    Ok(Some(encoded))
+}
+
+fn held_releases(raw: Option<&str>) -> Result<BTreeMap<WorktreeLease, ReleaseHold>> {
+    let Some(raw) = raw else {
+        return Ok(BTreeMap::new());
+    };
+    if raw.trim().is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let stored: BTreeMap<String, StoredHold> =
+        serde_json::from_str(raw).map_err(|error| Error::Schema(error.to_string()))?;
+    Ok(stored
+        .into_iter()
+        .map(|(lease, hold)| {
+            (
+                WorktreeLease::new(lease),
+                ReleaseHold {
+                    reason: hold.reason,
+                    at: Timestamp::from_millis(hold.at),
+                },
+            )
+        })
+        .collect())
+}
+
+fn encode_held(held: &BTreeMap<WorktreeLease, ReleaseHold>) -> Result<Option<String>> {
+    if held.is_empty() {
+        return Ok(None);
+    }
+    let stored: BTreeMap<&str, StoredHold> = held
+        .iter()
+        .map(|(lease, hold)| {
+            (
+                lease.as_str(),
+                StoredHold {
+                    reason: hold.reason.clone(),
+                    at: hold.at.millis(),
+                },
+            )
+        })
+        .collect();
+    let encoded =
+        serde_json::to_string(&stored).map_err(|error| Error::Schema(error.to_string()))?;
+    Ok(Some(encoded))
+}
+
 pub(super) fn write_task(transaction: &Transaction<'_>, task: &Task) -> Result<()> {
+    let release_pending = encode_pending(&task.release_pending)?;
+    let release_held = encode_held(&task.release_held)?;
     transaction.execute(
         "DELETE FROM tasks WHERE project_id = ?1 AND id = ?2",
         params![task.project.as_str(), task.id.as_str()],
@@ -462,8 +543,8 @@ pub(super) fn write_task(transaction: &Transaction<'_>, task: &Task) -> Result<(
     transaction.execute(
         "INSERT INTO tasks (
                 project_id, id, title, intent, role, state, base_dependency, branch_head,
-                retry_profile, retry_not_before, submission_summary, merge_refused, conflict_base, failure, redirect_text, redirect_delivered, created_at, updated_at, dispatch_profile, acknowledged_at, hold_pr, rework_of
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
+                retry_profile, retry_not_before, submission_summary, merge_refused, conflict_base, failure, redirect_text, redirect_delivered, created_at, updated_at, dispatch_profile, acknowledged_at, hold_pr, rework_of, release_pending, release_held
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
         params![
             task.project.as_str(),
             task.id.as_str(),
@@ -491,6 +572,8 @@ pub(super) fn write_task(transaction: &Transaction<'_>, task: &Task) -> Result<(
             task.acknowledged_at.map(|value| value.millis() as i64),
             task.hold_pr,
             task.rework_of.as_ref().map(TaskId::as_str),
+            release_pending.as_deref(),
+            release_held.as_deref(),
         ],
     )?;
 
@@ -641,7 +724,7 @@ fn task_id_number(id: &str) -> Option<i64> {
 
 #[cfg(test)]
 mod tests {
-    use depot_core::{ProjectId, Role, Task, TaskId, TaskState, Timestamp};
+    use depot_core::{ProjectId, Task, TaskId, Timestamp};
     use tempfile::tempdir;
 
     use crate::home::DepotHome;
@@ -661,30 +744,9 @@ mod tests {
             id: TaskId::new(id),
             project: project.clone(),
             title: format!("task {id}"),
-            intent: String::new(),
-            role: Role::Build,
-            dispatch_profile: None,
-            state: TaskState::Proposed,
-            dependencies: Vec::new(),
-            base_dependency: None,
-            attempts: Vec::new(),
-            questions: Vec::new(),
-            validations: Vec::new(),
-            submission: None,
-            artifacts: Vec::new(),
-            links: Vec::new(),
-            branch_head: None,
-            merge_refused: None,
-            conflict_base: None,
-            failure: None,
-            redirect_text: None,
-            redirect_delivered: false,
-            acknowledged_at: None,
-            rework_of: None,
-            hold_pr: false,
-            retry: None,
             created_at: Timestamp::from_millis(1),
             updated_at: Timestamp::from_millis(1),
+            ..Task::default()
         }
     }
 

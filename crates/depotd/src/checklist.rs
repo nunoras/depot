@@ -189,6 +189,13 @@ fn render_task(
         out.push_str(&format!("  - auto-merge refused: {}\n", one_line(reason)));
     }
 
+    for (lease, hold) in &task.release_held {
+        out.push_str(&format!(
+            "  - worktree lease `{lease}` held, not returned: {}\n",
+            one_line(&hold.reason)
+        ));
+    }
+
     if let Some(reason) = &task.failure {
         out.push_str(&format!("  - failure: {}\n", one_line(reason)));
     }

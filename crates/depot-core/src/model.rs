@@ -233,6 +233,12 @@ pub struct ValidationRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReleaseHold {
+    pub reason: String,
+    pub at: Timestamp,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Task {
     pub id: TaskId,
     pub project: ProjectId,
@@ -258,6 +264,8 @@ pub struct Task {
     pub acknowledged_at: Option<Timestamp>,
     pub rework_of: Option<TaskId>,
     pub hold_pr: bool,
+    pub release_pending: Vec<WorktreeLease>,
+    pub release_held: BTreeMap<WorktreeLease, ReleaseHold>,
     pub retry: Option<Retry>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
@@ -298,6 +306,50 @@ impl Task {
             } => Some((*number, url.as_str(), *checks)),
             Link::Issue { .. } => None,
         })
+    }
+
+    pub fn returns_its_worktree(&self) -> bool {
+        match self.state {
+            TaskState::Cancelled | TaskState::Landed => true,
+            TaskState::Failed => self.acknowledged_at.is_some(),
+            _ => false,
+        }
+    }
+}
+
+impl Default for Task {
+    fn default() -> Self {
+        Self {
+            id: TaskId::new(String::new()),
+            project: ProjectId::new(String::new()),
+            title: String::new(),
+            intent: String::new(),
+            role: Role::Build,
+            dispatch_profile: None,
+            state: TaskState::Proposed,
+            dependencies: Vec::new(),
+            base_dependency: None,
+            attempts: Vec::new(),
+            questions: Vec::new(),
+            validations: Vec::new(),
+            submission: None,
+            artifacts: Vec::new(),
+            links: Vec::new(),
+            branch_head: None,
+            merge_refused: None,
+            conflict_base: None,
+            failure: None,
+            redirect_text: None,
+            redirect_delivered: false,
+            acknowledged_at: None,
+            rework_of: None,
+            hold_pr: false,
+            release_pending: Vec::new(),
+            release_held: BTreeMap::new(),
+            retry: None,
+            created_at: Timestamp::from_millis(0),
+            updated_at: Timestamp::from_millis(0),
+        }
     }
 }
 

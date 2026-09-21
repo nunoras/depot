@@ -131,6 +131,8 @@ pub enum FactTag {
     ValidationFinished,
     ValidationFailed,
     WorktreeAcquired,
+    WorktreeReleased,
+    WorktreeReleaseHeld,
     BranchPushed,
     PullRequestOpened,
     TaskLandedOnBase,
@@ -184,6 +186,8 @@ pub fn fact_tag(kind: &FactKind) -> FactTag {
         FactKind::ValidationFinished { .. } => FactTag::ValidationFinished,
         FactKind::ValidationFailed { .. } => FactTag::ValidationFailed,
         FactKind::WorktreeAcquired { .. } => FactTag::WorktreeAcquired,
+        FactKind::WorktreeReleased { .. } => FactTag::WorktreeReleased,
+        FactKind::WorktreeReleaseHeld { .. } => FactTag::WorktreeReleaseHeld,
         FactKind::BranchPushed { .. } => FactTag::BranchPushed,
         FactKind::PullRequestOpened { .. } => FactTag::PullRequestOpened,
         FactKind::TaskLandedOnBase { .. } => FactTag::TaskLandedOnBase,
@@ -238,6 +242,8 @@ pub fn fact_tag_name(tag: FactTag) -> &'static str {
         FactTag::ValidationFinished => "validation_finished",
         FactTag::ValidationFailed => "validation_failed",
         FactTag::WorktreeAcquired => "worktree_acquired",
+        FactTag::WorktreeReleased => "worktree_released",
+        FactTag::WorktreeReleaseHeld => "worktree_release_held",
         FactTag::BranchPushed => "branch_pushed",
         FactTag::PullRequestOpened => "pull_request_opened",
         FactTag::TaskLandedOnBase => "task_landed_on_base",
@@ -292,6 +298,8 @@ pub fn fact_tag_from_name(name: &str) -> Result<FactTag> {
         "validation_finished" => FactTag::ValidationFinished,
         "validation_failed" => FactTag::ValidationFailed,
         "worktree_acquired" => FactTag::WorktreeAcquired,
+        "worktree_released" => FactTag::WorktreeReleased,
+        "worktree_release_held" => FactTag::WorktreeReleaseHeld,
         "branch_pushed" => FactTag::BranchPushed,
         "pull_request_opened" => FactTag::PullRequestOpened,
         "task_landed_on_base" => FactTag::TaskLandedOnBase,
@@ -350,6 +358,8 @@ pub fn fact_task(kind: &FactKind) -> Option<TaskId> {
         | FactKind::ValidationFinished { task, .. }
         | FactKind::ValidationFailed { task, .. }
         | FactKind::WorktreeAcquired { task, .. }
+        | FactKind::WorktreeReleased { task, .. }
+        | FactKind::WorktreeReleaseHeld { task, .. }
         | FactKind::BranchPushed { task, .. }
         | FactKind::PullRequestOpened { task, .. }
         | FactKind::TaskLandedOnBase { task, .. }

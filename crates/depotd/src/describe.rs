@@ -175,9 +175,7 @@ impl<S: Sessions> Describer for SessionDescriber<'_, S> {
 mod tests {
     use std::time::Duration;
 
-    use depot_core::{
-        CommitId, ProjectId, Role, SessionId, Task, TaskId, TaskState, Timestamp, ValidationRecord,
-    };
+    use depot_core::{CommitId, ProjectId, SessionId, Task, TaskId, TaskState, ValidationRecord};
 
     use super::TurnOutcome;
     use super::{Describer, assemble, diff_section, parse, prompt, validation_section};
@@ -189,13 +187,7 @@ mod tests {
             project: ProjectId::new("depot"),
             title: "PR body from a describe step".to_owned(),
             intent: "internal brief with https://example.test and verify commands".to_owned(),
-            role: Role::Build,
-            dispatch_profile: None,
             state: TaskState::PrOpen,
-            dependencies: Vec::new(),
-            base_dependency: None,
-            attempts: Vec::new(),
-            questions: Vec::new(),
             validations: vec![ValidationRecord {
                 command: "cargo test".to_owned(),
                 commit: CommitId::new("abc123"),
@@ -204,21 +196,7 @@ mod tests {
                 duration: Duration::from_secs(5),
                 output_tail: String::new(),
             }],
-            submission: None,
-            artifacts: Vec::new(),
-            links: Vec::new(),
-            branch_head: None,
-            merge_refused: None,
-            conflict_base: None,
-            failure: None,
-            redirect_text: None,
-            redirect_delivered: false,
-            acknowledged_at: None,
-            hold_pr: false,
-            rework_of: None,
-            retry: None,
-            created_at: Timestamp::from_millis(0),
-            updated_at: Timestamp::from_millis(0),
+            ..Task::default()
         }
     }
 

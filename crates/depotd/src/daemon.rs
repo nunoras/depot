@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::adapters::forge::{Forge, NewPullRequest, PrState, RepoSlug};
 use crate::adapters::profiles::ProfileResolver;
 use crate::adapters::sessions::{LaunchRequest, SessionProfile, Sessions};
-use crate::adapters::worktrees::{AcquireRequest, Lease, Worktrees};
+use crate::adapters::worktrees::{AcquireRequest, Lease, PoolEntry, WorktreeError, Worktrees};
 use crate::clock::now;
 use crate::describe::{self, Describer};
 use crate::error::{Error, Result};
@@ -31,6 +31,7 @@ pub const DAEMON_LOCK_FILE_NAME: &str = "depotd.lock";
 pub const DAEMON_SCOPE_FILE_NAME: &str = "depotd.scope.json";
 const MAX_RESUME_ATTEMPTS: u32 = 3;
 const LIVENESS_REFRESH_MILLIS: u64 = 60_000;
+const RELEASE_HOLD_BACKOFF_MILLIS: u64 = 60_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DaemonScope {
@@ -811,6 +812,7 @@ where
         self.reconcile_budget()?;
         self.reconcile_sessions()?;
         self.reconcile_stops()?;
+        self.reconcile_leases(true)?;
         self.reconcile_notify()
     }
 
@@ -837,6 +839,7 @@ where
         self.reconcile_delivery()?;
         self.reconcile_evidence()?;
         self.reconcile_forge()?;
+        self.reconcile_leases(false)?;
         self.reconcile_notify()?;
         Ok(self.budget.get())
     }
@@ -1519,25 +1522,124 @@ where
         })
     }
 
-    fn release(&self, _task: TaskId, lease: WorktreeLease) -> Result<()> {
+    fn release(&self, task: TaskId, lease: WorktreeLease) -> Result<()> {
         let repo = self.repository()?;
-        let lease = self
+        let pool = self
             .worktrees
             .pool(&repo)
-            .map_err(|error| Error::Project(error.to_string()))?
-            .into_iter()
-            .find(|entry| entry.lease.as_ref() == Some(&lease))
-            .ok_or_else(|| {
-                Error::Project("the worktree lease is no longer present in the pool".to_string())
-            })?;
-        self.worktrees
-            .release(&Lease {
-                lease: lease.lease.expect("matched lease"),
-                path: lease.path,
-                holder: lease.holder.unwrap_or_default(),
-                acquired_at: String::new(),
-            })
-            .map_err(|error| Error::Project(error.to_string()))
+            .map_err(|error| Error::Project(error.to_string()))?;
+        self.release_from(&task, &lease, &pool)
+    }
+
+    fn release_from(&self, task: &TaskId, lease: &WorktreeLease, pool: &[PoolEntry]) -> Result<()> {
+        let entry = pool
+            .iter()
+            .find(|entry| entry.lease.as_ref() == Some(lease));
+        let Some(entry) = entry else {
+            return self.record_release(task, lease);
+        };
+        match self.worktrees.release(&Lease {
+            lease: entry.lease.clone().expect("matched lease"),
+            path: entry.path.clone(),
+            holder: entry.holder.clone().unwrap_or_default(),
+            acquired_at: String::new(),
+        }) {
+            Ok(()) => self.record_release(task, lease),
+            Err(WorktreeError::UnlandedWork { reason, .. }) => {
+                self.record_release_held(task, lease, &reason)
+            }
+            Err(error) => {
+                log("worktree_release_failed", &error.to_string());
+                self.record_release_held(task, lease, &error.to_string())
+            }
+        }
+    }
+
+    fn record_release(&self, task: &TaskId, lease: &WorktreeLease) -> Result<()> {
+        let at = now();
+        self.record(
+            &event_key(&[
+                "worktree_released",
+                task.as_str(),
+                lease.as_str(),
+                &at.millis().to_string(),
+            ]),
+            Fact {
+                at,
+                kind: FactKind::WorktreeReleased {
+                    task: task.clone(),
+                    lease: lease.clone(),
+                },
+            },
+        )
+    }
+
+    fn record_release_held(
+        &self,
+        task: &TaskId,
+        lease: &WorktreeLease,
+        reason: &str,
+    ) -> Result<()> {
+        let at = now();
+        let attempt = self.task(task)?.attempts.len();
+        self.record(
+            &event_key(&[
+                "worktree_release_held",
+                task.as_str(),
+                &attempt.to_string(),
+                lease.as_str(),
+                reason,
+            ]),
+            Fact {
+                at,
+                kind: FactKind::WorktreeReleaseHeld {
+                    task: task.clone(),
+                    lease: lease.clone(),
+                    reason: reason.to_owned(),
+                },
+            },
+        )
+    }
+
+    fn reconcile_leases(&self, sweep: bool) -> Result<()> {
+        let tasks: Vec<Task> = self.store.tasks(&self.project.id)?.into_values().collect();
+        let owed: Vec<&Task> = tasks
+            .iter()
+            .filter(|task| task.returns_its_worktree())
+            .filter(|task| sweep || !task.release_pending.is_empty())
+            .collect();
+        if owed.is_empty() {
+            return Ok(());
+        }
+        let repo = self.repository()?;
+        let pool = self
+            .worktrees
+            .pool(&repo)
+            .map_err(|error| Error::Project(error.to_string()))?;
+        for task in owed {
+            let leases = if sweep {
+                owed_leases(task, &pool)
+            } else {
+                task.release_pending.clone()
+            };
+            for lease in leases {
+                if task.attempts.iter().any(|attempt| {
+                    attempt.outcome.is_open() && attempt.worktree.as_ref() == Some(&lease)
+                }) {
+                    continue;
+                }
+                let held_recently = task.release_held.get(&lease).is_some_and(|hold| {
+                    now().millis().saturating_sub(hold.at.millis()) < RELEASE_HOLD_BACKOFF_MILLIS
+                });
+                if held_recently {
+                    continue;
+                }
+                if let Err(error) = self.release_from(&task.id, &lease, &pool) {
+                    log_project_error(&self.project.slug, &error);
+                }
+            }
+        }
+        Ok(())
     }
 
     fn reconcile_notify(&self) -> Result<()> {
@@ -1580,7 +1682,7 @@ where
                 log("on_event_failed", &error.to_string());
                 continue;
             }
-            self.record(
+            let recorded = self.record(
                 &key,
                 Fact {
                     at: now(),
@@ -1589,7 +1691,10 @@ where
                         event: name.to_owned(),
                     },
                 },
-            )?;
+            );
+            if let Err(error) = recorded {
+                log_project_error(&self.project.slug, &error);
+            }
         }
         Ok(())
     }
@@ -2584,6 +2689,20 @@ pub fn resume_reason(redirect: &Option<String>, answers: &[(String, String)]) ->
 fn stripped(answer: &str) -> String {
     let answer = crate::checklist::one_line(answer);
     answer.strip_suffix('.').unwrap_or(&answer).to_owned()
+}
+
+fn owed_leases(task: &Task, pool: &[PoolEntry]) -> Vec<WorktreeLease> {
+    let mut leases = task.release_pending.clone();
+    let holder = format!("depot:{}", task.id);
+    for entry in pool {
+        if entry.holder.as_deref() == Some(holder.as_str())
+            && let Some(lease) = &entry.lease
+            && !leases.contains(lease)
+        {
+            leases.push(lease.clone());
+        }
+    }
+    leases
 }
 
 fn log(kind: &str, value: &str) {

@@ -611,6 +611,8 @@ mod tests {
             merge_refused: None,
             conflict_base: None,
             failure: None,
+            release_pending: Vec::new(),
+            release_held: std::collections::BTreeMap::new(),
             redirect_text: None,
             redirect_delivered: false,
             acknowledged_at: None,

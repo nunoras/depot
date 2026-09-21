@@ -1,6 +1,4 @@
-use depot_core::{
-    BlockingEvent, ProjectId, Role, Task, TaskId, TaskState, Timestamp, blocking_event,
-};
+use depot_core::{BlockingEvent, ProjectId, Task, TaskId, TaskState, Timestamp, blocking_event};
 
 fn task(state: TaskState) -> Task {
     Task {
@@ -8,29 +6,10 @@ fn task(state: TaskState) -> Task {
         project: ProjectId::new("example/project"),
         title: "a task".to_owned(),
         intent: "intent".to_owned(),
-        role: Role::Build,
-        dispatch_profile: None,
         state,
-        dependencies: Vec::new(),
-        base_dependency: None,
-        attempts: Vec::new(),
-        questions: Vec::new(),
-        validations: Vec::new(),
-        submission: None,
-        artifacts: Vec::new(),
-        links: Vec::new(),
-        branch_head: None,
-        merge_refused: None,
-        conflict_base: None,
-        failure: None,
-        redirect_text: None,
-        redirect_delivered: false,
-        hold_pr: false,
-        rework_of: None,
-        retry: None,
-        acknowledged_at: None,
         created_at: Timestamp::from_millis(0),
         updated_at: Timestamp::from_millis(0),
+        ..Task::default()
     }
 }
 

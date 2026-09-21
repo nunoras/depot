@@ -176,6 +176,8 @@ const MIGRATIONS: &[&str] = &[
     "ALTER TABLE task_validations ADD COLUMN base_commit TEXT;",
     "ALTER TABLE tasks ADD COLUMN conflict_base TEXT;",
     "ALTER TABLE tasks ADD COLUMN failure TEXT;",
+    "ALTER TABLE tasks ADD COLUMN release_pending TEXT;",
+    "ALTER TABLE tasks ADD COLUMN release_held TEXT;",
 ];
 
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;

@@ -839,16 +839,10 @@ pub fn validated_task(
         links: Vec::new(),
         branch_head: None,
         merge_refused: None,
-        conflict_base: None,
-        failure: None,
-        redirect_text: None,
-        redirect_delivered: false,
-        acknowledged_at: None,
-        rework_of: None,
-        hold_pr: false,
         retry: None,
         created_at: depot_core::Timestamp::from_millis(0),
         updated_at: depot_core::Timestamp::from_millis(1),
+        ..Task::default()
     }
 }
 
@@ -888,7 +882,7 @@ fn hold_daemon_coverage(home: &DepotHome) {
 pub fn settings_with_on_event(on_event: Option<OnEventSettings>) -> Settings {
     Settings {
         on_event,
-        poll_interval_seconds: 1,
+        poll_interval_seconds: 30,
         profiles: BTreeMap::from([(
             PROFILE.to_string(),
             ProfileSettings {

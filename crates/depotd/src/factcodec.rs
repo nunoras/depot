@@ -209,6 +209,19 @@ pub fn encode_payload(kind: &FactKind) -> String {
                 ),
             ),
         ]),
+        FactKind::WorktreeReleased { task, lease } => object(vec![
+            ("task", quoted(task.as_str())),
+            ("lease", quoted(lease.as_str())),
+        ]),
+        FactKind::WorktreeReleaseHeld {
+            task,
+            lease,
+            reason,
+        } => object(vec![
+            ("task", quoted(task.as_str())),
+            ("lease", quoted(lease.as_str())),
+            ("reason", quoted(reason)),
+        ]),
         FactKind::BranchPushed { task, commit } => object(vec![
             ("task", quoted(task.as_str())),
             ("commit", quoted(commit.as_str())),

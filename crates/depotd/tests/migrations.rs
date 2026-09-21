@@ -106,18 +106,22 @@ fn column_names(connection: &Connection, table: &str) -> Vec<String> {
 }
 
 #[test]
-fn a_store_migrated_to_the_previous_schema_gains_the_conflict_base_column() {
+fn a_store_migrated_from_main_gains_every_new_column() {
     let fixture = support::fixture();
     let path = fixture.home.database_path();
     std::fs::create_dir_all(fixture.home.root()).expect("home directory");
 
     let previous = Connection::open(&path).expect("previous database");
     previous
-        .execute_batch(include_str!("fixtures/schema-v16.sql"))
+        .execute_batch(include_str!("fixtures/schema-v18.sql"))
         .expect("previous schema");
     let previous_version: i64 = previous
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("previous schema version");
+    assert_eq!(
+        previous_version, 18,
+        "the frozen fixture is main's released schema"
+    );
     assert!(
         previous_version < SCHEMA_VERSION,
         "the frozen fixture must be an older schema than {SCHEMA_VERSION}"
@@ -138,10 +142,18 @@ fn a_store_migrated_to_the_previous_schema_gains_the_conflict_base_column() {
     drop(store);
 
     let connection = Connection::open(&path).expect("migrated database");
-    assert!(
-        column_names(&connection, "tasks").contains(&"conflict_base".to_string()),
-        "the migration must add the conflict_base column"
-    );
+    let columns = column_names(&connection, "tasks");
+    for column in [
+        "conflict_base",
+        "failure",
+        "release_pending",
+        "release_held",
+    ] {
+        assert!(
+            columns.contains(&column.to_string()),
+            "the migration must add the {column} column"
+        );
+    }
     let counter: i64 = connection
         .query_row(
             "SELECT next_number FROM task_counters WHERE project_id = '/work/example'",

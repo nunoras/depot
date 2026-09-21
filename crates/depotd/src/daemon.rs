@@ -2380,7 +2380,7 @@ where
         let state = self.store.project_state(&self.project)?;
         let mut observed_open: Vec<(TaskId, u64, ObservedPullRequest)> = Vec::new();
         for task in state.tasks.values() {
-            if task.state != TaskState::PrOpen {
+            if !matches!(task.state, TaskState::PrOpen | TaskState::ReworkPending) {
                 continue;
             }
             let Some((number, _, recorded)) = task.pull_request() else {

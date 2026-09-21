@@ -1723,6 +1723,32 @@ fn pull_request_checks_are_recorded_without_a_transition() {
                 .map(|(_, _, checks)| checks)
                 == Some(Checks::Passing)
         }),
+        case(
+            "a checks change refreshes a rework-pending task's link",
+            state(vec![with_pull_request(
+                task("t1", TaskState::ReworkPending),
+                42,
+                Checks::Failing,
+            )]),
+            vec![fact(
+                2_000,
+                FactKind::PullRequestChecksChanged {
+                    task: task_id("t1"),
+                    checks: Checks::Passing,
+                },
+            )],
+        )
+        .when(
+            "t1",
+            TaskState::ReworkPending,
+            vec![Action::RenderChecklist],
+        )
+        .checking(|state| {
+            subject(state, "t1")
+                .pull_request()
+                .map(|(_, _, checks)| checks)
+                == Some(Checks::Passing)
+        }),
     ]);
 }
 
@@ -3078,7 +3104,7 @@ fn a_merge_of_an_unvalidated_revision_is_held_rather_than_landed() {
 }
 
 #[test]
-fn merge_only_lands_from_pr_open() {
+fn merge_only_lands_a_task_with_a_pull_request() {
     run(vec![
         case(
             "a validated task without a pull request ignores merge",
@@ -3101,6 +3127,94 @@ fn merge_only_lands_from_pr_open() {
                 .last()
                 .and_then(|attempt| attempt.worktree.clone())
                 == Some(lease("w1"))
+        }),
+    ]);
+}
+
+#[test]
+fn a_merged_pull_request_settles_the_rework_family() {
+    let rework_pending = |id: &str, original: Option<&str>, validated_commit: &str| {
+        let mut task = pr_open(id, validated_commit, 42);
+        task.state = TaskState::ReworkPending;
+        task.rework_of = original.map(task_id);
+        task.attempts.push(Attempt {
+            last_seen_at: None,
+            outcome: AttemptOutcome::Stopped,
+            worktree: None,
+            finished_at: Some(at(0)),
+            ..attempt(BUILD)
+        });
+        task
+    };
+    let rework = |id: &str, original: &str, outcome: AttemptOutcome, lease_id: Option<&str>| {
+        let mut task = with_pull_request(task(id, TaskState::Running), 42, Checks::Passing);
+        task.rework_of = Some(task_id(original));
+        with_attempt(
+            task,
+            Attempt {
+                last_seen_at: None,
+                outcome,
+                worktree: lease_id.map(lease),
+                ..attempt(BUILD)
+            },
+        )
+    };
+    run(vec![
+        case(
+            "a merged pull request lands the rework-pending original and cancels the rework",
+            state(vec![
+                rework_pending("t1", None, "c1"),
+                rework("t2", "t1", AttemptOutcome::InFlight, Some("w1")),
+            ]),
+            vec![fact(
+                1_000,
+                FactKind::PullRequestMerged {
+                    task: task_id("t1"),
+                    commit: commit("c1"),
+                },
+            )],
+        )
+        .when(
+            "t1",
+            TaskState::Landed,
+            vec![
+                Action::StopSession {
+                    task: task_id("t2"),
+                },
+                release("t2", "w1"),
+                Action::RenderChecklist,
+            ],
+        )
+        .checking(|state| subject(state, "t2").state == TaskState::Cancelled),
+        case(
+            "a merge the deepest rework validated lands the whole chain",
+            state(vec![
+                rework_pending("t1", None, "c1"),
+                rework_pending("t2", Some("t1"), "c2"),
+                rework("t3", "t2", AttemptOutcome::InFlight, Some("w1")),
+            ]),
+            vec![fact(
+                2_000,
+                FactKind::PullRequestMerged {
+                    task: task_id("t2"),
+                    commit: commit("c2"),
+                },
+            )],
+        )
+        .when(
+            "t2",
+            TaskState::Landed,
+            vec![
+                Action::StopSession {
+                    task: task_id("t3"),
+                },
+                release("t3", "w1"),
+                Action::RenderChecklist,
+            ],
+        )
+        .checking(|state| {
+            subject(state, "t1").state == TaskState::Landed
+                && subject(state, "t3").state == TaskState::Cancelled
         }),
     ]);
 }
@@ -3327,6 +3441,52 @@ fn pull_request_closed_unmerged_stops_a_live_session() {
             ],
         )
         .checking(|state| holds(state, "t1", AttemptOutcome::Stopped)),
+        case(
+            "closing a rework's pull request cancels the whole chain",
+            state(vec![
+                {
+                    let mut original = pr_open("t1", "c1", 42);
+                    original.state = TaskState::ReworkPending;
+                    original
+                },
+                {
+                    let mut fix = with_pull_request(
+                        with_attempt(
+                            task("t2", TaskState::Running),
+                            Attempt {
+                                last_seen_at: None,
+                                outcome: AttemptOutcome::InFlight,
+                                worktree: Some(lease("w1")),
+                                ..attempt(BUILD)
+                            },
+                        ),
+                        42,
+                        Checks::Failing,
+                    );
+                    fix.rework_of = Some(task_id("t1"));
+                    fix
+                },
+            ]),
+            vec![fact(
+                2_000,
+                FactKind::PullRequestClosedUnmerged {
+                    task: task_id("t1"),
+                },
+            )],
+        )
+        .when(
+            "t1",
+            TaskState::Cancelled,
+            vec![
+                Action::StopSession {
+                    task: task_id("t2"),
+                },
+                release("t2", "w1"),
+                hold("t1"),
+                Action::RenderChecklist,
+            ],
+        )
+        .checking(|state| subject(state, "t2").state == TaskState::Cancelled),
     ]);
 }
 

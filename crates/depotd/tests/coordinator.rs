@@ -270,6 +270,7 @@ fn a_brief_for_a_build_task_names_its_worktree_as_the_output_destination() {
     );
     task.role = depot_core::Role::Build;
     task.attempts.push(depot_core::Attempt {
+        last_seen_at: None,
         session: Some(SessionId::new("s1")),
         profile: depot_core::ProfileId::new("glm-5.3"),
         worktree: Some(depot_core::WorktreeLease::new("lease-7")),

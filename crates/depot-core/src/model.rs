@@ -171,6 +171,7 @@ pub struct Attempt {
     pub finished_at: Option<Timestamp>,
     pub outcome: AttemptOutcome,
     pub rebase: bool,
+    pub last_seen_at: Option<Timestamp>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -182,6 +182,40 @@ impl Store {
         raw.into_iter().map(RawEvent::into_event).collect()
     }
 
+    pub fn last_liveness(
+        &self,
+        project: &ProjectId,
+        task: &depot_core::TaskId,
+    ) -> Result<Option<depot_core::Liveness>> {
+        use rusqlite::OptionalExtension;
+        let payload: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT payload FROM events
+                 WHERE project_id = ?1 AND task_id = ?2 AND kind = ?3
+                 ORDER BY id DESC LIMIT 1",
+                params![
+                    project.as_str(),
+                    task.as_str(),
+                    crate::vocabulary::fact_tag_name(
+                        crate::vocabulary::FactTag::WorkerLivenessChanged
+                    )
+                ],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let payload = match payload {
+            Some(payload) => payload,
+            None => return Ok(None),
+        };
+        let name = factcodec::payload_field(&payload, "liveness")?;
+        if name == factcodec::liveness_name(depot_core::Liveness::Live) {
+            Ok(Some(depot_core::Liveness::Live))
+        } else {
+            Ok(Some(depot_core::Liveness::Gone))
+        }
+    }
+
     pub fn last_event_id(
         &self,
         project: &ProjectId,

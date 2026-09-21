@@ -71,22 +71,22 @@ pub fn render_inbox(entries: &[InboxEntry]) -> String {
             continue;
         }
         out.push_str(&format!("\n## {} ({})\n", need.heading(), group.len()));
-        if need == Need::Nothing && group.len() > NOTHING_SHOWN {
-            let earlier = group.len() - NOTHING_SHOWN;
+        let runs = collapse_runs(&group);
+        let shown = if need == Need::Nothing && runs.len() > NOTHING_SHOWN {
+            let earlier = runs.len() - NOTHING_SHOWN;
             out.push_str(&format!("- ... and {earlier} earlier no-action facts\n",));
-            for entry in &group[earlier..] {
-                out.push_str(&format!(
-                    "- {} at {}\n",
-                    entry.line,
-                    format_timestamp(entry.at)
-                ));
-            }
+            earlier
         } else {
-            for entry in group {
+            0
+        };
+        for (line, first, last, run) in &runs[shown..] {
+            if *run == 1 {
+                out.push_str(&format!("- {line} at {}\n", format_timestamp(*first)));
+            } else {
                 out.push_str(&format!(
-                    "- {} at {}\n",
-                    entry.line,
-                    format_timestamp(entry.at)
+                    "- {line} at {} ({run} times through {})\n",
+                    format_timestamp(*first),
+                    format_timestamp(*last)
                 ));
             }
         }
@@ -95,6 +95,22 @@ pub fn render_inbox(entries: &[InboxEntry]) -> String {
 }
 
 const NOTHING_SHOWN: usize = 10;
+
+type Run = (String, Timestamp, Timestamp, usize);
+
+fn collapse_runs(group: &[&InboxEntry]) -> Vec<Run> {
+    let mut runs: Vec<Run> = Vec::new();
+    for entry in group {
+        match runs.last_mut() {
+            Some((line, _, last, count)) if *line == entry.line => {
+                *last = entry.at;
+                *count += 1;
+            }
+            _ => runs.push((entry.line.clone(), entry.at, entry.at, 1)),
+        }
+    }
+    runs
+}
 
 fn need_for(tag: FactTag, task: Option<&Task>) -> Need {
     let state = task.map(|task| task.state);

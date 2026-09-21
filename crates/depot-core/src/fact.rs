@@ -135,6 +135,10 @@ pub enum FactKind {
         number: u64,
         url: String,
     },
+    DescribeFailed {
+        task: TaskId,
+        reason: String,
+    },
     PullRequestChecksChanged {
         task: TaskId,
         checks: Checks,

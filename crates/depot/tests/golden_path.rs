@@ -2172,3 +2172,103 @@ fn a_retry_of_a_failed_task_runs_a_fresh_attempt_on_the_lease_it_still_holds() {
         ]
     );
 }
+
+#[test]
+fn a_describe_failure_does_not_open_the_pull_request_and_holds_the_task() {
+    let golden = Golden::new(Validation::Passing);
+    let config = std::fs::read_to_string(golden.repo.join(".depot.toml")).expect("the config");
+    std::fs::write(
+        golden.repo.join(".depot.toml"),
+        format!("{config}describe_profile = \"missing-profile\"\n"),
+    )
+    .expect("the describe profile is set");
+    let daemon = golden.daemon();
+
+    golden.depot_ok(&[
+        "task",
+        "add",
+        "--title",
+        "Wire the store",
+        "--intent",
+        "Persist the records in sqlite.",
+        "--role",
+        "build",
+        "--project",
+        SLUG,
+    ]);
+    golden.depot_ok(&["task", "approve", TASK, "--project", SLUG]);
+    daemon.tick().expect("the daemon launches the worker");
+
+    let submitted = golden.worker_commits_and_submits();
+    assert_eq!(submitted.status.code(), Some(0));
+    let commit = golden.head();
+    golden.script_pull_request(&commit);
+    daemon
+        .tick()
+        .expect("the daemon validates, pushes and holds the task when describe fails");
+
+    let held = golden.task();
+    assert_eq!(held.state, TaskState::Failed);
+    assert!(held.pull_request().is_none());
+    assert_eq!(golden.pull_requests_opened(), 0);
+    assert!(
+        golden
+            .history(TASK)
+            .iter()
+            .any(|kind| kind == "describe_failed"),
+        "the failure is journalled: {:?}",
+        golden.history(TASK)
+    );
+
+    let failed = golden.status();
+    assert!(failed.contains("1 failed"), "{failed}");
+    assert_eq!(failed, golden.checklist());
+
+    let inbox = golden.depot_ok(&["inbox", "--project", SLUG]);
+    assert!(inbox.contains("the describe step failed"), "{inbox}");
+}
+
+#[test]
+fn a_project_without_describe_profile_opens_the_validation_only_pull_request() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+
+    golden.depot_ok(&[
+        "task",
+        "add",
+        "--title",
+        "Wire the store",
+        "--intent",
+        "Persist the records in sqlite.",
+        "--role",
+        "build",
+        "--project",
+        SLUG,
+    ]);
+    golden.depot_ok(&["task", "approve", TASK, "--project", SLUG]);
+    daemon.tick().expect("the daemon launches the worker");
+
+    let submitted = golden.worker_commits_and_submits();
+    assert_eq!(submitted.status.code(), Some(0));
+    let commit = golden.head();
+    golden.script_pull_request(&commit);
+    daemon
+        .tick()
+        .expect("the daemon validates and opens the pull request");
+
+    let opened = golden.task();
+    assert_eq!(opened.state, TaskState::PrOpen);
+    assert_eq!(golden.pull_requests_opened(), 1);
+    let request = golden
+        .forge
+        .requests()
+        .into_iter()
+        .find(|request| request.method == "POST")
+        .expect("the pull request opens");
+    assert!(request.body.contains("## Validation"), "{:#}", request.body);
+    assert!(
+        !request.body.contains("## Why"),
+        "the opt-out body stays validation-only: {:#}",
+        request.body
+    );
+}

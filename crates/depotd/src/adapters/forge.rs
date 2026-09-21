@@ -781,7 +781,7 @@ mod windows_token_acl {
             if allowed.Mask == 0 {
                 continue;
             }
-            let sid = unsafe { ptr::addr_of!((*allowed).SidStart) as PSID };
+            let sid = ptr::addr_of!((*allowed).SidStart) as PSID;
             if unsafe { IsValidSid(sid) } == 0 {
                 return Err("an allow ACE carried an invalid SID".to_owned());
             }
@@ -846,7 +846,7 @@ mod windows_token_acl {
     }
 
     fn current_user_sid() -> Result<SidBuffer, String> {
-        let mut token: HANDLE = ptr::null_mut();
+        let mut token: HANDLE = 0;
         let ok = unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) };
         if ok == 0 {
             return Err("OpenProcessToken failed; the file DACL could not be verified".to_owned());
@@ -854,7 +854,7 @@ mod windows_token_acl {
         struct Close(HANDLE);
         impl Drop for Close {
             fn drop(&mut self) {
-                if !self.0.is_null() {
+                if self.0 != 0 {
                     unsafe {
                         CloseHandle(self.0);
                     }

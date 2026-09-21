@@ -154,6 +154,7 @@ impl Golden {
         boxr.respond("--version", "boxr 0.3.1\n", "", 0);
         boxr.respond("--help", BOXR_HELP, "", 0);
         boxr.respond("--harness", &format!("{SESSION}\n"), "", 0);
+        boxr.respond("wait", "status: ok\n", "", 0);
         boxr.report_running();
         boxr.resume_reports_running();
         boxr.respond(
@@ -252,6 +253,8 @@ impl Golden {
 
     pub fn pass_validation_in_worktree(&self) {
         write_validation_script(&self.lease, Validation::Passing);
+        git::git(&self.lease, &["add", "."]);
+        git::git(&self.lease, &["commit", "-m", "make the project gate pass"]);
     }
 
     pub fn reject_worktree_acquire(&self) {
@@ -347,6 +350,21 @@ impl Golden {
         config
             .write(&self.repo)
             .expect("the project config is written");
+    }
+
+    pub fn set_describe_profile(&self, profile: &str) {
+        let path = self.repo.join(depotd::PROJECT_CONFIG_FILE_NAME);
+        let text = fs::read_to_string(&path).expect("the project config is readable");
+        let mut config =
+            depotd::ProjectConfig::from_toml(&text).expect("the project config parses");
+        config.pull_request.describe_profile = Some(profile.to_owned());
+        config
+            .write(&self.repo)
+            .expect("the project config is written");
+    }
+
+    pub fn delete_local_base(&self, base: &str) {
+        git::git(&self.lease, &["branch", "-D", base]);
     }
 
     pub fn clone_second_lease(&self, name: &str, branch: &str) -> PathBuf {
@@ -792,6 +810,7 @@ pub fn validated_task(
         validations: vec![depot_core::ValidationRecord {
             command: "cargo test".to_owned(),
             commit: depot_core::CommitId::new(commit),
+            base_commit: None,
             exit_code: 0,
             duration: std::time::Duration::from_secs(1),
             output_tail: "ok".to_owned(),
@@ -887,6 +906,28 @@ pub fn write_validation_script(repo: &Path, validation: Validation) {
         )
     };
     fs::write(repo.join(&script), command).expect("the validation script is written");
+}
+
+pub fn commit_file(directory: &Path, file: &str, contents: &str, message: &str) -> String {
+    fs::write(directory.join(file), contents).expect("the file is written");
+    git::git(directory, &["add", file]);
+    git::git(directory, &["commit", "-m", message]);
+    git::head(directory)
+}
+
+pub fn write_compare_validation_script(directory: &Path) {
+    let (script, command) = if cfg!(windows) {
+        (
+            "validate.cmd".to_owned(),
+            "@echo off\r\nfc /b base.txt impl.txt\r\nexit /b %errorlevel%\r\n".to_owned(),
+        )
+    } else {
+        (
+            "validate.sh".to_owned(),
+            "cmp base.txt impl.txt\n".to_owned(),
+        )
+    };
+    fs::write(directory.join(script), command).expect("the compare validation script is written");
 }
 
 fn configure(directory: &Path) {

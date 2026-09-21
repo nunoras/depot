@@ -144,6 +144,7 @@ pub fn encode_payload(kind: &FactKind) -> String {
             task,
             command,
             commit,
+            base_commit,
             exit_code,
             duration,
             output_tail,
@@ -151,9 +152,26 @@ pub fn encode_payload(kind: &FactKind) -> String {
             ("task", quoted(task.as_str())),
             ("command", quoted(command)),
             ("commit", quoted(commit.as_str())),
+            (
+                "base_commit",
+                optional(
+                    base_commit
+                        .as_ref()
+                        .map(|commit| commit.as_str().to_owned()),
+                ),
+            ),
             ("exit_code", numeric(exit_code)),
             ("duration_millis", numeric(duration.as_millis())),
             ("output_tail", quoted(output_tail)),
+        ]),
+        FactKind::ValidationFailed {
+            task,
+            commit,
+            reason,
+        } => object(vec![
+            ("task", quoted(task.as_str())),
+            ("commit", quoted(commit.as_str())),
+            ("reason", quoted(reason)),
         ]),
         FactKind::WorktreeAcquired {
             task,

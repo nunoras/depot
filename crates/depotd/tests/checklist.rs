@@ -126,6 +126,7 @@ fn the_checklist_states_what_each_task_waits_on() {
     failed.validations = vec![ValidationRecord {
         command: "cargo test".to_string(),
         commit: CommitId::new("ddd444"),
+        base_commit: None,
         exit_code: 101,
         duration: Duration::from_millis(900),
         output_tail: "3 tests failed".to_string(),

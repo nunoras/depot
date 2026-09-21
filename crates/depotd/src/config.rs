@@ -85,6 +85,7 @@ pub struct PullRequestConfig {
     pub merge: Option<MergePolicyConfig>,
     pub auto_merge: Option<bool>,
     pub describe_profile: Option<String>,
+    pub describe_style: String,
     pub describe_timeout_seconds: u64,
 }
 
@@ -186,6 +187,7 @@ impl Default for PullRequestConfig {
             merge: None,
             auto_merge: None,
             describe_profile: None,
+            describe_style: String::new(),
             describe_timeout_seconds: default_describe_timeout_seconds(),
         }
     }

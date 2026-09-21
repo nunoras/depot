@@ -143,6 +143,7 @@ fn validated(id: &str, commit_id: &str) -> Task {
     task.validations.push(ValidationRecord {
         command: "cargo test".to_owned(),
         commit: commit(commit_id),
+        base_commit: None,
         exit_code: 0,
         duration: Duration::from_secs(5),
         output_tail: "ok".to_owned(),
@@ -196,6 +197,7 @@ fn passed(task: &str, commit_id: &str) -> FactKind {
         task: task_id(task),
         command: "cargo test".to_owned(),
         commit: commit(commit_id),
+        base_commit: None,
         exit_code: 0,
         duration: Duration::from_secs(5),
         output_tail: "ok".to_owned(),
@@ -207,6 +209,7 @@ fn failed(task: &str, commit_id: &str) -> FactKind {
         task: task_id(task),
         command: "cargo test".to_owned(),
         commit: commit(commit_id),
+        base_commit: None,
         exit_code: 1,
         duration: Duration::from_secs(5),
         output_tail: "2 tests failed".to_owned(),
@@ -2680,6 +2683,7 @@ fn a_branch_behind_the_validated_commit_owes_the_push() {
     task.validations.push(ValidationRecord {
         command: "cargo test".to_owned(),
         commit: commit("c2"),
+        base_commit: None,
         exit_code: 0,
         duration: Duration::from_secs(5),
         output_tail: "ok".to_owned(),

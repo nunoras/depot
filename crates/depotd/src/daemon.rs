@@ -383,8 +383,9 @@ impl EventHook for std::sync::Arc<dyn EventHook> {
 pub(crate) fn shell_command(command: &str) -> Command {
     #[cfg(windows)]
     let process = {
+        use std::os::windows::process::CommandExt;
         let mut process = Command::new("cmd");
-        process.args(["/C", command]);
+        process.arg("/C").raw_arg(command);
         process
     };
     #[cfg(not(windows))]
@@ -495,20 +496,7 @@ impl ShellEventHook {
 
 impl EventHook for ShellEventHook {
     fn notify(&self, notice: &EventNotice) -> Result<()> {
-        #[cfg(windows)]
-        let mut process = {
-            use std::os::windows::process::CommandExt;
-            let mut process = Command::new("cmd");
-            process.arg("/C").raw_arg(&self.command);
-            process
-        };
-        #[cfg(not(windows))]
-        let mut process = {
-            let mut process = Command::new("sh");
-            process.args(["-c", &self.command]);
-            process
-        };
-        let mut child = process
+        let mut child = shell_command(&self.command)
             .stdin(std::process::Stdio::piped())
             .spawn()
             .map_err(Error::Io)?;
@@ -2138,6 +2126,11 @@ mod tests {
         String::from_utf8_lossy(&output.stdout).trim().to_owned()
     }
 
+    #[cfg(windows)]
+    const PRINT_VALIDATED_AND_EXIT_7: &str = "<nul set /p=validated& exit 7";
+    #[cfg(not(windows))]
+    const PRINT_VALIDATED_AND_EXIT_7: &str = "printf validated; exit 7";
+
     #[test]
     fn validation_runs_at_the_submitted_commit_and_keeps_its_output() {
         let temp = TempDir::new().expect("temporary directory");
@@ -2177,7 +2170,7 @@ mod tests {
             updated_at: depot_core::Timestamp::from_millis(0),
         };
         let result = ShellValidation
-            .validate(&task, path, &commit, "printf validated; exit 7")
+            .validate(&task, path, &commit, PRINT_VALIDATED_AND_EXIT_7)
             .expect("validation runs");
         assert_eq!(result.exit_code, 7);
         assert_eq!(result.output_tail, "validated");

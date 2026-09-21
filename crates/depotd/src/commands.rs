@@ -164,7 +164,7 @@ pub fn submit_task(home: &DepotHome, selection: Option<&str>, id: &str) -> Resul
         return Err(transition_refused(&current, "submitted"));
     }
     let worktree = leased_worktree_path(&project, &current)?;
-    let worktree = std::fs::canonicalize(&worktree).unwrap_or(worktree);
+    let worktree = std::fs::canonicalize(&worktree).map_err(Error::Io)?;
     let here = std::env::current_dir()
         .map_err(Error::Io)
         .and_then(|here| std::fs::canonicalize(&here).map_err(Error::Io))?;

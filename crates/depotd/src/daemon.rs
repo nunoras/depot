@@ -759,6 +759,7 @@ enum DescribeOutcome {
     OptOut,
     HeldForUser,
 }
+
 impl<'a, S, W, V, D, H> Daemon<'a, S, W, V, D, H>
 where
     S: Sessions,

@@ -139,6 +139,15 @@ pub enum FactKind {
         commit: CommitId,
         reason: String,
     },
+    DeliveryFailed {
+        task: TaskId,
+        commit: CommitId,
+        reason: String,
+    },
+    TaskLandedOnBase {
+        task: TaskId,
+        commit: CommitId,
+    },
     PullRequestOpened {
         task: TaskId,
         number: u64,

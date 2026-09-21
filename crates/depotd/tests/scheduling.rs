@@ -19,10 +19,30 @@ const PROFILE: &str = "sched-profile";
 struct FakeWorktrees {
     acquired: Arc<Mutex<Vec<String>>>,
     leases: Arc<Mutex<BTreeMap<String, WorktreeLease>>>,
+    failing: Arc<Mutex<Option<String>>>,
+}
+
+impl FakeWorktrees {
+    fn fail(&self, repo: &str) {
+        *self.failing.lock().expect("the failing repository") = Some(repo.to_owned());
+    }
 }
 
 impl Worktrees for FakeWorktrees {
     fn acquire(&self, request: &AcquireRequest) -> Result<Lease, WorktreeError> {
+        let repo = request.repo.display().to_string();
+        if self
+            .failing
+            .lock()
+            .expect("the failing repository")
+            .as_deref()
+            == Some(repo.as_str())
+        {
+            return Err(WorktreeError::MissingField {
+                command: "acquire".to_owned(),
+                field: "lease".to_owned(),
+            });
+        }
         let lease = WorktreeLease::new(format!("l-{}", request.holder));
         self.acquired
             .lock()
@@ -323,4 +343,40 @@ fn a_project_filter_debug_run_still_serves_one_project() {
     );
     daemon.tick().expect("the filtered daemon runs");
     assert_eq!(acquisitions(&fixture).len(), 1);
+}
+
+#[test]
+fn a_project_that_errors_does_not_stop_the_other_projects_tick() {
+    let fixture = fixture(2);
+    let a = &fixture.projects[0];
+    let b = &fixture.projects[1];
+    propose_and_approve(&fixture.store, a, "t-1");
+    propose_and_approve(&fixture.store, b, "t-1");
+    fixture.worktrees.fail(a.id.as_str());
+
+    supervisor(&fixture)
+        .tick(0)
+        .expect("one project's failure does not abort the tick");
+
+    let acquired = acquisitions(&fixture);
+    assert_eq!(
+        acquired,
+        vec![b.id.as_str().to_string()],
+        "the healthy project still runs: {acquired:?}"
+    );
+    let beta = fixture
+        .store
+        .task(&b.id, &TaskId::new("t-1"))
+        .expect("the task is read")
+        .expect("the task exists");
+    assert_eq!(beta.state, depot_core::TaskState::Running);
+}
+
+#[test]
+fn only_project_errors_are_treated_as_continuable() {
+    assert!(depotd::Error::Project("x".to_owned()).is_project());
+    assert!(!depotd::Error::Schema("x".to_owned()).is_project());
+    assert!(!depotd::Error::Home("x".to_owned()).is_project());
+    assert!(!depotd::Error::NotFound("x".to_owned()).is_project());
+    assert!(!depotd::Error::Config("x".to_owned()).is_project());
 }

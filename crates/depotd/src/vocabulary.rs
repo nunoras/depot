@@ -131,6 +131,7 @@ pub enum FactTag {
     WorktreeAcquired,
     BranchPushed,
     PullRequestOpened,
+    TaskLandedOnBase,
     PullRequestChecksChanged,
     PullRequestMerged,
     PullRequestClosedUnmerged,
@@ -139,6 +140,7 @@ pub enum FactTag {
     EvidencePosted,
     EvidenceFailed,
     PushFailed,
+    DeliveryFailed,
     RebaseScheduled,
     RunDurationExceeded,
     RetryExhausted,
@@ -179,6 +181,7 @@ pub fn fact_tag(kind: &FactKind) -> FactTag {
         FactKind::WorktreeAcquired { .. } => FactTag::WorktreeAcquired,
         FactKind::BranchPushed { .. } => FactTag::BranchPushed,
         FactKind::PullRequestOpened { .. } => FactTag::PullRequestOpened,
+        FactKind::TaskLandedOnBase { .. } => FactTag::TaskLandedOnBase,
         FactKind::PullRequestChecksChanged { .. } => FactTag::PullRequestChecksChanged,
         FactKind::PullRequestMerged { .. } => FactTag::PullRequestMerged,
         FactKind::PullRequestClosedUnmerged { .. } => FactTag::PullRequestClosedUnmerged,
@@ -187,6 +190,7 @@ pub fn fact_tag(kind: &FactKind) -> FactTag {
         FactKind::EvidencePosted { .. } => FactTag::EvidencePosted,
         FactKind::EvidenceFailed { .. } => FactTag::EvidenceFailed,
         FactKind::PushFailed { .. } => FactTag::PushFailed,
+        FactKind::DeliveryFailed { .. } => FactTag::DeliveryFailed,
         FactKind::RebaseScheduled { .. } => FactTag::RebaseScheduled,
         FactKind::RunDurationExceeded { .. } => FactTag::RunDurationExceeded,
         FactKind::RetryExhausted { .. } => FactTag::RetryExhausted,
@@ -228,6 +232,7 @@ pub fn fact_tag_name(tag: FactTag) -> &'static str {
         FactTag::WorktreeAcquired => "worktree_acquired",
         FactTag::BranchPushed => "branch_pushed",
         FactTag::PullRequestOpened => "pull_request_opened",
+        FactTag::TaskLandedOnBase => "task_landed_on_base",
         FactTag::PullRequestChecksChanged => "pull_request_checks_changed",
         FactTag::PullRequestMerged => "pull_request_merged",
         FactTag::PullRequestClosedUnmerged => "pull_request_closed_unmerged",
@@ -236,6 +241,7 @@ pub fn fact_tag_name(tag: FactTag) -> &'static str {
         FactTag::EvidencePosted => "evidence_posted",
         FactTag::EvidenceFailed => "evidence_failed",
         FactTag::PushFailed => "push_failed",
+        FactTag::DeliveryFailed => "delivery_failed",
         FactTag::RebaseScheduled => "rebase_scheduled",
         FactTag::RunDurationExceeded => "run_duration_exceeded",
         FactTag::RetryExhausted => "retry_exhausted",
@@ -276,6 +282,7 @@ pub fn fact_tag_from_name(name: &str) -> Result<FactTag> {
         "worktree_acquired" => FactTag::WorktreeAcquired,
         "branch_pushed" => FactTag::BranchPushed,
         "pull_request_opened" => FactTag::PullRequestOpened,
+        "task_landed_on_base" => FactTag::TaskLandedOnBase,
         "pull_request_checks_changed" => FactTag::PullRequestChecksChanged,
         "pull_request_merged" => FactTag::PullRequestMerged,
         "pull_request_closed_unmerged" => FactTag::PullRequestClosedUnmerged,
@@ -284,6 +291,7 @@ pub fn fact_tag_from_name(name: &str) -> Result<FactTag> {
         "evidence_posted" => FactTag::EvidencePosted,
         "evidence_failed" => FactTag::EvidenceFailed,
         "push_failed" => FactTag::PushFailed,
+        "delivery_failed" => FactTag::DeliveryFailed,
         "rebase_scheduled" => FactTag::RebaseScheduled,
         "run_duration_exceeded" => FactTag::RunDurationExceeded,
         "retry_exhausted" => FactTag::RetryExhausted,
@@ -329,6 +337,7 @@ pub fn fact_task(kind: &FactKind) -> Option<TaskId> {
         | FactKind::WorktreeAcquired { task, .. }
         | FactKind::BranchPushed { task, .. }
         | FactKind::PullRequestOpened { task, .. }
+        | FactKind::TaskLandedOnBase { task, .. }
         | FactKind::PullRequestChecksChanged { task, .. }
         | FactKind::PullRequestMerged { task, .. }
         | FactKind::PullRequestMergeRefused { task, .. }
@@ -337,6 +346,7 @@ pub fn fact_task(kind: &FactKind) -> Option<TaskId> {
         | FactKind::EvidencePosted { task, .. }
         | FactKind::EvidenceFailed { task, .. }
         | FactKind::PushFailed { task, .. }
+        | FactKind::DeliveryFailed { task, .. }
         | FactKind::RebaseScheduled { task, .. }
         | FactKind::RunDurationExceeded { task }
         | FactKind::RetryExhausted { task }

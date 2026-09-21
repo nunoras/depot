@@ -49,7 +49,13 @@ where
 
     pub fn recover(&self) -> Result<()> {
         for project in &self.projects {
-            self.daemon(project).recover()?;
+            if let Err(error) = self.daemon(project).recover() {
+                if error.is_project() {
+                    crate::daemon::log_project_error(&project.slug, &error);
+                    continue;
+                }
+                return Err(error);
+            }
         }
         Ok(())
     }
@@ -60,7 +66,13 @@ where
         let count = self.projects.len();
         for offset in 0..count {
             let project = &self.projects[(turn + offset) % count];
-            budget = self.daemon(project).tick_under(budget)?;
+            match self.daemon(project).tick_under(budget) {
+                Ok(remaining) => budget = remaining,
+                Err(error) if error.is_project() => {
+                    crate::daemon::log_project_error(&project.slug, &error);
+                }
+                Err(error) => return Err(error),
+            }
         }
         Ok(())
     }

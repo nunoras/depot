@@ -34,8 +34,11 @@ use fake_program::FakeProgram;
 
 pub const SLUG: &str = "example";
 pub const TASK: &str = "t-1";
+pub const TASK_TWO: &str = "t-2";
 pub const BRANCH: &str = "feat/wire-the-store";
+pub const BRANCH_TWO: &str = "feat/second-task";
 pub const LEASE: &str = "7c1d0a5e";
+pub const LEASE_TWO: &str = "8d2e1b6f";
 pub const SESSION: &str = "4f2a91";
 pub const PROFILE: &str = "wire-1";
 pub const HARNESS: &str = "harness-wire-1";
@@ -333,6 +336,51 @@ impl Golden {
         config
             .write(&self.repo)
             .expect("the project config is written");
+    }
+
+    pub fn set_pull_request_base(&self, base: &str) {
+        let path = self.repo.join(depotd::PROJECT_CONFIG_FILE_NAME);
+        let text = fs::read_to_string(&path).expect("the project config is readable");
+        let mut config =
+            depotd::ProjectConfig::from_toml(&text).expect("the project config parses");
+        config.pull_request.base = base.to_owned();
+        config
+            .write(&self.repo)
+            .expect("the project config is written");
+    }
+
+    pub fn clone_second_lease(&self, name: &str, branch: &str) -> PathBuf {
+        let lease = self.base.join("pool").join(name);
+        let _ = fs::remove_dir_all(&lease);
+        git::git(
+            &self.base,
+            &[
+                "clone",
+                &file_url(&self.origin),
+                lease.to_str().expect("the second lease is utf-8"),
+            ],
+        );
+        configure(&lease);
+        git::git(&lease, &["checkout", "-b", branch]);
+        lease
+    }
+
+    pub fn hold_two_leases(&self, second: &Path, second_id: &str) {
+        self.treehouse.respond(
+            "status",
+            &two_lease_pool(&self.lease, LEASE, second, second_id),
+            "",
+            0,
+        );
+    }
+
+    pub fn script_pull_request_refused(&self) {
+        self.forge.replace_route(
+            "POST",
+            &format!("/repos/{REPOSITORY}/pulls"),
+            422,
+            "{\"message\":\"No commits between main and the head branch\"}",
+        );
     }
 
     pub fn daemon(
@@ -714,6 +762,56 @@ impl Golden {
     }
 }
 
+pub fn validated_task(
+    project: &depot_core::ProjectId,
+    id: &str,
+    lease: &str,
+    commit: &str,
+) -> Task {
+    Task {
+        id: TaskId::new(id),
+        project: project.clone(),
+        title: format!("task {id}"),
+        intent: format!("intent for {id}"),
+        role: depot_core::Role::Build,
+        dispatch_profile: None,
+        state: depot_core::TaskState::Validated,
+        dependencies: Vec::new(),
+        base_dependency: None,
+        attempts: vec![depot_core::Attempt {
+            last_seen_at: None,
+            session: None,
+            profile: depot_core::ProfileId::new(PROFILE),
+            worktree: Some(depot_core::WorktreeLease::new(lease)),
+            started_at: depot_core::Timestamp::from_millis(0),
+            finished_at: Some(depot_core::Timestamp::from_millis(1)),
+            outcome: depot_core::AttemptOutcome::Submitted,
+            rebase: false,
+        }],
+        questions: Vec::new(),
+        validations: vec![depot_core::ValidationRecord {
+            command: "cargo test".to_owned(),
+            commit: depot_core::CommitId::new(commit),
+            exit_code: 0,
+            duration: std::time::Duration::from_secs(1),
+            output_tail: "ok".to_owned(),
+        }],
+        submission: None,
+        artifacts: Vec::new(),
+        links: Vec::new(),
+        branch_head: None,
+        merge_refused: None,
+        redirect_text: None,
+        redirect_delivered: false,
+        acknowledged_at: None,
+        rework_of: None,
+        hold_pr: false,
+        retry: None,
+        created_at: depot_core::Timestamp::from_millis(0),
+        updated_at: depot_core::Timestamp::from_millis(1),
+    }
+}
+
 pub fn stdout(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
@@ -832,6 +930,14 @@ fn pool(lease: &Path, id: &str) -> String {
         "[{{\"name\":\"1\",\"path\":{},\"status\":\"leased\",\"lease_id\":\"{id}\",\"lease_holder\":\"depot:{TASK}\"}},{{\"name\":\"2\",\"path\":{},\"status\":\"free\",\"lease_id\":\"\",\"lease_holder\":\"\"}}]",
         quoted(lease),
         quoted(&lease.with_file_name("2"))
+    )
+}
+
+fn two_lease_pool(first: &Path, first_id: &str, second: &Path, second_id: &str) -> String {
+    format!(
+        "[{{\"name\":\"1\",\"path\":{},\"status\":\"leased\",\"lease_id\":\"{first_id}\",\"lease_holder\":\"depot:{TASK}\"}},{{\"name\":\"2\",\"path\":{},\"status\":\"leased\",\"lease_id\":\"{second_id}\",\"lease_holder\":\"depot:{TASK_TWO}\"}}]",
+        quoted(first),
+        quoted(second)
     )
 }
 

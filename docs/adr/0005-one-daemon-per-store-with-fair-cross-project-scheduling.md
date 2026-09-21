@@ -14,9 +14,9 @@ Per-project behavior is unchanged: each tick builds a per-project daemon over th
 ## The worker cap is store-global, the queue is per-project
 
 `concurrency` in the depot home's `config.toml` was already the cap the pure core applied per project; it is now the cap on workers across the whole store.
-Each project adds `max_concurrent_tasks` to its committed `.depot.toml`, default `1`, bounding how many store slots one project may hold at once, and the effective per-project limit is that number clamped under the store cap.
+Each project adds `max_concurrent_tasks` to its machine-local `.depot.toml`, default `1`, bounding how many store slots one project may hold at once, and the effective per-project limit is that number clamped under the store cap.
 
-The split follows the configuration split the project already keeps: how many workers this machine runs is machine-local, how much of the machine one project may claim is project knowledge, reviewed with the repository.
+The split follows the configuration split the project already keeps: how many workers this machine runs lives in the depot home's `config.toml`, and how much of the machine one project may claim lives in the project's `.depot.toml`, which stays machine-local and out of version control.
 
 ## Round-robin across projects
 

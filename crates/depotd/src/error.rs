@@ -27,6 +27,10 @@ impl Error {
                     || ffi.code == rusqlite::ErrorCode::DatabaseLocked
         )
     }
+
+    pub fn is_project(&self) -> bool {
+        matches!(self, Error::Project(_))
+    }
 }
 
 impl fmt::Display for Error {

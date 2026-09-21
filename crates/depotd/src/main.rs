@@ -61,7 +61,7 @@ fn run() -> depotd::Result<()> {
     let mut turn: usize = 0;
     loop {
         if let Err(error) = supervisor.tick(turn) {
-            if error.is_lock_contention() {
+            if error.is_project() || error.is_lock_contention() {
                 eprintln!("depotd: {error}; continuing");
             } else {
                 return Err(error);

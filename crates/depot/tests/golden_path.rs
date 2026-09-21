@@ -9,8 +9,8 @@ use depot_core::{
 use depotd::InstanceLock;
 use support::git;
 use support::{
-    ACCOUNT, BASE, BRANCH, Golden, HARNESS, LEASE, MODEL, PROFILE, REPOSITORY, SESSION, SLUG, TASK,
-    Validation, calls_to,
+    ACCOUNT, BASE, BRANCH, BRANCH_TWO, Golden, HARNESS, LEASE, LEASE_TWO, MODEL, PROFILE,
+    REPOSITORY, SESSION, SLUG, TASK, TASK_TWO, Validation, calls_to, validated_task,
 };
 
 const PROPOSED: &str = "task_proposed";
@@ -2339,5 +2339,194 @@ fn a_project_without_describe_profile_opens_the_validation_only_pull_request() {
         !request.body.contains("## Why"),
         "the opt-out body stays validation-only: {:#}",
         request.body
+    );
+}
+
+#[test]
+fn a_commit_already_on_the_base_branch_lands_without_a_pull_request() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_submits();
+    let commit = golden.head();
+    git::git(&golden.lease, &["push", "origin", "HEAD:main"]);
+
+    daemon
+        .tick()
+        .expect("the daemon sees the commit on the base and lands the task");
+
+    let landed = golden.task();
+    assert_eq!(landed.state, TaskState::Landed);
+    assert!(
+        golden
+            .history(TASK)
+            .contains(&"task_landed_on_base".to_string()),
+        "the landing is on the journal: {:?}",
+        golden.history(TASK)
+    );
+    assert!(
+        !golden.history(TASK).contains(&PUSHED.to_string()),
+        "a landed commit is never pushed as a delivery branch"
+    );
+    assert_eq!(
+        golden.pull_requests_opened(),
+        0,
+        "a landed commit opens no pull request"
+    );
+    assert!(
+        !calls_to(&golden.treehouse.calls(), "return").is_empty(),
+        "the landing releases the worktree"
+    );
+    assert_eq!(
+        landed.validated_commit().map(CommitId::as_str),
+        Some(commit.as_str())
+    );
+}
+
+#[test]
+fn a_commit_the_base_does_not_contain_is_pushed_and_opens_a_pull_request() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_submits();
+    let commit = golden.head();
+    golden.script_pull_request(&commit);
+
+    daemon
+        .tick()
+        .expect("the daemon validates, pushes and opens the pull request");
+
+    let opened = golden.task();
+    assert_eq!(opened.state, TaskState::PrOpen);
+    assert!(
+        golden.history(TASK).contains(&PUSHED.to_string()),
+        "a novel commit is pushed"
+    );
+    assert!(
+        golden.history(TASK).contains(&OPENED.to_string()),
+        "a novel commit opens a pull request"
+    );
+    assert_eq!(golden.pull_requests_opened(), 1);
+}
+
+#[test]
+fn a_base_that_cannot_be_read_holds_the_task_instead_of_landing_it() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_submits();
+    golden.set_pull_request_base("no-such-base");
+
+    daemon
+        .tick()
+        .expect("a base that cannot be read is recorded, not fatal");
+
+    let held = golden.task();
+    assert_eq!(held.state, TaskState::Failed);
+    assert!(
+        golden
+            .history(TASK)
+            .contains(&"delivery_failed".to_string()),
+        "the failure is on the journal: {:?}",
+        golden.history(TASK)
+    );
+    assert!(
+        !golden
+            .history(TASK)
+            .contains(&"task_landed_on_base".to_string()),
+        "a base read that failed never lands the task"
+    );
+    assert_eq!(golden.pull_requests_opened(), 0);
+
+    daemon.tick().expect("later ticks stay alive");
+    assert_eq!(
+        golden
+            .history(TASK)
+            .iter()
+            .filter(|kind| kind.as_str() == "delivery_failed")
+            .count(),
+        1,
+        "a held task records one failure rather than one per tick"
+    );
+
+    let inbox = golden.depot_ok(&["inbox", "--project", SLUG]);
+    assert!(inbox.contains("the delivery failed"), "{inbox}");
+}
+
+#[test]
+fn a_refused_pull_request_holds_only_its_task_and_the_tick_survives() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_submits();
+    golden.script_pull_request_refused();
+
+    let second = golden.clone_second_lease("2", BRANCH_TWO);
+    std::fs::write(second.join("second.txt"), "the second task\n")
+        .expect("the second worktree file is written");
+    git::git(&second, &["add", "."]);
+    git::git(&second, &["commit", "-m", "the second task"]);
+    let second_commit = git::head(&second);
+    git::git(&second, &["push", "origin", "HEAD:main"]);
+    golden.hold_two_leases(&second, LEASE_TWO);
+    golden
+        .store
+        .put_task(&validated_task(
+            &golden.project.id,
+            TASK_TWO,
+            LEASE_TWO,
+            &second_commit,
+        ))
+        .expect("the second validated task is recorded");
+
+    daemon
+        .tick()
+        .expect("one refused pull request does not stop the tick");
+
+    let refused = golden.task();
+    assert_eq!(refused.state, TaskState::Failed);
+    assert!(
+        golden
+            .history(TASK)
+            .contains(&"delivery_failed".to_string()),
+        "the refused pull request is on the journal: {:?}",
+        golden.history(TASK)
+    );
+    assert!(
+        !golden.history(TASK).contains(&OPENED.to_string()),
+        "the forge answered 422, so the refused pull request is never mislabelled as opened: {:?}",
+        golden.history(TASK)
+    );
+
+    let landed = golden
+        .store
+        .task(&golden.project.id, &TaskId::new(TASK_TWO))
+        .expect("the second task is read")
+        .expect("the second task exists");
+    assert_eq!(
+        landed.state,
+        TaskState::Landed,
+        "the other task still reaches its end"
+    );
+
+    daemon.tick().expect("later ticks stay alive");
+    assert_eq!(
+        golden
+            .history(TASK)
+            .iter()
+            .filter(|kind| kind.as_str() == "delivery_failed")
+            .count(),
+        1,
+        "a held task records one failure rather than one per tick"
+    );
+
+    let inbox = golden.depot_ok(&["inbox", "--project", SLUG]);
+    assert!(
+        inbox.contains("422"),
+        "the reason names the forge answer: {inbox}"
     );
 }

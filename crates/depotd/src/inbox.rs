@@ -125,6 +125,7 @@ fn need_for(tag: FactTag, task: Option<&Task>) -> Need {
         | FactTag::WorkerLivenessChanged
         | FactTag::WorkerTurnUnresolved
         | FactTag::PushFailed
+        | FactTag::DeliveryFailed
         | FactTag::DescribeFailed
         | FactTag::EvidenceFailed
         | FactTag::RunDurationExceeded
@@ -163,6 +164,7 @@ fn need_for(tag: FactTag, task: Option<&Task>) -> Need {
         | FactTag::WorktreeAcquired
         | FactTag::BranchPushed
         | FactTag::PullRequestOpened
+        | FactTag::TaskLandedOnBase
         | FactTag::PullRequestChecksChanged
         | FactTag::EvidencePosted
         | FactTag::CoordinatorSessionStarted
@@ -281,6 +283,14 @@ fn headline(tag: FactTag, event: &RecordedEvent, task: Option<&Task>) -> Result<
         FactTag::PushFailed => {
             let reason = payload_field(&event.payload, "reason")?;
             format!("the push was rejected: {}", one_line(&reason))
+        }
+        FactTag::DeliveryFailed => {
+            let reason = payload_field(&event.payload, "reason")?;
+            format!("the delivery failed: {}", one_line(&reason))
+        }
+        FactTag::TaskLandedOnBase => {
+            "the validated commit was already on the base branch; the task landed without a pull request"
+                .to_string()
         }
         FactTag::DescribeFailed => {
             let reason = payload_field(&event.payload, "reason")?;

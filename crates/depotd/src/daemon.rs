@@ -135,6 +135,13 @@ pub trait ValidationRunner {
 
 pub trait Delivery {
     fn push(&self, task: &Task, worktree: &Path, commit: &CommitId) -> Result<()>;
+    fn commit_on_base(
+        &self,
+        task: &Task,
+        worktree: &Path,
+        base: &str,
+        commit: &CommitId,
+    ) -> Result<bool>;
     fn open_pull_request(
         &self,
         task: &Task,
@@ -242,6 +249,32 @@ impl<F: Forge> Delivery for ForgeDelivery<F> {
         let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         git_output(worktree, &arg_refs)?;
         Ok(())
+    }
+
+    fn commit_on_base(
+        &self,
+        _task: &Task,
+        worktree: &Path,
+        base: &str,
+        commit: &CommitId,
+    ) -> Result<bool> {
+        git_output(worktree, &["fetch", "origin", base])?;
+        match git_exit(
+            worktree,
+            &[
+                "merge-base",
+                "--is-ancestor",
+                commit.as_str(),
+                &format!("origin/{base}"),
+            ],
+        )? {
+            0 => Ok(true),
+            1 => Ok(false),
+            code => Err(Error::Project(format!(
+                "git merge-base --is-ancestor exited {code} for {} against origin/{base}",
+                commit.as_str()
+            ))),
+        }
     }
 
     fn open_pull_request(
@@ -412,6 +445,16 @@ fn git_output(worktree: &Path, args: &[&str]) -> Result<String> {
     Err(Error::Project(
         String::from_utf8_lossy(&output.stderr).trim().to_owned(),
     ))
+}
+
+fn git_exit(worktree: &Path, args: &[&str]) -> Result<i32> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(worktree)
+        .args(args)
+        .output()
+        .map_err(Error::Io)?;
+    Ok(output.status.code().unwrap_or(-1))
 }
 
 fn output_tail(output: &std::process::Output) -> String {
@@ -1040,7 +1083,30 @@ where
 
     fn push(&self, task: TaskId, commit: CommitId) -> Result<()> {
         let task_record = self.task(&task)?;
-        let worktree = self.lease_for(&task_record)?.path;
+        let worktree = match self.lease_for(&task_record) {
+            Ok(lease) => lease.path,
+            Err(error) => {
+                return self.record_delivery_failure(&task, &commit, &error.to_string());
+            }
+        };
+        if task_record.state == TaskState::Validated {
+            let base = self
+                .store
+                .project_config(&self.project)?
+                .pull_request
+                .base
+                .clone();
+            match self
+                .delivery
+                .commit_on_base(&task_record, &worktree, &base, &commit)
+            {
+                Ok(true) => return self.record_landed_on_base(&task, &commit),
+                Ok(false) => {}
+                Err(error) => {
+                    return self.record_delivery_failure(&task, &commit, &error.to_string());
+                }
+            }
+        }
         if let Err(error) = self.delivery.push(&task_record, &worktree, &commit) {
             let reason = error.to_string();
             log("push-failed", &reason);
@@ -1065,12 +1131,61 @@ where
         )
     }
 
+    fn record_delivery_failure(
+        &self,
+        task: &TaskId,
+        commit: &CommitId,
+        reason: &str,
+    ) -> Result<()> {
+        log("delivery-failed", reason);
+        self.record(
+            &event_key(&["delivery_failed", task.as_str(), commit.as_str()]),
+            Fact {
+                at: now(),
+                kind: FactKind::DeliveryFailed {
+                    task: task.clone(),
+                    commit: commit.clone(),
+                    reason: reason.to_owned(),
+                },
+            },
+        )
+    }
+
+    fn record_landed_on_base(&self, task: &TaskId, commit: &CommitId) -> Result<()> {
+        log("landed-on-base", task.as_str());
+        self.record(
+            &event_key(&["task_landed_on_base", task.as_str(), commit.as_str()]),
+            Fact {
+                at: now(),
+                kind: FactKind::TaskLandedOnBase {
+                    task: task.clone(),
+                    commit: commit.clone(),
+                },
+            },
+        )
+    }
+
     fn open_pull_request(&self, task: TaskId, commit: CommitId) -> Result<()> {
         let task_record = self.task(&task)?;
-        let worktree = self.lease_for(&task_record)?.path;
+        if task_record.state != TaskState::Validated || task_record.pull_request().is_some() {
+            return Ok(());
+        }
+        let worktree = match self.lease_for(&task_record) {
+            Ok(lease) => lease.path,
+            Err(error) => {
+                return self.record_delivery_failure(&task, &commit, &error.to_string());
+            }
+        };
         let config = self.store.project_config(&self.project)?;
         let base = config.pull_request.base.clone();
-        match self.describe_pull_request(&task_record, &worktree, &commit, &config)? {
+        let described = match self.describe_pull_request(&task_record, &worktree, &commit, &config)
+        {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                return self.record_delivery_failure(&task, &commit, &error.to_string());
+            }
+        };
+        match described {
             DescribeOutcome::Output(describe) => {
                 let (title, body) = describe::assemble(Some(describe), &task_record, &commit);
                 self.open_pull_request_with(&task_record, &worktree, &commit, &base, &title, &body)
@@ -1093,16 +1208,19 @@ where
         body: &str,
     ) -> Result<()> {
         let task = task_record.id.clone();
-        let (number, url) =
-            self.delivery
-                .open_pull_request(task_record, worktree, commit, base, title, body)?;
-        self.record(
-            &event_key(&["pull_request_opened", task.as_str(), &number.to_string()]),
-            Fact {
-                at: now(),
-                kind: FactKind::PullRequestOpened { task, number, url },
-            },
-        )
+        match self
+            .delivery
+            .open_pull_request(task_record, worktree, commit, base, title, body)
+        {
+            Ok((number, url)) => self.record(
+                &event_key(&["pull_request_opened", task.as_str(), &number.to_string()]),
+                Fact {
+                    at: now(),
+                    kind: FactKind::PullRequestOpened { task, number, url },
+                },
+            ),
+            Err(error) => self.record_delivery_failure(&task, commit, &error.to_string()),
+        }
     }
 
     fn describe_pull_request(
@@ -2097,6 +2215,10 @@ fn stripped(answer: &str) -> String {
 
 fn log(kind: &str, value: &str) {
     eprintln!("{{\"kind\":\"{}\",\"value\":{:?}}}", kind, value);
+}
+
+pub(crate) fn log_project_error(slug: &str, error: &Error) {
+    log("project-error", &format!("{slug}: {error}"));
 }
 
 #[cfg(test)]

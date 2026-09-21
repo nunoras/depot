@@ -1,7 +1,8 @@
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
-use crate::adapters::process::Program;
+use crate::adapters::process::Output;
+use crate::daemon::shell_command;
 use crate::error::{Error, Result};
 use crate::home::DepotHome;
 
@@ -101,16 +102,21 @@ fn collision_free(directory: &Path, name: &OsStr) -> PathBuf {
     }
 }
 
-fn run_publisher(command: &str, staged: &Path) -> Result<crate::adapters::process::Output> {
-    let program = Program::new(shell()).with_env(DEPOT_ARTIFACT_PATH, staged.as_os_str());
-    let output = program
-        .run(&shell_arguments(command), None)
+fn run_publisher(command: &str, staged: &Path) -> Result<Output> {
+    let ran = shell_command(command)
+        .env(DEPOT_ARTIFACT_PATH, staged.as_os_str())
+        .output()
         .map_err(|error| {
             Error::Project(format!(
                 "the artifact publish command could not run: {error}; the file is kept at {}",
                 staged.display()
             ))
         })?;
+    let output = Output {
+        status: ran.status.code(),
+        stdout: String::from_utf8_lossy(&ran.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&ran.stderr).into_owned(),
+    };
     if output.succeeded() {
         return Ok(output);
     }
@@ -125,19 +131,7 @@ fn run_publisher(command: &str, staged: &Path) -> Result<crate::adapters::proces
     )))
 }
 
-fn shell() -> &'static str {
-    if cfg!(windows) { "cmd" } else { "sh" }
-}
-
-fn shell_arguments(command: &str) -> Vec<String> {
-    if cfg!(windows) {
-        vec!["/C".to_string(), command.to_string()]
-    } else {
-        vec!["-c".to_string(), command.to_string()]
-    }
-}
-
-fn output_tail(output: &crate::adapters::process::Output) -> String {
+fn output_tail(output: &Output) -> String {
     let mut combined = output.stderr.clone();
     if !output.stdout.trim().is_empty() {
         combined.push_str(output.stdout.trim());

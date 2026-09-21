@@ -861,18 +861,24 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             reason,
         } => {
             if let Some(task) = next.tasks.get_mut(task) {
-                if !task.release_pending.contains(lease) {
-                    task.release_pending.push(lease.clone());
+                let unchanged = task
+                    .release_held
+                    .get(lease)
+                    .is_some_and(|held| held.reason == *reason);
+                if !unchanged {
+                    if !task.release_pending.contains(lease) {
+                        task.release_pending.push(lease.clone());
+                    }
+                    task.release_held.insert(
+                        lease.clone(),
+                        ReleaseHold {
+                            reason: reason.clone(),
+                            at: fact.at,
+                        },
+                    );
+                    task.updated_at = fact.at;
+                    changed = true;
                 }
-                task.release_held.insert(
-                    lease.clone(),
-                    ReleaseHold {
-                        reason: reason.clone(),
-                        at: fact.at,
-                    },
-                );
-                task.updated_at = fact.at;
-                changed = true;
             }
         }
 

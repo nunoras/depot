@@ -1581,12 +1581,14 @@ where
         reason: &str,
     ) -> Result<()> {
         let at = now();
+        let attempt = self.task(task)?.attempts.len();
         self.record(
             &event_key(&[
                 "worktree_release_held",
                 task.as_str(),
+                &attempt.to_string(),
                 lease.as_str(),
-                &at.millis().to_string(),
+                reason,
             ]),
             Fact {
                 at,
@@ -1621,11 +1623,9 @@ where
                 task.release_pending.clone()
             };
             for lease in leases {
-                if task
-                    .attempts
-                    .iter()
-                    .any(|attempt| attempt.worktree.as_ref() == Some(&lease))
-                {
+                if task.attempts.iter().any(|attempt| {
+                    attempt.outcome.is_open() && attempt.worktree.as_ref() == Some(&lease)
+                }) {
                     continue;
                 }
                 let held_recently = task.release_held.get(&lease).is_some_and(|hold| {

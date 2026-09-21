@@ -1350,3 +1350,51 @@ fn a_client_command_refuses_an_older_store_and_an_explicit_migrate_moves_it() {
     let store = Store::open(&home).expect("the store opens after an explicit migrate");
     assert_eq!(store.schema_version().unwrap(), depotd::SCHEMA_VERSION);
 }
+
+#[test]
+fn an_explicit_migrate_refuses_while_a_daemon_holds_the_instance_lock() {
+    let cli = Cli::new();
+    let home = cli.depot_home();
+    let path = home.database_path();
+    std::fs::create_dir_all(home.root()).expect("home directory");
+    let legacy = rusqlite::Connection::open(&path).expect("legacy database");
+    legacy
+        .execute_batch(include_str!("../../depotd/tests/fixtures/schema-v1.sql"))
+        .expect("v1 schema");
+    let fixture_version: i64 = legacy
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .expect("fixture version");
+    drop(legacy);
+
+    let lock = depotd::InstanceLock::acquire(&home).expect("the daemon lock");
+    lock.record_scope(&[]).expect("scope record");
+
+    let refused = cli.run(&["store", "migrate"]);
+
+    assert_eq!(
+        refused.status.code(),
+        Some(1),
+        "stdout: {}",
+        stdout(&refused)
+    );
+    assert!(
+        stderr(&refused).contains("depot daemon restart"),
+        "stderr: {}",
+        stderr(&refused)
+    );
+    assert!(
+        stderr(&refused).contains("stop"),
+        "stderr: {}",
+        stderr(&refused)
+    );
+    drop(lock);
+
+    let connection = rusqlite::Connection::open(&path).expect("database");
+    let stored: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .expect("schema version");
+    assert_eq!(
+        stored, fixture_version,
+        "the refused migrate left the schema alone"
+    );
+}

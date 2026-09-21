@@ -272,6 +272,7 @@ pub struct Migration {
 }
 
 pub fn migrate_store(home: &DepotHome) -> Result<Migration> {
+    let _lock = crate::daemon::InstanceLock::acquire(home)?;
     let store = Store::connect(home)?;
     let from = migrations::current(store.connection())?;
     migrations::migrate(store.connection())?;

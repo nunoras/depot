@@ -13,9 +13,7 @@ use depot_core::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::adapters::forge::{
-    Forge, NewPullRequest, PrState, RepoSlug, UserAssetUpload, content_type_for,
-};
+use crate::adapters::forge::{Forge, NewPullRequest, PrState, RepoSlug};
 use crate::adapters::profiles::ProfileResolver;
 use crate::adapters::sessions::{LaunchRequest, SessionProfile, Sessions};
 use crate::adapters::worktrees::{AcquireRequest, Lease, Worktrees};
@@ -184,7 +182,6 @@ pub trait Delivery {
         repo: &RepoSlug,
         number: u64,
     ) -> Result<(String, String)>;
-    fn upload_user_asset(&self, task: &Task, path: &Path) -> Result<String>;
     fn observe_pull_request(
         &self,
         task: &Task,
@@ -325,10 +322,13 @@ impl<F: Forge> Delivery for ForgeDelivery<F> {
                     .forge
                     .pull_request_text(&repo, opened.number)
                     .map_err(|error| Error::Project(error.to_string()))?;
-                let body = evidence::preserve_proof(existing.as_deref().unwrap_or_default(), body);
-                self.forge
-                    .update_pull_request(&repo, opened.number, title, &body)
-                    .map_err(|error| Error::Project(error.to_string()))?;
+                let existing = existing.unwrap_or_default();
+                if evidence::is_managed(&existing) {
+                    let body = evidence::preserve_proof(&existing, &evidence::mark_managed(body));
+                    self.forge
+                        .update_pull_request(&repo, opened.number, title, &body)
+                        .map_err(|error| Error::Project(error.to_string()))?;
+                }
                 opened
             }
             None => self
@@ -336,7 +336,7 @@ impl<F: Forge> Delivery for ForgeDelivery<F> {
                 .open_pull_request(&NewPullRequest {
                     repo,
                     title: title.to_owned(),
-                    body: body.to_owned(),
+                    body: evidence::mark_managed(body),
                     head,
                     base: base.to_owned(),
                 })
@@ -369,15 +369,6 @@ impl<F: Forge> Delivery for ForgeDelivery<F> {
             .pull_request_text(repo, number)
             .map_err(|error| Error::Project(error.to_string()))?;
         Ok((title, body.unwrap_or_default()))
-    }
-
-    fn upload_user_asset(&self, _task: &Task, path: &Path) -> Result<String> {
-        self.forge
-            .upload_user_asset(&UserAssetUpload {
-                path: path.to_path_buf(),
-                content_type: content_type_for(path),
-            })
-            .map_err(|error| Error::Project(error.to_string()))
     }
 
     fn observe_pull_request(
@@ -1917,28 +1908,30 @@ where
     ) -> Result<()> {
         let key = event_key(&["evidence", task.id.as_str(), commit.as_str()]);
         let required = config.evidence.required;
-        let outcome = self.lease_for(task).and_then(|lease| {
-            self.evidence.run(
-                command,
-                &lease.path,
-                &config.pull_request.base,
-                Duration::from_secs(config.evidence.timeout_seconds),
-            )
-        });
-        let result: std::result::Result<(), String> = match outcome {
-            Err(error) => Err(error.to_string()),
-            Ok(output) if output.exit_code != 0 => {
-                Err(format!("the evidence command exited {}", output.exit_code))
-            }
-            Ok(output) => self
-                .publish_evidence(
-                    task,
-                    number,
-                    repo,
-                    &evidence::parse_manifest(&output.stdout),
+        let result: std::result::Result<(), String> = (|| {
+            let lease = self.lease_for(task).map_err(|error| error.to_string())?;
+            let output = self
+                .evidence
+                .run(
+                    command,
+                    &lease.path,
+                    &config.pull_request.base,
+                    Duration::from_secs(config.evidence.timeout_seconds),
                 )
-                .map_err(|error| error.to_string()),
-        };
+                .map_err(|error| error.to_string())?;
+            if output.exit_code != 0 {
+                return Err(format!("the evidence command exited {}", output.exit_code));
+            }
+            self.publish_evidence(
+                task,
+                number,
+                repo,
+                &lease.path,
+                &evidence::parse_manifest(&output.stdout),
+                required,
+            )
+            .map_err(|error| error.to_string())
+        })();
         match result {
             Ok(()) => self.record(
                 &key,
@@ -1973,35 +1966,22 @@ where
         task: &Task,
         number: u64,
         repo: &RepoSlug,
+        worktree: &Path,
         artifacts: &[EvidenceArtifact],
+        required: bool,
     ) -> Result<()> {
-        let resolved = self.resolve_evidence(task, artifacts)?;
+        let resolved = evidence::resolve_artifacts(worktree, artifacts);
+        if required && !resolved.iter().any(ResolvedArtifact::is_url) {
+            return Err(Error::Project(
+                "the evidence command produced nothing attachable: a local file cannot be attached to a pull request, so publish each artifact at a URL"
+                    .to_owned(),
+            ));
+        }
         let proof = evidence::render_proof(&resolved);
         let (title, existing) = self.delivery.pull_request_content(task, repo, number)?;
         let body = evidence::upsert_proof(&existing, &proof);
         self.delivery
             .update_pull_request(task, repo, number, &title, &body)
-    }
-
-    fn resolve_evidence(
-        &self,
-        task: &Task,
-        artifacts: &[EvidenceArtifact],
-    ) -> Result<Vec<ResolvedArtifact>> {
-        let mut resolved = Vec::new();
-        for artifact in artifacts {
-            let url = match artifact {
-                EvidenceArtifact::Url { url, .. } => url.clone(),
-                EvidenceArtifact::File { path, .. } => {
-                    self.delivery.upload_user_asset(task, path)?
-                }
-            };
-            resolved.push(ResolvedArtifact {
-                url,
-                caption: artifact.caption().to_owned(),
-            });
-        }
-        Ok(resolved)
     }
 
     fn reconcile_forge(&self) -> Result<()> {

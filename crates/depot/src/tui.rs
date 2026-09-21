@@ -14,7 +14,8 @@ use crossterm::{ExecutableCommand, cursor};
 use depotd::adapters::{process::Program, toon::Document};
 use depotd::{
     DepotHome, Error, Project, Role, SessionId, StatusSelection, Store, TaskId, TaskState,
-    Timestamp, role_name, select_project, state_name,
+    Timestamp, UNOBSERVED_AFTER_MILLIS, daemon_scope_covers, needs_daemon, role_name,
+    select_project, state_name,
 };
 
 const REFRESH: Duration = Duration::from_secs(2);
@@ -81,6 +82,7 @@ struct TaskView {
     role: Role,
     title: String,
     started_at: Option<Timestamp>,
+    last_seen_at: Option<Timestamp>,
     steps: Option<u64>,
     question: Option<String>,
     artifacts: Vec<String>,
@@ -96,11 +98,14 @@ impl TaskView {
 
 struct ProjectView {
     slug: String,
+    daemon_scope_covers: bool,
     tasks: Vec<TaskView>,
 }
 
 fn collect(home: &DepotHome, selection: &StatusSelection) -> Result<Vec<ProjectView>, Error> {
     let store = Store::open(home)?;
+    let now = Timestamp::from_millis(unix_millis());
+    let stale_after = home.load_settings()?.poll_interval().saturating_mul(3);
     let projects: Vec<Project> = match selection {
         StatusSelection::All => store.projects()?,
         StatusSelection::Project(name) => vec![select_project(&store, Some(name))?],
@@ -126,6 +131,7 @@ fn collect(home: &DepotHome, selection: &StatusSelection) -> Result<Vec<ProjectV
                         role: task.role,
                         title: task.title.clone(),
                         started_at: attempt.map(|attempt| attempt.started_at),
+                        last_seen_at: attempt.and_then(|attempt| attempt.last_seen_at),
                         steps,
                         question: task
                             .questions
@@ -151,6 +157,7 @@ fn collect(home: &DepotHome, selection: &StatusSelection) -> Result<Vec<ProjectV
             tasks.sort_by_key(|task| task.state != TaskState::WaitingOnQuestion);
             Ok(ProjectView {
                 slug: project.slug,
+                daemon_scope_covers: daemon_scope_covers(home, &project.id, now, stale_after)?,
                 tasks,
             })
         })
@@ -250,6 +257,12 @@ fn frame(
             lines.push(pinned(vec![Segment::Text(String::new())]));
         }
         lines.push(body(vec![Segment::Text(project.slug.clone())]));
+        if !project.daemon_scope_covers && needs_daemon(project.tasks.iter().map(|task| task.state))
+        {
+            lines.push(body(vec![Segment::Dim(
+                "  no daemon is driving this project".to_string(),
+            )]));
+        }
         if project.tasks.is_empty() {
             lines.push(body(vec![Segment::Dim("  no tasks".to_string())]));
         }
@@ -341,9 +354,25 @@ fn stats(task: &TaskView, now: u64) -> String {
         .started_at
         .map(|started| format_elapsed(now.saturating_sub(started.millis())))
         .unwrap_or_else(|| "unknown".to_string());
-    match task.steps {
-        Some(steps) => format!("up {}, {} steps", elapsed, steps),
-        None => format!("up {}", elapsed),
+    let mut parts = vec![format!("up {elapsed}")];
+    if let Some(steps) = task.steps {
+        parts.push(format!("{steps} steps"));
+    }
+    parts.push(observation(task.last_seen_at, now));
+    parts.join(", ")
+}
+
+fn observation(last_seen_at: Option<Timestamp>, now: u64) -> String {
+    match last_seen_at {
+        Some(seen) => {
+            let age = now.saturating_sub(seen.millis());
+            if age > UNOBSERVED_AFTER_MILLIS {
+                format!("unobserved for {}", format_elapsed(age))
+            } else {
+                format!("last seen {}", format_elapsed(age))
+            }
+        }
+        None => "not yet observed".to_string(),
     }
 }
 
@@ -359,17 +388,20 @@ fn format_elapsed(millis: u64) -> String {
 }
 
 fn clock() -> String {
-    let seconds = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let day = seconds % 86400;
+    let day = unix_millis() / 1000 % 86400;
     format!(
         "depot  {:02}:{:02}:{:02} UTC  refresh 2s  h history  q quit",
         day / 3600,
         (day % 3600) / 60,
         day % 60
     )
+}
+
+fn unix_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 fn state_color(state: TaskState) -> Color {
@@ -414,10 +446,7 @@ impl Terminal {
         let (width, height) = size()
             .map(|(width, height)| (width as usize, height as usize))
             .unwrap_or((80, 24));
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
+        let now = unix_millis();
         let lines = frame(projects, tick, now, width.saturating_sub(1), history);
         let pinned: Vec<&Line> = lines.iter().filter(|line| line.pinned).collect();
         let body: Vec<&Line> = lines.iter().filter(|line| !line.pinned).collect();
@@ -504,6 +533,7 @@ mod tests {
             role: Role::Build,
             title: title.to_string(),
             started_at: Some(Timestamp::from_millis(0)),
+            last_seen_at: Some(Timestamp::from_millis(0)),
             steps: None,
             question: None,
             artifacts: Vec::new(),
@@ -513,8 +543,13 @@ mod tests {
     }
 
     fn project_view(tasks: Vec<TaskView>) -> Vec<ProjectView> {
+        covered_project(true, tasks)
+    }
+
+    fn covered_project(daemon_scope_covers: bool, tasks: Vec<TaskView>) -> Vec<ProjectView> {
         vec![ProjectView {
             slug: "depot".to_string(),
+            daemon_scope_covers,
             tasks,
         }]
     }
@@ -559,7 +594,9 @@ mod tests {
         assert!(
             matches!(&lines[4].segments[0], Segment::Text(text) if text == "    Rework the status TUI task layout")
         );
-        assert!(matches!(&lines[5].segments[0], Segment::Dim(text) if text == "    up 2m10s"));
+        assert!(
+            matches!(&lines[5].segments[0], Segment::Dim(text) if text == "    up 2m10s, last seen 2m10s")
+        );
     }
 
     #[test]
@@ -584,8 +621,69 @@ mod tests {
         let projects = project_view(vec![task]);
         let lines = frame(&projects, 0, 130_000, 80, false);
         assert!(
-            matches!(&lines[5].segments[0], Segment::Dim(text) if text == "    up 2m10s, 42 steps")
+            matches!(&lines[5].segments[0], Segment::Dim(text) if text == "    up 2m10s, 42 steps, last seen 2m10s")
         );
+    }
+
+    #[test]
+    fn a_fresh_observation_reports_last_seen_age() {
+        let mut task = view("t-1", "task t-1", TaskState::Running);
+        task.last_seen_at = Some(Timestamp::from_millis(100_000));
+        let lines = frame(&project_view(vec![task]), 0, 130_000, 80, false);
+        assert!(
+            matches!(&lines[5].segments[0], Segment::Dim(text) if text == "    up 2m10s, last seen 30s")
+        );
+    }
+
+    #[test]
+    fn a_stale_observation_reports_unobserved_age() {
+        let mut task = view("t-1", "task t-1", TaskState::Running);
+        task.last_seen_at = Some(Timestamp::from_millis(580_000));
+        let lines = frame(&project_view(vec![task]), 0, 1_000_000, 80, false);
+        assert!(
+            matches!(&lines[5].segments[0], Segment::Dim(text) if text == "    up 16m40s, unobserved for 7m00s")
+        );
+    }
+
+    #[test]
+    fn a_missing_observation_reports_no_age() {
+        let mut task = view("t-1", "task t-1", TaskState::Running);
+        task.last_seen_at = None;
+        let lines = frame(&project_view(vec![task]), 0, 130_000, 80, false);
+        assert!(
+            matches!(&lines[5].segments[0], Segment::Dim(text) if text == "    up 2m10s, not yet observed")
+        );
+    }
+
+    #[test]
+    fn an_uncovered_project_with_open_work_says_no_daemon_drives_it() {
+        let projects = covered_project(false, vec![view("t-1", "task t-1", TaskState::Approved)]);
+        let (_, body) = split(&frame(&projects, 0, 0, 80, false));
+        assert!(
+            body.iter()
+                .any(|line| line == "  no daemon is driving this project")
+        );
+    }
+
+    #[test]
+    fn a_covered_project_with_open_work_stays_quiet() {
+        let projects = covered_project(true, vec![view("t-1", "task t-1", TaskState::Approved)]);
+        let (_, body) = split(&frame(&projects, 0, 0, 80, false));
+        assert!(!body.iter().any(|line| line.contains("no daemon")));
+    }
+
+    #[test]
+    fn an_uncovered_project_without_open_work_stays_quiet() {
+        let projects = covered_project(false, vec![view("t-1", "task t-1", TaskState::Proposed)]);
+        let (_, body) = split(&frame(&projects, 0, 0, 80, false));
+        assert!(!body.iter().any(|line| line.contains("no daemon")));
+    }
+
+    #[test]
+    fn a_selected_uncovered_project_still_warns() {
+        let projects = covered_project(false, vec![view("t-1", "task t-1", TaskState::Running)]);
+        let (_, body) = split(&frame(&projects, 0, 0, 80, false));
+        assert!(body.iter().any(|line| line.contains("no daemon")));
     }
 
     #[test]

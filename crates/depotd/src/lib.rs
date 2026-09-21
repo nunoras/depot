@@ -21,7 +21,9 @@ mod store;
 mod supervisor;
 mod vocabulary;
 
-pub use checklist::{format_timestamp, render_checklist, render_checklist_observed};
+pub use checklist::{
+    UNOBSERVED_AFTER_MILLIS, format_timestamp, render_checklist, render_checklist_observed,
+};
 pub use commands::{
     TaskRequest, acknowledge_task, add_task, answer_question, approve_tasks, ask_question,
     ensure_profiles_resolve, read_inbox, redirect_task, release_task, retry_task, rework_task,
@@ -52,7 +54,8 @@ pub use home::{
 pub use inbox::{InboxEntry, Need, inbox_entries, render_inbox};
 pub use project::{LocationKind, Project};
 pub use projects::{
-    Added, StatusSelection, add_project, render_status, render_status_at, select_project,
+    Added, StatusSelection, add_project, needs_daemon, render_status, render_status_at,
+    select_project,
 };
 pub use settings::{DEFAULT_ON_EVENTS, OnEventSettings, ProfileSettings, Settings};
 pub use store::{Applied, EventOutcome, RecordedEvent, SCHEMA_VERSION, Store, event_key};

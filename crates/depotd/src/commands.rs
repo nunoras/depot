@@ -242,6 +242,38 @@ pub fn retry_task(home: &DepotHome, selection: Option<&str>, id: &str) -> Result
     task(&store, &project, &id)
 }
 
+pub fn rework_task(
+    home: &DepotHome,
+    selection: Option<&str>,
+    id: &str,
+    text: &str,
+) -> Result<Task> {
+    let store = Store::open(home)?;
+    let project = select_project(&store, selection)?;
+    let id = TaskId::new(id);
+    let current = task(&store, &project, &id)?;
+    if current.state != TaskState::PrOpen {
+        return Err(transition_refused(&current, "reworked"));
+    }
+    ensure_role_is_mapped(&store, &project, Role::Fix)?;
+    let fix = store.next_task_id(&project.id)?;
+    let fact = Fact {
+        at: now(),
+        kind: FactKind::TaskReworked {
+            task: id.clone(),
+            fix: fix.clone(),
+            text: text.to_owned(),
+        },
+    };
+    apply(
+        &store,
+        &project,
+        &["task_reworked", id.as_str(), fix.as_str()],
+        &fact,
+    )?;
+    task(&store, &project, &id)
+}
+
 pub fn stop_task(home: &DepotHome, selection: Option<&str>, id: &str) -> Result<Task> {
     let store = Store::open(home)?;
     let project = select_project(&store, selection)?;

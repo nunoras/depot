@@ -145,6 +145,7 @@ fn need_for(tag: FactTag, task: Option<&Task>) -> Need {
         | FactTag::TaskApproved
         | FactTag::TaskCancelled
         | FactTag::TaskRetried
+        | FactTag::TaskReworked
         | FactTag::TaskAcknowledged
         | FactTag::QuestionAnswered
         | FactTag::WorktreeAcquireRequested
@@ -191,6 +192,12 @@ fn headline(tag: FactTag, event: &RecordedEvent, task: Option<&Task>) -> Result<
         FactTag::TaskApproved => "approved".to_string(),
         FactTag::TaskCancelled => "stopped".to_string(),
         FactTag::TaskRetried => "scheduled to run again".to_string(),
+        FactTag::TaskReworked => match task.and_then(|task| task.rework_of.as_ref()) {
+            Some(original) => format!(
+                "a rework was filed as `{original}` to address review findings on the open pull request"
+            ),
+            None => "a rework was filed".to_string(),
+        },
         FactTag::TaskAcknowledged => "acknowledged; it fades from the default status".to_string(),
         FactTag::TaskReleased => "the pull request hold was released".to_string(),
         FactTag::QuestionAsked => match unanswered(task) {

@@ -8,7 +8,7 @@ use crate::vocabulary::{checks_name, role_name};
 
 const UNOBSERVED_AFTER_MILLIS: u64 = 5 * 60 * 1000;
 
-const SECTIONS: [(TaskState, &str, bool); 10] = [
+const SECTIONS: [(TaskState, &str, bool); 11] = [
     (
         TaskState::WaitingOnQuestion,
         "Needs you - waiting on an answer",
@@ -18,6 +18,11 @@ const SECTIONS: [(TaskState, &str, bool); 10] = [
     (TaskState::Validating, "Validating", false),
     (TaskState::Validated, "Validated", false),
     (TaskState::PrOpen, "Pull request open", false),
+    (
+        TaskState::ReworkPending,
+        "Rework pending - pull request held",
+        false,
+    ),
     (TaskState::Approved, "Approved - queued", false),
     (TaskState::Proposed, "Held - awaiting approval", false),
     (TaskState::Landed, "Landed", true),
@@ -157,6 +162,10 @@ fn render_task(
             })
             .collect();
         out.push_str(&format!("  - depends on: {}\n", dependencies.join(", ")));
+    }
+
+    if let Some(original) = &task.rework_of {
+        out.push_str(&format!("  - rework of: `{original}`\n"));
     }
 
     if let Some((number, url, checks)) = task.pull_request() {
@@ -318,6 +327,7 @@ fn waiting_on(state: &ProjectState, task: &Task) -> String {
             Some((number, _, _)) => format!("checks on pull request #{number}"),
             None => "a pull request".to_string(),
         },
+        TaskState::ReworkPending => "the rework to land on the pull request".to_string(),
         TaskState::Landed => "nothing".to_string(),
         TaskState::Failed => "a person".to_string(),
         TaskState::Cancelled => "nothing".to_string(),

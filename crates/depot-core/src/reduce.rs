@@ -54,6 +54,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                         redirect_text: None,
                         redirect_delivered: false,
                         acknowledged_at: None,
+                        rework_of: None,
                         hold_pr: *hold_pr,
                         retry: None,
                         created_at: fact.at,
@@ -146,6 +147,72 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                 task.updated_at = fact.at;
                 changed = true;
                 approved.push(task.id.clone());
+            }
+        }
+
+        FactKind::TaskReworked { task, fix, text } => {
+            let fix_profile = next.profiles.get(&Role::Fix).cloned();
+            let accepted = next.tasks.get(task).is_some_and(|original| {
+                original.state == TaskState::PrOpen
+                    && !next.tasks.contains_key(fix)
+                    && fix_profile.is_some()
+            });
+            if accepted && let Some(original) = next.tasks.get_mut(task) {
+                let fix_profile = fix_profile.expect("fix profile checked");
+                let stopped = close_attempt(original, AttemptOutcome::Stopped, fact.at);
+                original.state = TaskState::ReworkPending;
+                original.updated_at = fact.at;
+                let lease = take_last_worktree(original);
+                let links = original.links.clone();
+                let title = format!("rework of {}: {}", task.as_str(), original.title);
+                let project = original.project.clone();
+                next.tasks.insert(
+                    fix.clone(),
+                    Task {
+                        id: fix.clone(),
+                        project,
+                        title,
+                        intent: text.clone(),
+                        role: Role::Fix,
+                        dispatch_profile: Some(fix_profile.clone()),
+                        state: TaskState::Running,
+                        dependencies: Vec::new(),
+                        base_dependency: None,
+                        attempts: vec![Attempt {
+                            session: None,
+                            profile: fix_profile.clone(),
+                            worktree: lease,
+                            started_at: fact.at,
+                            finished_at: None,
+                            outcome: AttemptOutcome::InFlight,
+                            rebase: false,
+                            last_seen_at: None,
+                        }],
+                        questions: Vec::new(),
+                        validations: Vec::new(),
+                        submission: None,
+                        artifacts: Vec::new(),
+                        links,
+                        branch_head: None,
+                        merge_refused: None,
+                        redirect_text: None,
+                        redirect_delivered: false,
+                        acknowledged_at: None,
+                        rework_of: Some(task.clone()),
+                        hold_pr: false,
+                        retry: None,
+                        created_at: fact.at,
+                        updated_at: fact.at,
+                    },
+                );
+                changed = true;
+                if stopped {
+                    actions.push(Action::StopSession { task: task.clone() });
+                }
+                actions.push(Action::LaunchSession {
+                    task: fix.clone(),
+                    profile: fix_profile,
+                });
             }
         }
 
@@ -669,18 +736,20 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                 let stopped = close_attempt(task, AttemptOutcome::Submitted, fact.at);
                 task.state = TaskState::Landed;
                 task.updated_at = fact.at;
-                changed = true;
                 if stopped {
                     actions.push(Action::StopSession {
                         task: task.id.clone(),
                     });
                 }
+                let fix_id = task.id.clone();
                 if let Some(lease) = take_last_worktree(task) {
                     actions.push(Action::ReleaseWorktree {
                         task: task.id.clone(),
                         lease,
                     });
                 }
+                close_rework_originals(&mut next, &fix_id, TaskState::Landed, fact.at);
+                changed = true;
             }
         }
 
@@ -699,9 +768,11 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                         task: task.id.clone(),
                     });
                 }
+                let fix_id = task.id.clone();
                 actions.push(Action::HoldForUser {
                     task: task.id.clone(),
                 });
+                close_rework_originals(&mut next, &fix_id, TaskState::Cancelled, fact.at);
             }
         }
 
@@ -982,7 +1053,6 @@ fn relaunch(task: &mut Task, at: Timestamp, actions: &mut Vec<Action>) -> bool {
     };
     let lease = take_last_worktree(task);
     task.attempts.push(Attempt {
-        last_seen_at: None,
         session: None,
         profile: profile.clone(),
         worktree: lease,
@@ -999,6 +1069,19 @@ fn relaunch(task: &mut Task, at: Timestamp, actions: &mut Vec<Action>) -> bool {
         profile,
     });
     true
+}
+
+fn close_rework_originals(state: &mut ProjectState, fix: &TaskId, end: TaskState, at: Timestamp) {
+    let original = state.tasks.get(fix).and_then(|fix| fix.rework_of.clone());
+    let Some(original) = original else {
+        return;
+    };
+    if let Some(task) = state.tasks.get_mut(&original)
+        && task.state == TaskState::ReworkPending
+    {
+        task.state = end;
+        task.updated_at = at;
+    }
 }
 
 fn close_attempt(task: &mut Task, outcome: AttemptOutcome, at: Timestamp) -> bool {

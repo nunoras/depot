@@ -30,7 +30,7 @@ fn run() -> depotd::Result<()> {
     let filter = arguments()?;
     let home = DepotHome::resolve()?;
     let lock = InstanceLock::acquire(&home)?;
-    let store = Store::open(&home)?;
+    let store = Store::open_migrating(&home)?;
     let projects = match filter {
         Some(names) => {
             let mut projects = Vec::new();

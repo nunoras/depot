@@ -5,9 +5,9 @@ mod tui;
 
 use depotd::{
     DepotHome, Error, StatusSelection, TaskRequest, acknowledge_task, add_artifact, add_project,
-    add_task, answer_question, approve_tasks, ask_question, read_inbox, redirect_task,
-    release_task, render_projects, render_status, restart_daemon, retry_task, rework_task,
-    stop_task, submit_task, wait_for_task, write_narrative,
+    add_task, answer_question, approve_tasks, ask_question, migrate_store, read_inbox,
+    redirect_task, release_task, render_projects, render_status, restart_daemon, retry_task,
+    rework_task, stop_task, submit_task, wait_for_task, write_narrative,
 };
 
 const USAGE: &str = "\
@@ -35,6 +35,7 @@ USAGE
   depot submit --task <task-id> --project <name>
   depot inbox [--project <name>]
   depot artifact add <file>
+  depot store migrate
   depot doc write <name> --content <text|-> [--project <name>]
   depot --version
 
@@ -126,6 +127,10 @@ fn dispatch(arguments: &[String]) -> Result<String, Failure> {
         Some("artifact") => {
             require_coordinator()?;
             artifact_command(&arguments[1..])
+        }
+        Some("store") => {
+            require_coordinator()?;
+            store_command(&arguments[1..])
         }
         Some("daemon") => {
             require_coordinator()?;
@@ -633,6 +638,31 @@ fn read_stdin() -> Result<String, Failure> {
         .read_to_string(&mut text)
         .map_err(|error| Failure::Failed(Error::Io(error)))?;
     Ok(text)
+}
+
+fn store_command(arguments: &[String]) -> Result<String, Failure> {
+    match arguments.first().map(String::as_str) {
+        Some("migrate") => store_migrate(&arguments[1..]),
+        Some(other) => Err(Failure::Usage(format!("unknown store command `{other}`"))),
+        None => Err(Failure::Usage(
+            "`depot store` needs a subcommand: try `depot store migrate`".to_string(),
+        )),
+    }
+}
+
+fn store_migrate(arguments: &[String]) -> Result<String, Failure> {
+    let flags = Flags::parse(arguments, &[])?;
+    flags.reject_unknown(&[])?;
+    flags.reject_positionals()?;
+    let home = DepotHome::resolve()?;
+    let migration = migrate_store(&home)?;
+    if migration.from == migration.to {
+        return Ok(format!("store is already at schema {}\n", migration.to));
+    }
+    Ok(format!(
+        "migrated the store from schema {} to schema {}\n",
+        migration.from, migration.to
+    ))
 }
 
 struct Flags {

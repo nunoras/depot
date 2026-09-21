@@ -247,6 +247,22 @@ Restart the daemon in place, keeping the projects it covers:
 depot daemon restart
 ```
 
+## Upgrade the store schema
+
+Only the daemon migrates the store. A client command that finds an older store refuses it, names both schema versions, and points at the upgrade path. To move the store forward, restart the daemon:
+
+```
+depot daemon restart
+```
+
+The new daemon migrates the store when it opens. If no daemon is running, run the migrate command as the coordinator:
+
+```
+depot store migrate
+```
+
+`depot store migrate` takes the daemon lock, so it refuses while a daemon holds it and names the pid to stop or restart.
+
 ## Limitations
 
 - depot requires [boxr](https://github.com/nunoras/boxr) for session launches and [treehouse](https://github.com/kunchenguid/treehouse) for worktree pooling. Both must be installed and on `PATH`.
@@ -257,7 +273,7 @@ depot daemon restart
 - Rebase on conflict is limited to one attempt per task and requires a fix profile.
 - There is no web dashboard. The checklist is a rendered Markdown file in the project home.
 - Automatic merge is opt-in: `merge = "manual"` (default), `"after_checks"` or `"after_review"`. `pull_request.auto_merge` is deprecated and maps to `"after_checks"` when true.
-- depot is in active development. The store schema migrates forward but the CLI surface may change.
+- depot is in active development. A client command refuses a store its build does not match; only the daemon and `depot store migrate` move it forward. The CLI surface may change.
 
 ## References
 
@@ -276,4 +292,4 @@ Apache-2.0. See [LICENSE](LICENSE).
 
 ## Status
 
-depot is in active development. It runs real projects on a single machine today. The store schema migrates forward automatically, but the CLI surface and configuration format may change between versions.
+depot is in active development. It runs real projects on a single machine today. Only the daemon and `depot store migrate` move the store schema forward; a client command refuses an older store. The CLI surface and configuration format may change between versions.

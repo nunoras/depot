@@ -71,6 +71,9 @@ pub use restart::{
 pub use settings::{
     ArtifactsSettings, DEFAULT_ON_EVENTS, OnEventSettings, ProfileSettings, Settings,
 };
-pub use store::{Applied, EventOutcome, RecordedEvent, SCHEMA_VERSION, Store, event_key};
+pub use store::{
+    Applied, EventOutcome, Migration, RecordedEvent, SCHEMA_VERSION, Store, event_key,
+    migrate_store,
+};
 pub use supervisor::Supervisor;
 pub use vocabulary::{ROLE_NAMES, role_from_name, role_name, state_name};

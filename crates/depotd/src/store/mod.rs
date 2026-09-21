@@ -42,6 +42,23 @@ pub struct Store {
 
 impl Store {
     pub fn open(home: &DepotHome) -> Result<Self> {
+        let existed = home.database_path().exists();
+        let store = Self::connect(home)?;
+        if existed {
+            migrations::check(store.connection())?;
+        } else {
+            migrations::migrate(store.connection())?;
+        }
+        Ok(store)
+    }
+
+    pub fn open_migrating(home: &DepotHome) -> Result<Self> {
+        let store = Self::connect(home)?;
+        migrations::migrate(store.connection())?;
+        Ok(store)
+    }
+
+    fn connect(home: &DepotHome) -> Result<Self> {
         home.ensure()?;
         let connection = Connection::open(home.database_path())?;
         connection.busy_timeout(BUSY_TIMEOUT)?;
@@ -49,7 +66,6 @@ impl Store {
         connection.query_row("PRAGMA journal_mode = WAL", [], |row| {
             row.get::<_, String>(0)
         })?;
-        migrations::migrate(&connection)?;
         Ok(Self {
             connection,
             home: home.clone(),
@@ -247,6 +263,23 @@ impl Store {
             None => Ok(None),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Migration {
+    pub from: i64,
+    pub to: i64,
+}
+
+pub fn migrate_store(home: &DepotHome) -> Result<Migration> {
+    let _lock = crate::daemon::InstanceLock::acquire(home)?;
+    let store = Store::connect(home)?;
+    let from = migrations::current(store.connection())?;
+    migrations::migrate(store.connection())?;
+    Ok(Migration {
+        from,
+        to: SCHEMA_VERSION,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -189,10 +189,10 @@ fn render_task(
         out.push_str(&format!("  - auto-merge refused: {}\n", one_line(reason)));
     }
 
-    if let Some(reason) = &task.release_held {
+    for (lease, hold) in &task.release_held {
         out.push_str(&format!(
-            "  - worktree lease held, not returned: {}\n",
-            one_line(reason)
+            "  - worktree lease `{lease}` held, not returned: {}\n",
+            one_line(&hold.reason)
         ));
     }
 

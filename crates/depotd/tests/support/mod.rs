@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use depot_core::{
     Answer, AnsweredBy, Artifact, ArtifactKind, Attempt, AttemptOutcome, Checks, CommitId,
-    Dependency, Limits, Link, ProfileId, ProjectId, ProjectState, Question, Retry, Role, SessionId,
-    Task, TaskId, TaskState, Timestamp, ValidationRecord, WorktreeLease,
+    Dependency, Limits, Link, ProfileId, ProjectId, ProjectState, Question, ReleaseHold, Retry,
+    Role, SessionId, Task, TaskId, TaskState, Timestamp, ValidationRecord, WorktreeLease,
 };
 use depotd::{Added, DepotHome, ProfileSettings, Settings, add_project};
 use tempfile::TempDir;
@@ -102,30 +102,10 @@ pub fn simple_task(project: &ProjectId, id: &str, state: TaskState, created_at: 
         title: format!("task {id}"),
         intent: format!("intent for {id}"),
         role: Role::Build,
-        dispatch_profile: None,
         state,
-        dependencies: Vec::new(),
-        base_dependency: None,
-        attempts: Vec::new(),
-        questions: Vec::new(),
-        validations: Vec::new(),
-        submission: None,
-        artifacts: Vec::new(),
-        links: Vec::new(),
-        branch_head: None,
-        merge_refused: None,
-        conflict_base: None,
-        failure: None,
-        redirect_text: None,
-        redirect_delivered: false,
-        acknowledged_at: None,
-        hold_pr: false,
-        release_pending: None,
-        release_held: None,
-        rework_of: None,
-        retry: None,
         created_at: Timestamp::from_millis(created_at),
         updated_at: Timestamp::from_millis(created_at),
+        ..Task::default()
     }
 }
 
@@ -222,21 +202,21 @@ pub fn full_task(project: &ProjectId, id: &str) -> Task {
         ],
         branch_head: Some(CommitId::new("ccc333")),
         merge_refused: Some("the forge refused the merge".to_string()),
-        conflict_base: None,
-        failure: None,
-        redirect_text: None,
-        redirect_delivered: false,
-        acknowledged_at: None,
-        hold_pr: false,
-        release_pending: None,
-        release_held: None,
-        rework_of: None,
+        release_pending: vec![WorktreeLease::new("lease-3"), WorktreeLease::new("lease-4")],
+        release_held: BTreeMap::from([(
+            WorktreeLease::new("lease-3"),
+            ReleaseHold {
+                reason: "holds 1 uncommitted path".to_string(),
+                at: Timestamp::from_millis(1_700_000_030_000),
+            },
+        )]),
         retry: Some(Retry {
             profile: ProfileId::new("sonnet"),
             not_before: Timestamp::from_millis(1_700_000_120_000),
         }),
         created_at: Timestamp::from_millis(1_699_999_000_000),
         updated_at: Timestamp::from_millis(1_700_000_060_000),
+        ..Task::default()
     }
 }
 

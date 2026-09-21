@@ -826,18 +826,10 @@ pub fn validated_task(
         links: Vec::new(),
         branch_head: None,
         merge_refused: None,
-        conflict_base: None,
-        failure: None,
-        redirect_text: None,
-        redirect_delivered: false,
-        acknowledged_at: None,
-        rework_of: None,
-        hold_pr: false,
-        release_pending: None,
-        release_held: None,
         retry: None,
         created_at: depot_core::Timestamp::from_millis(0),
         updated_at: depot_core::Timestamp::from_millis(1),
+        ..Task::default()
     }
 }
 

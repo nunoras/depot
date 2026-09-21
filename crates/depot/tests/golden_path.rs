@@ -1555,7 +1555,7 @@ fn stopping_a_running_task_returns_its_worktree_once() {
     golden.depot_ok(&["task", "stop", TASK, "--project", SLUG]);
     let stopped = golden.task();
     assert_eq!(stopped.state, TaskState::Cancelled);
-    assert_eq!(stopped.release_pending, Some(WorktreeLease::new(LEASE)));
+    assert_eq!(stopped.release_pending, vec![WorktreeLease::new(LEASE)]);
     assert!(
         calls_to(&golden.treehouse.calls(), "return").is_empty(),
         "the CLI writes the fact and executes no action"
@@ -1570,7 +1570,7 @@ fn stopping_a_running_task_returns_its_worktree_once() {
         1,
         "stopping the task returns its worktree once"
     );
-    assert_eq!(golden.task().release_pending, None);
+    assert!(golden.task().release_pending.is_empty());
 
     daemon.tick().expect("a second tick returns nothing more");
     assert_eq!(
@@ -1597,7 +1597,7 @@ fn acknowledging_a_failed_task_returns_its_worktree_once() {
 
     let failed = golden.task();
     assert_eq!(failed.state, TaskState::Failed);
-    assert_eq!(failed.release_pending, None);
+    assert!(failed.release_pending.is_empty());
     assert!(
         calls_to(&golden.treehouse.calls(), "return").is_empty(),
         "a failed task keeps its lease until it is acknowledged or retried"
@@ -1616,7 +1616,7 @@ fn acknowledging_a_failed_task_returns_its_worktree_once() {
         1,
         "acknowledging the failure returns its worktree once"
     );
-    assert_eq!(golden.task().release_pending, None);
+    assert!(golden.task().release_pending.is_empty());
 
     daemon.tick().expect("a second tick returns nothing more");
     assert_eq!(
@@ -1637,7 +1637,7 @@ fn the_startup_sweep_returns_a_lease_a_terminal_task_left_behind() {
     assert_eq!(golden.task().state, TaskState::Cancelled);
     assert_eq!(
         golden.task().release_pending,
-        Some(WorktreeLease::new(LEASE))
+        vec![WorktreeLease::new(LEASE)]
     );
     assert!(
         calls_to(&golden.treehouse.calls(), "return").is_empty(),
@@ -1654,7 +1654,68 @@ fn the_startup_sweep_returns_a_lease_a_terminal_task_left_behind() {
         1,
         "the sweep returns the lease the terminal task left behind"
     );
-    assert_eq!(golden.task().release_pending, None);
+    assert!(golden.task().release_pending.is_empty());
+}
+
+#[test]
+fn the_startup_sweep_returns_a_lease_the_records_do_not_name() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+
+    golden.depot_ok(&["task", "stop", TASK, "--project", SLUG]);
+    let mut pre_upgrade = golden.task();
+    pre_upgrade.release_pending.clear();
+    pre_upgrade.release_held.clear();
+    for attempt in &mut pre_upgrade.attempts {
+        attempt.worktree = None;
+    }
+    golden
+        .store
+        .put_task(&pre_upgrade)
+        .expect("the pre-upgrade record is written");
+    assert!(calls_to(&golden.treehouse.calls(), "return").is_empty());
+
+    golden
+        .daemon()
+        .recover()
+        .expect("the startup sweep reads the pool");
+
+    assert_eq!(
+        calls_to(&golden.treehouse.calls(), "return").len(),
+        1,
+        "the pool names the lease the records forgot"
+    );
+    assert!(golden.task().release_pending.is_empty());
+}
+
+#[test]
+fn a_pending_acquire_that_takes_the_owed_lease_back_does_not_return_it() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+
+    golden.depot_ok(&["task", "stop", TASK, "--project", SLUG]);
+    golden.depot_ok(&["task", "retry", TASK, "--project", SLUG]);
+    golden.reject_worktree_acquire();
+    assert!(
+        daemon.tick().is_err(),
+        "a saturated pool aborts the tick before the release pass"
+    );
+
+    golden.allow_worktree_acquire();
+    daemon
+        .tick()
+        .expect("the pending acquire is completed from the pool");
+
+    assert!(
+        calls_to(&golden.treehouse.calls(), "return").is_empty(),
+        "the lease a live attempt works in is never returned"
+    );
+    assert!(golden.task().release_pending.is_empty());
+    assert_eq!(golden.task().state, TaskState::Running);
 }
 
 #[test]
@@ -1677,18 +1738,18 @@ fn a_lease_holding_unlanded_work_is_held_and_named_in_the_checklist() {
     );
     let held = golden.task();
     assert_eq!(held.state, TaskState::Cancelled);
-    assert_eq!(held.release_pending, Some(WorktreeLease::new(LEASE)));
+    assert_eq!(held.release_pending, vec![WorktreeLease::new(LEASE)]);
     assert!(
         held.release_held
-            .as_deref()
-            .is_some_and(|reason| reason.contains("uncommitted")),
+            .get(&WorktreeLease::new(LEASE))
+            .is_some_and(|hold| hold.reason.contains("uncommitted")),
         "the hold names the reason: {:?}",
         held.release_held
     );
 
     let history = golden.status_history();
     assert!(
-        history.contains("worktree lease held, not returned"),
+        history.contains("worktree lease `") && history.contains("held, not returned"),
         "{history}"
     );
     let inbox = golden.depot_ok(&["inbox", "--project", SLUG]);

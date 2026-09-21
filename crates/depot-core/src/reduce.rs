@@ -5,8 +5,8 @@ use crate::action::{Action, Baseline};
 use crate::fact::{Fact, FactKind, Liveness};
 use crate::model::{
     Answer, Attempt, AttemptOutcome, Checks, CommitId, CoordinatorSession, Dependency, Limits,
-    Link, MergePolicy, ProfileId, ProjectState, Question, Retry, Role, Submission, Task, TaskId,
-    TaskState, Timestamp, ValidationRecord, WorktreeLease,
+    Link, MergePolicy, ProfileId, ProjectState, Question, ReleaseHold, Retry, Role, Submission,
+    Task, TaskId, TaskState, Timestamp, ValidationRecord, WorktreeLease,
 };
 
 pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) {
@@ -58,8 +58,8 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                         acknowledged_at: None,
                         rework_of: None,
                         hold_pr: *hold_pr,
-                        release_pending: None,
-                        release_held: None,
+                        release_pending: Vec::new(),
+                        release_held: BTreeMap::new(),
                         retry: None,
                         created_at: fact.at,
                         updated_at: fact.at,
@@ -209,8 +209,8 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                         acknowledged_at: None,
                         rework_of: Some(task.clone()),
                         hold_pr: false,
-                        release_pending: None,
-                        release_held: None,
+                        release_pending: Vec::new(),
+                        release_held: BTreeMap::new(),
                         retry: None,
                         created_at: fact.at,
                         updated_at: fact.at,
@@ -561,6 +561,14 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             baseline,
             included,
         } => {
+            if let Some(task) = next.tasks.get_mut(task)
+                && let Some(index) = task.release_pending.iter().position(|owed| owed == lease)
+            {
+                task.release_pending.remove(index);
+                task.release_held.remove(lease);
+                task.updated_at = fact.at;
+                changed = true;
+            }
             let live = next.tasks.get(task).is_some_and(|task| {
                 task.attempts
                     .last()
@@ -834,13 +842,16 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
         }
 
         FactKind::WorktreeReleased { task, lease } => {
-            if let Some(task) = next.tasks.get_mut(task)
-                && task.release_pending.as_ref() == Some(lease)
-            {
-                task.release_pending = None;
-                task.release_held = None;
-                task.updated_at = fact.at;
-                changed = true;
+            if let Some(task) = next.tasks.get_mut(task) {
+                let owed = task.release_pending.iter().position(|owed| owed == lease);
+                let held = task.release_held.remove(lease).is_some();
+                if let Some(index) = owed {
+                    task.release_pending.remove(index);
+                }
+                if owed.is_some() || held {
+                    task.updated_at = fact.at;
+                    changed = true;
+                }
             }
         }
 
@@ -849,11 +860,17 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             lease,
             reason,
         } => {
-            if let Some(task) = next.tasks.get_mut(task)
-                && task.release_pending.as_ref() == Some(lease)
-                && task.release_held.as_deref() != Some(reason.as_str())
-            {
-                task.release_held = Some(reason.clone());
+            if let Some(task) = next.tasks.get_mut(task) {
+                if !task.release_pending.contains(lease) {
+                    task.release_pending.push(lease.clone());
+                }
+                task.release_held.insert(
+                    lease.clone(),
+                    ReleaseHold {
+                        reason: reason.clone(),
+                        at: fact.at,
+                    },
+                );
                 task.updated_at = fact.at;
                 changed = true;
             }
@@ -1250,11 +1267,10 @@ fn take_last_worktree(task: &mut Task) -> Option<WorktreeLease> {
 }
 
 fn owe_release(task: &mut Task) -> Option<WorktreeLease> {
-    if task.release_pending.is_some() {
-        return None;
-    }
     let lease = take_last_worktree(task)?;
-    task.release_pending = Some(lease.clone());
+    if !task.release_pending.contains(&lease) {
+        task.release_pending.push(lease.clone());
+    }
     Some(lease)
 }
 

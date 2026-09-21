@@ -16,7 +16,7 @@ pub use fact::{Fact, FactKind, Liveness};
 pub use model::{
     Answer, AnsweredBy, Artifact, ArtifactKind, Attempt, AttemptOutcome, Checks, CommitId,
     CoordinatorSession, Dependency, Limits, Link, MergePolicy, ProfileId, ProjectId, ProjectState,
-    Question, Retry, Role, SessionId, Submission, Task, TaskId, TaskState, Timestamp,
+    Question, ReleaseHold, Retry, Role, SessionId, Submission, Task, TaskId, TaskState, Timestamp,
     ValidationRecord, WorktreeLease,
 };
 pub use reduce::{

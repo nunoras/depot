@@ -56,31 +56,10 @@ fn task(id: &str, state: TaskState) -> Task {
         project: ProjectId::from("depot"),
         title: format!("task {id}"),
         intent: format!("intent for {id}"),
-        role: Role::Build,
-        dispatch_profile: None,
         state,
-        dependencies: Vec::new(),
-        base_dependency: None,
-        attempts: Vec::new(),
-        questions: Vec::new(),
-        validations: Vec::new(),
-        submission: None,
-        artifacts: Vec::new(),
-        links: Vec::new(),
-        branch_head: None,
-        merge_refused: None,
-        conflict_base: None,
-        failure: None,
-        redirect_text: None,
-        redirect_delivered: false,
-        acknowledged_at: None,
-        rework_of: None,
-        hold_pr: false,
-        release_pending: None,
-        release_held: None,
-        retry: None,
         created_at: at(0),
         updated_at: at(0),
+        ..Task::default()
     }
 }
 
@@ -1289,7 +1268,7 @@ fn rule_11_a_landed_task_releases_its_worktree_and_renders() {
                     .attempts
                     .last()
                     .is_some_and(|attempt| attempt.worktree.is_none())
-                && subject(state, "t1").release_pending == Some(lease("w1"))
+                && subject(state, "t1").release_pending == vec![lease("w1")]
         }),
         case(
             "a closed pull request holds the task instead of landing it",
@@ -1350,7 +1329,7 @@ fn terminal_states_return_their_worktree_lease_exactly_once() {
                 Action::RenderChecklist,
             ],
         )
-        .checking(|state| subject(state, "t1").release_pending == Some(lease("w1"))),
+        .checking(|state| subject(state, "t1").release_pending == vec![lease("w1")]),
         case(
             "a failed task keeps its lease for the retry",
             state(vec![running_with_lease("t1", "w1")]),
@@ -1367,7 +1346,7 @@ fn terminal_states_return_their_worktree_lease_exactly_once() {
             vec![hold("t1"), Action::RenderChecklist],
         )
         .checking(|state| {
-            subject(state, "t1").release_pending.is_none()
+            subject(state, "t1").release_pending.is_empty()
                 && subject(state, "t1")
                     .attempts
                     .last()
@@ -1388,7 +1367,7 @@ fn terminal_states_return_their_worktree_lease_exactly_once() {
             TaskState::Failed,
             vec![release("t1", "w1"), Action::RenderChecklist],
         )
-        .checking(|state| subject(state, "t1").release_pending == Some(lease("w1"))),
+        .checking(|state| subject(state, "t1").release_pending == vec![lease("w1")]),
         case(
             "a confirmed return clears the pending marker and repeats nothing",
             state(vec![failed_with_lease("t1", "w1")]),
@@ -1410,8 +1389,8 @@ fn terminal_states_return_their_worktree_lease_exactly_once() {
         )
         .when("t1", TaskState::Failed, vec![Action::RenderChecklist])
         .checking(|state| {
-            subject(state, "t1").release_pending.is_none()
-                && subject(state, "t1").release_held.is_none()
+            subject(state, "t1").release_pending.is_empty()
+                && subject(state, "t1").release_held.is_empty()
         }),
         case(
             "a refused return records the reason and keeps the lease owed",
@@ -1435,9 +1414,108 @@ fn terminal_states_return_their_worktree_lease_exactly_once() {
         )
         .when("t1", TaskState::Failed, vec![Action::RenderChecklist])
         .checking(|state| {
-            subject(state, "t1").release_pending == Some(lease("w1"))
-                && subject(state, "t1").release_held.as_deref()
-                    == Some("the lease holds uncommitted work")
+            subject(state, "t1").release_pending == vec![lease("w1")]
+                && subject(state, "t1")
+                    .release_held
+                    .get(&lease("w1"))
+                    .is_some_and(|held| held.reason == "the lease holds uncommitted work")
+        }),
+    ]);
+}
+
+#[test]
+fn a_held_release_does_not_swallow_the_next_lease() {
+    fn cancelled_owing(id: &str, lease_id: &str) -> Task {
+        let mut task = with_attempts(task(id, TaskState::Cancelled), 1);
+        task.release_pending.push(lease(lease_id));
+        task
+    }
+
+    run(vec![
+        case(
+            "a second lease is owed while the first is still held",
+            state(vec![running_with_lease("t1", "w1")]),
+            vec![
+                fact(
+                    1_000,
+                    FactKind::TaskCancelled {
+                        task: task_id("t1"),
+                    },
+                ),
+                fact(
+                    1_100,
+                    FactKind::WorktreeReleaseHeld {
+                        task: task_id("t1"),
+                        lease: lease("w1"),
+                        reason: "the lease holds uncommitted work".to_owned(),
+                    },
+                ),
+                fact(
+                    1_200,
+                    FactKind::TaskRetried {
+                        task: task_id("t1"),
+                    },
+                ),
+                fact(
+                    1_300,
+                    FactKind::WorktreeAcquired {
+                        task: task_id("t1"),
+                        lease: lease("w2"),
+                        baseline: Baseline::DefaultBranchHead,
+                        included: Vec::new(),
+                    },
+                ),
+                fact(
+                    1_400,
+                    FactKind::TaskCancelled {
+                        task: task_id("t1"),
+                    },
+                ),
+            ],
+        )
+        .when(
+            "t1",
+            TaskState::Cancelled,
+            vec![
+                Action::StopSession {
+                    task: task_id("t1"),
+                },
+                release("t1", "w2"),
+                Action::RenderChecklist,
+            ],
+        )
+        .checking(|state| {
+            subject(state, "t1").release_pending == vec![lease("w1"), lease("w2")]
+                && subject(state, "t1").release_held.contains_key(&lease("w1"))
+        }),
+        case(
+            "a retry that takes the owed lease back stops owing it",
+            state(vec![cancelled_owing("t1", "w1")]),
+            vec![
+                fact(
+                    2_000,
+                    FactKind::TaskRetried {
+                        task: task_id("t1"),
+                    },
+                ),
+                fact(
+                    2_100,
+                    FactKind::WorktreeAcquired {
+                        task: task_id("t1"),
+                        lease: lease("w1"),
+                        baseline: Baseline::DefaultBranchHead,
+                        included: Vec::new(),
+                    },
+                ),
+            ],
+        )
+        .when("t1", TaskState::Running, vec![Action::RenderChecklist])
+        .checking(|state| {
+            subject(state, "t1").release_pending.is_empty()
+                && subject(state, "t1")
+                    .attempts
+                    .last()
+                    .is_some_and(|attempt| attempt.worktree == Some(lease("w1")))
         }),
     ]);
 }

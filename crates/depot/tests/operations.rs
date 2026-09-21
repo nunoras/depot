@@ -104,12 +104,7 @@ fn stored(cli: &Cli, id: &str, state: TaskState, question: Option<&str>) {
         project: project.id.clone(),
         title: format!("task {id}"),
         intent: format!("intent for {id}"),
-        role: depot_core::Role::Build,
-        dispatch_profile: None,
         state,
-        dependencies: Vec::new(),
-        base_dependency: None,
-        attempts: Vec::new(),
         questions: question
             .map(|text| {
                 vec![Question {
@@ -119,24 +114,9 @@ fn stored(cli: &Cli, id: &str, state: TaskState, question: Option<&str>) {
                 }]
             })
             .unwrap_or_default(),
-        validations: Vec::new(),
-        submission: None,
-        artifacts: Vec::new(),
-        links: Vec::new(),
-        branch_head: None,
-        merge_refused: None,
-        conflict_base: None,
-        failure: None,
-        redirect_text: None,
-        redirect_delivered: false,
-        acknowledged_at: None,
-        hold_pr: false,
-        release_pending: None,
-        release_held: None,
-        rework_of: None,
-        retry: None,
         created_at: Timestamp::from_millis(1),
         updated_at: Timestamp::from_millis(1),
+        ..Task::default()
     };
     store.put_task(&task).expect("the task is stored");
 }

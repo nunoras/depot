@@ -4059,7 +4059,7 @@ fn rule_19_a_rework_holds_an_open_pull_request_until_the_fix_lands() {
     let with_fix_role = |tasks: Vec<Task>| {
         let mut state = state(tasks);
         state.profiles.insert(Role::Fix, fix_profile.clone());
-        state.auto_merge = true;
+        state.merge_policy = MergePolicy::AfterChecks;
         state
     };
     let reworked = |millis: u64| {

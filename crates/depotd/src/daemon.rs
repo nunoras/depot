@@ -560,6 +560,16 @@ where
     }
 
     pub fn worker_liveness(&self, task: TaskId, liveness: depot_core::Liveness) -> Result<()> {
+        if self.store.last_liveness(&self.project.id, &task)? == Some(liveness) {
+            let resolves_unknown = self
+                .store
+                .task(&self.project.id, &task)?
+                .and_then(|task| task.attempts.last().map(|attempt| attempt.outcome))
+                .is_some_and(|outcome| outcome == depot_core::AttemptOutcome::Unknown);
+            if !resolves_unknown {
+                return Ok(());
+            }
+        }
         let at = now();
         self.record(
             &event_key(&[

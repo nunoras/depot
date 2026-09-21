@@ -97,6 +97,10 @@ fn settings(publish: Option<&str>) -> String {
 }
 
 fn stored(cli: &Cli, id: &str, state: TaskState, question: Option<&str>) {
+    stored_with(cli, id, state, question, false);
+}
+
+fn stored_with(cli: &Cli, id: &str, state: TaskState, question: Option<&str>, hold_pr: bool) {
     let store = cli.store();
     let project = store.projects().expect("projects").remove(0);
     let task = Task {
@@ -116,6 +120,7 @@ fn stored(cli: &Cli, id: &str, state: TaskState, question: Option<&str>) {
             .unwrap_or_default(),
         created_at: Timestamp::from_millis(1),
         updated_at: Timestamp::from_millis(1),
+        hold_pr,
         ..Task::default()
     };
     store.put_task(&task).expect("the task is stored");
@@ -377,4 +382,63 @@ fn a_qualified_task_id_works_from_any_directory() {
         "t-1 cancelled\n",
         "a qualified id resolves outside the repository"
     );
+}
+
+#[test]
+fn every_task_subcommand_parses_a_qualified_and_a_bare_task_id() {
+    let cases: &[(&[&str], TaskState, bool, &str)] = &[
+        (
+            &["approve", "ID"],
+            TaskState::Proposed,
+            false,
+            "approved t-1\n",
+        ),
+        (&["stop", "ID"], TaskState::Running, false, "stopped t-1\n"),
+        (&["retry", "ID"], TaskState::Failed, false, "retried t-1\n"),
+        (
+            &["redirect", "ID", "--text", "narrow it", "--queue"],
+            TaskState::Running,
+            false,
+            "queued, not yet delivered\n",
+        ),
+        (
+            &["rework", "ID", "--text", "the tests are missing"],
+            TaskState::PrOpen,
+            false,
+            "rework filed against t-1\n",
+        ),
+        (
+            &["release", "ID"],
+            TaskState::Validated,
+            true,
+            "released t-1\n",
+        ),
+    ];
+
+    for (suffix, state, hold_pr, expected) in cases {
+        for id in ["t-1", "example/t-1"] {
+            let cli = Cli::new(&settings(None));
+            std::fs::write(
+                cli.project.join(".depot.toml"),
+                "[profiles]\nbuild = \"builder\"\nfix = \"builder\"\n",
+            )
+            .expect("the project config");
+            stored_with(&cli, "t-1", *state, None, *hold_pr);
+
+            let mut arguments = vec!["task"];
+            arguments.extend_from_slice(suffix);
+            let arguments: Vec<&str> = arguments
+                .into_iter()
+                .map(|argument| if argument == "ID" { id } else { argument })
+                .collect();
+            let output = cli.ok(&arguments);
+
+            assert_eq!(
+                output,
+                *expected,
+                "depot {arguments:?} against {}",
+                depotd::state_name(*state)
+            );
+        }
+    }
 }

@@ -694,6 +694,22 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             }
         }
 
+        FactKind::DescribeFailed { task, .. } => {
+            let accepting = next
+                .tasks
+                .get(task)
+                .is_some_and(|task| task.state == TaskState::Validated);
+            if accepting && let Some(task) = next.tasks.get_mut(task) {
+                task.state = TaskState::Failed;
+                task.retry = None;
+                task.updated_at = fact.at;
+                changed = true;
+                actions.push(Action::HoldForUser {
+                    task: task.id.clone(),
+                });
+            }
+        }
+
         FactKind::PushFailed { task, .. } => {
             let accepting = next
                 .tasks

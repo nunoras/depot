@@ -281,6 +281,69 @@ fn a_failed_validation_reaches_the_user_from_the_inbox() {
 }
 
 #[test]
+fn a_describe_failure_reaches_the_user_from_the_inbox() {
+    let fixture = support::fixture();
+    let added = support::register_with_config(&fixture, "example", BUILD_ONLY);
+    let store = Store::open(&fixture.home).expect("store");
+    let project = &added.project.id;
+
+    apply(
+        &store,
+        project,
+        "task_proposed:t-1",
+        1_000,
+        proposed("t-1", "Wire the store"),
+    );
+    apply(&store, project, "task_approved:t-1", 2_000, approved("t-1"));
+    apply(
+        &store,
+        project,
+        "worker_submitted:t-1",
+        3_000,
+        FactKind::WorkerSubmitted {
+            task: TaskId::new("t-1"),
+            commit: CommitId::new("abc123"),
+        },
+    );
+    apply(
+        &store,
+        project,
+        "validation_finished:t-1",
+        4_000,
+        FactKind::ValidationFinished {
+            task: TaskId::new("t-1"),
+            command: "cargo test".to_string(),
+            commit: CommitId::new("abc123"),
+            exit_code: 0,
+            duration: std::time::Duration::from_millis(1_200),
+            output_tail: String::new(),
+        },
+    );
+    apply(
+        &store,
+        project,
+        "describe_failed:t-1:1",
+        5_000,
+        FactKind::DescribeFailed {
+            task: TaskId::new("t-1"),
+            reason: "the describe worker wrote no usable output".to_string(),
+        },
+    );
+
+    let payload = read_inbox(&fixture.home, Some("example")).expect("inbox");
+
+    let user = section(&payload, "For the user");
+    assert!(
+        user.contains("the describe step failed: the describe worker wrote no usable output"),
+        "a describe failure is a decision, got\n{payload}"
+    );
+    assert!(
+        user.contains("(failed)"),
+        "the entry reports where the task stands now, got\n{payload}"
+    );
+}
+
+#[test]
 fn a_poll_is_not_a_fact_the_coordinator_reads() {
     let fixture = support::fixture();
     let added = support::register_with_config(&fixture, "example", BUILD_ONLY);

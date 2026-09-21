@@ -22,7 +22,7 @@ use crate::evidence::{self, EVIDENCE_MARKER, EvidenceArtifact, EvidenceRunner, S
 use crate::factcodec::payload_field;
 use crate::home::DepotHome;
 use crate::project::{LocationKind, Project};
-use crate::store::{EventOutcome, Store, event_key};
+use crate::store::{EventOutcome, RecordedEvent, Store, event_key};
 use crate::vocabulary::{FactTag, checks_name, fact_tag_name};
 
 pub const DAEMON_LOCK_FILE_NAME: &str = "depotd.lock";
@@ -751,6 +751,7 @@ where
         let mut prompt = brief;
         let answers = self.answers_since_turn_start(&task)?;
         let redirect = self.pending_redirect(&task)?;
+        let redirect_event = self.pending_redirect_event(&task)?;
         if !answers.is_empty() || redirect.is_some() {
             prompt.push_str("\n\n");
             prompt.push_str(&resume_reason(&redirect, &answers));
@@ -789,9 +790,28 @@ where
             &event_key(&["worker_turn_started", task.as_str(), session.as_str()]),
             Fact {
                 at: now(),
-                kind: FactKind::WorkerTurnStarted { task, session },
+                kind: FactKind::WorkerTurnStarted {
+                    task: task.clone(),
+                    session: session.clone(),
+                },
             },
-        )
+        )?;
+        if let Some(redirect) = redirect_event {
+            self.record(
+                &event_key(&[
+                    "worker_redirect_delivered",
+                    task.as_str(),
+                    &redirect.id.to_string(),
+                ]),
+                Fact {
+                    at: now(),
+                    kind: FactKind::WorkerRedirectDelivered {
+                        task,
+                        redirect: redirect.id.to_string(),
+                    },
+                },
+            )?;
+        }
     }
 
     fn surface_unresolved_turn(&self, task: &TaskId) -> Result<()> {
@@ -852,6 +872,7 @@ where
             return self.surface_unresolved_turn(&task);
         }
         let prompt = resume_reason(&redirect, &answers);
+        let redirect_event = self.pending_redirect_event(&task)?;
         self.record(
             &event_key(&[
                 "worker_turn_resume_requested",
@@ -868,7 +889,24 @@ where
             log("resume_failed", &error.to_string());
             return Ok(());
         }
-        self.record_resumed(&task, &session)
+        self.record_resumed(&task, &session)?;
+        if let Some(redirect) = redirect_event {
+            self.record(
+                &event_key(&[
+                    "worker_redirect_delivered",
+                    task.as_str(),
+                    &redirect.id.to_string(),
+                ]),
+                Fact {
+                    at: now(),
+                    kind: FactKind::WorkerRedirectDelivered {
+                        task,
+                        redirect: redirect.id.to_string(),
+                    },
+                },
+            )?;
+        }
+        Ok(())
     }
 
     fn relaunch(&self, task: &TaskId) -> Result<()> {
@@ -1313,7 +1351,7 @@ where
         Ok(self.answer_owed(task)? && !self.resume_is_pending(task)?)
     }
 
-    fn pending_redirect(&self, task: &TaskId) -> Result<Option<String>> {
+    fn pending_redirect_event(&self, task: &TaskId) -> Result<Option<RecordedEvent>> {
         let events = self.store.events(&self.project.id)?;
         let started = events
             .iter()
@@ -1324,18 +1362,21 @@ where
             })
             .map(|event| event.id)
             .unwrap_or(0);
-        let redirected = events
+        Ok(events
             .iter()
             .rev()
             .find(|event| {
                 event.task.as_ref() == Some(task)
                     && event.kind == fact_tag_name(FactTag::WorkerRedirected)
             })
-            .filter(|event| event.id > started);
-        match redirected {
-            Some(event) => Ok(Some(payload_field(&event.payload, "text")?)),
-            None => Ok(None),
-        }
+            .filter(|event| event.id > started)
+            .cloned())
+    }
+
+    fn pending_redirect(&self, task: &TaskId) -> Result<Option<String>> {
+        self.pending_redirect_event(task)?
+            .map(|event| payload_field(&event.payload, "text"))
+            .transpose()
     }
 
     fn reconcile_sessions(&self) -> Result<()> {
@@ -1979,6 +2020,8 @@ mod tests {
             links: Vec::new(),
             branch_head: None,
             merge_refused: None,
+            redirect_text: None,
+            redirect_delivered: false,
             acknowledged_at: None,
             hold_pr: false,
             retry: None,

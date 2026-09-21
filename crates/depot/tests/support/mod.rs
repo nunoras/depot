@@ -85,6 +85,7 @@ pub struct Golden {
     pub origin: PathBuf,
     pub lease: PathBuf,
     pub scripts: PathBuf,
+    pub fakes: PathBuf,
     pub forge: FakeForge,
     pub boxr: FakeBoxr,
     pub treehouse: FakeProgram,
@@ -219,6 +220,7 @@ impl Golden {
             origin,
             lease,
             scripts,
+            fakes,
             forge,
             boxr,
             treehouse,
@@ -337,6 +339,8 @@ impl Golden {
         Command::new(DEPOT)
             .args(arguments)
             .env(HOME_ENV, self.home.root())
+            .env("PATH", with_program(&self.fakes.join("bin")))
+            .env(self.boxr.directory_env().0, self.boxr.directory_env().1)
             .current_dir(&self.repo)
             .output()
             .expect("the depot binary runs")

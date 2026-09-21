@@ -497,8 +497,9 @@ impl EventHook for ShellEventHook {
     fn notify(&self, notice: &EventNotice) -> Result<()> {
         #[cfg(windows)]
         let mut process = {
+            use std::os::windows::process::CommandExt;
             let mut process = Command::new("cmd");
-            process.args(["/C", &self.command]);
+            process.arg("/C").raw_arg(&self.command);
             process
         };
         #[cfg(not(windows))]

@@ -301,6 +301,14 @@ fn patched_bodies(forge: &FakeForge) -> Vec<String> {
         .collect()
 }
 
+fn pull_request_body(request: &str) -> String {
+    let request: serde_json::Value = serde_json::from_str(request).expect("a JSON request");
+    request["body"]
+        .as_str()
+        .expect("the request carries a body")
+        .to_string()
+}
+
 fn daemon(
     fixture: &Fixture,
     evidence: FakeEvidence,
@@ -425,7 +433,7 @@ fn a_relative_local_file_is_noted_as_unattachable_and_resolved_against_the_workt
 
     let bodies = patched_bodies(&fixture.forge);
     assert_eq!(bodies.len(), 1, "{bodies:?}");
-    let body = &bodies[0];
+    let body = &pull_request_body(&bodies[0]);
     let resolved = fixture
         .temp
         .path()

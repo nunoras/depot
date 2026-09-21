@@ -398,6 +398,7 @@ fn a_pull_request_with_no_checks_renders_the_merge_decision_line() {
     let rendered = render_checklist(
         &ProjectState {
             project,
+            slug: "example".to_string(),
             tasks,
             coordinator: None,
             profiles: BTreeMap::new(),

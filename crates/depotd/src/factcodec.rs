@@ -240,6 +240,15 @@ pub fn encode_payload(kind: &FactKind) -> String {
             ("checks", quoted(checks_name(*checks))),
             ("reason", quoted(reason)),
         ]),
+        FactKind::PullRequestMergeabilityChanged {
+            task,
+            mergeable,
+            base,
+        } => object(vec![
+            ("task", quoted(task.as_str())),
+            ("mergeable", boolean(*mergeable)),
+            ("base", quoted(base.as_str())),
+        ]),
         FactKind::EvidencePosted {
             task,
             commit,

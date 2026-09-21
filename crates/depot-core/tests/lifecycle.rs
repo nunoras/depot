@@ -1139,7 +1139,7 @@ fn rule_10_restart_reconciliation_prefers_unknown_over_a_guess() {
         .when("t1", TaskState::Running, vec![Action::RenderChecklist])
         .checking(|state| holds(state, "t1", AttemptOutcome::InFlight)),
         case(
-            "a session gone while the task waits on a question stays paused",
+            "a session gone while the task waits on a question closes the attempt",
             state(vec![with_question(
                 running_with_session("t1", "s1", "w1"),
                 TaskState::WaitingOnQuestion,
@@ -1153,10 +1153,14 @@ fn rule_10_restart_reconciliation_prefers_unknown_over_a_guess() {
                 },
             )],
         )
-        .when("t1", TaskState::WaitingOnQuestion, Vec::new())
-        .checking(|state| holds(state, "t1", AttemptOutcome::InFlight)),
+        .when(
+            "t1",
+            TaskState::WaitingOnQuestion,
+            vec![Action::RenderChecklist],
+        )
+        .checking(|state| holds(state, "t1", AttemptOutcome::AwaitingAnswer)),
         case(
-            "a session gone after a settled question stays paused",
+            "a session gone while a running task owes an answer closes the attempt",
             state(vec![with_question(
                 running_with_session("t1", "s1", "w1"),
                 TaskState::Running,
@@ -1170,8 +1174,8 @@ fn rule_10_restart_reconciliation_prefers_unknown_over_a_guess() {
                 },
             )],
         )
-        .when("t1", TaskState::Running, Vec::new())
-        .checking(|state| holds(state, "t1", AttemptOutcome::InFlight)),
+        .when("t1", TaskState::Running, vec![Action::RenderChecklist])
+        .checking(|state| holds(state, "t1", AttemptOutcome::AwaitingAnswer)),
         case(
             "a worker turn that cannot be resolved is held for a person",
             state(vec![running_with_lease("t1", "w1")]),
@@ -3117,6 +3121,74 @@ fn pull_request_opened_during_validation_only_attaches_the_link() {
         .checking(|state| {
             subject(state, "t1").pull_request().is_some()
                 && subject(state, "t1").state == TaskState::Failed
+        }),
+    ]);
+}
+
+#[test]
+fn an_answer_reaches_a_dead_session_through_a_fresh_turn() {
+    run(vec![
+        case(
+            "an answer to a closed attempt relaunches the worker on the same lease",
+            state(vec![with_question(
+                running_with_session("t1", "s1", "w1"),
+                TaskState::WaitingOnQuestion,
+                "which database?",
+            )]),
+            vec![
+                fact(
+                    2_000,
+                    FactKind::WorkerLivenessChanged {
+                        task: task_id("t1"),
+                        liveness: Liveness::Gone,
+                    },
+                ),
+                fact(
+                    3_000,
+                    FactKind::QuestionAnswered {
+                        task: task_id("t1"),
+                        answer: "sqlite".to_owned(),
+                        by: AnsweredBy::User,
+                    },
+                ),
+            ],
+        )
+        .when(
+            "t1",
+            TaskState::Running,
+            vec![launch("t1", BUILD), Action::RenderChecklist],
+        )
+        .checking(|state| {
+            let task = subject(state, "t1");
+            task.attempts.len() == 2
+                && task.attempts[0].outcome == AttemptOutcome::AwaitingAnswer
+                && task.attempts[0].finished_at == Some(at(2_000))
+                && task.attempts[1].session.is_none()
+                && task.attempts[1].outcome == AttemptOutcome::InFlight
+                && task.attempts[1].worktree == Some(lease("w1"))
+                && task.attempts[1].profile == profile(BUILD)
+        }),
+        case(
+            "a relaunch request replaces the open attempt with a fresh turn",
+            state(vec![running_with_session("t1", "s1", "w1")]),
+            vec![fact(
+                4_000,
+                FactKind::WorkerRelaunchRequested {
+                    task: task_id("t1"),
+                },
+            )],
+        )
+        .when(
+            "t1",
+            TaskState::Running,
+            vec![launch("t1", BUILD), Action::RenderChecklist],
+        )
+        .checking(|state| {
+            let task = subject(state, "t1");
+            task.attempts.len() == 2
+                && task.attempts[0].outcome == AttemptOutcome::AwaitingAnswer
+                && task.attempts[1].session.is_none()
+                && task.attempts[1].worktree == Some(lease("w1"))
         }),
     ]);
 }

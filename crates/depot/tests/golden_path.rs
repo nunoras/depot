@@ -18,7 +18,6 @@ const APPROVED: &str = "task_approved";
 const ACQUIRED: &str = "worktree_acquired";
 const ACQUIRE_REQUESTED: &str = "worktree_acquire_requested";
 const LAUNCH_REQUESTED: &str = "worker_turn_launch_requested";
-const RESUME_REQUESTED: &str = "worker_turn_resume_requested";
 const TURN_STARTED: &str = "worker_turn_started";
 const LIVENESS: &str = "worker_liveness_changed";
 const ASKED: &str = "question_asked";
@@ -305,12 +304,12 @@ fn a_worker_question_is_relayed_answered_and_the_worker_resumes_with_the_answer(
 
     daemon
         .tick()
-        .expect("the daemon sees the paused worker and leaves it alone");
+        .expect("the daemon sees the dead worker and closes the attempt");
     assert_eq!(golden.task().state, TaskState::WaitingOnQuestion);
     assert_eq!(
         golden.task().attempts[0].outcome,
-        AttemptOutcome::InFlight,
-        "a paused worker is not a dead worker"
+        AttemptOutcome::AwaitingAnswer,
+        "a dead worker holds no open turn while the answer is owed"
     );
     assert!(golden.boxr.calls_to("resume").is_empty());
     assert!(golden.boxr.calls_to("stop").is_empty());
@@ -345,23 +344,47 @@ fn a_worker_question_is_relayed_answered_and_the_worker_resumes_with_the_answer(
     );
     assert_eq!(golden.task().state, TaskState::Running);
 
+    const NEXT_SESSION: &str = "b3c7e2";
+    golden.boxr.respond_launches(&[SESSION, NEXT_SESSION]);
     golden.boxr.report_running();
-    daemon.tick().expect("the daemon resumes the session");
-    let resumed = golden.boxr.calls_to("resume");
-    assert_eq!(resumed.len(), 1, "the worker is resumed once");
+    daemon
+        .tick()
+        .expect("the daemon answers a dead session with a fresh worker");
+    assert!(
+        golden.boxr.calls_to("resume").is_empty(),
+        "a dead session is never resumed"
+    );
+    let launches = golden.boxr.calls_to("--harness");
     assert_eq!(
-        resumed[0],
-        vec![
-            "resume",
-            SESSION,
-            "Your question \"Which store?\" was answered: sqlite in the depot home. Continue the task.",
-        ]
+        launches.len(),
+        2,
+        "a fresh worker is launched, {launches:?}"
+    );
+    let prompt = launches[1].last().expect("the launch prompt");
+    assert!(
+        prompt.contains("Which store?") && prompt.contains("sqlite in the depot home."),
+        "the relaunch brief carries the question and the answer: {prompt}"
+    );
+    let relaunched = golden.task();
+    assert_eq!(relaunched.attempts.len(), 2);
+    assert_eq!(
+        relaunched.attempts[0].outcome,
+        AttemptOutcome::AwaitingAnswer
+    );
+    assert_eq!(
+        relaunched.attempts[1].session,
+        Some(SessionId::new(NEXT_SESSION))
+    );
+    assert_eq!(
+        relaunched.attempts[1].worktree,
+        Some(WorktreeLease::new(LEASE)),
+        "the fresh turn runs on the same lease"
     );
 
     daemon
         .tick()
-        .expect("a further poll does not resume the worker again");
-    assert_eq!(golden.boxr.calls_to("resume").len(), 1);
+        .expect("a further poll does not launch the worker again");
+    assert_eq!(golden.boxr.calls_to("--harness").len(), 2);
 
     let submitted = golden.worker_submits();
     assert_eq!(
@@ -394,7 +417,7 @@ fn a_worker_question_is_relayed_answered_and_the_worker_resumes_with_the_answer(
 }
 
 #[test]
-fn a_settled_question_stays_open_and_resumes_the_worker_when_answered() {
+fn a_settled_question_reaches_a_dead_session_through_a_fresh_turn() {
     let golden = Golden::new(Validation::Passing);
     let daemon = golden.daemon();
     golden.propose();
@@ -426,14 +449,14 @@ fn a_settled_question_stays_open_and_resumes_the_worker_when_answered() {
 
     daemon
         .tick()
-        .expect("the daemon sees the finished session and leaves the settled task alone");
+        .expect("the daemon sees the finished session and closes the attempt");
 
     let paused = golden.task();
     assert_eq!(paused.state, TaskState::Running);
     assert_eq!(
         paused.attempts[0].outcome,
-        AttemptOutcome::InFlight,
-        "a settled question is not a dead worker"
+        AttemptOutcome::AwaitingAnswer,
+        "a finished session holds no open turn while the answer is owed"
     );
     let open = golden.status();
     assert!(!open.contains("Blocked"), "{open}");
@@ -455,25 +478,41 @@ fn a_settled_question_stays_open_and_resumes_the_worker_when_answered() {
         format!("answered {TASK}\n")
     );
 
+    const NEXT_SESSION: &str = "c41d9a";
+    golden.boxr.respond_launches(&[SESSION, NEXT_SESSION]);
+    golden
+        .boxr
+        .respond_status_sequence(&["running", "running", "finished"]);
     golden.boxr.report_running();
     daemon
         .tick()
-        .expect("the daemon resumes the worker with the answer");
-    let resumed = golden.boxr.calls_to("resume");
-    assert_eq!(resumed.len(), 1, "the worker is resumed once");
+        .expect("the daemon answers a dead session with a fresh worker");
+    assert!(
+        golden.boxr.calls_to("resume").is_empty(),
+        "a dead session is never resumed"
+    );
+    let launches = golden.boxr.calls_to("--harness");
     assert_eq!(
-        resumed[0],
-        vec![
-            "resume",
-            SESSION,
-            "Your question \"Which store?\" was answered: sqlite in the depot home. Continue the task.",
-        ]
+        launches.len(),
+        2,
+        "a fresh worker is launched, {launches:?}"
+    );
+    let prompt = launches[1].last().expect("the launch prompt");
+    assert!(
+        prompt.contains("Which store?") && prompt.contains("sqlite in the depot home."),
+        "the relaunch brief carries the question and the answer: {prompt}"
+    );
+    let relaunched = golden.task();
+    assert_eq!(relaunched.attempts.len(), 2);
+    assert_eq!(
+        relaunched.attempts[1].session,
+        Some(SessionId::new(NEXT_SESSION))
     );
 
     daemon
         .tick()
-        .expect("a further poll does not resume the worker again");
-    assert_eq!(golden.boxr.calls_to("resume").len(), 1);
+        .expect("a further poll does not launch the worker again");
+    assert_eq!(golden.boxr.calls_to("--harness").len(), 2);
 
     assert_eq!(
         golden.state_history(TASK),
@@ -802,25 +841,36 @@ fn a_redirect_queued_mid_turn_reaches_the_worker_at_the_next_turn() {
     assert!(golden.boxr.calls_to("resume").is_empty());
 
     golden.boxr.report_finished();
+    const REDIRECT_SESSION: &str = "d94b02";
+    golden.boxr.respond_launches(&[SESSION, REDIRECT_SESSION]);
+    golden
+        .boxr
+        .respond_status_sequence(&["running", "running", "finished", "finished"]);
+    golden.boxr.report_running();
     daemon
         .tick()
         .expect("the daemon delivers the redirect when the turn ends");
-    let resumed = golden.boxr.calls_to("resume");
-    assert_eq!(resumed.len(), 1, "the worker is resumed once");
+    assert!(
+        golden.boxr.calls_to("resume").is_empty(),
+        "a dead session is never resumed"
+    );
+    let launches = golden.boxr.calls_to("--harness");
     assert_eq!(
-        resumed[0],
-        vec![
-            "resume",
-            SESSION,
-            "The task was redirected: Skip the migration; the schema is frozen. Take the new direction into account.",
-        ]
+        launches.len(),
+        2,
+        "a fresh worker is launched, {launches:?}"
+    );
+    let prompt = launches[1].last().expect("the launch prompt");
+    assert!(
+        prompt.contains("Skip the migration"),
+        "the relaunch brief carries the redirect: {prompt}"
     );
     assert_eq!(golden.task().state, TaskState::Running);
 
     daemon
         .tick()
         .expect("a further poll does not deliver the redirect twice");
-    assert_eq!(golden.boxr.calls_to("resume").len(), 1);
+    assert_eq!(golden.boxr.calls_to("--harness").len(), 2);
 }
 
 #[test]
@@ -856,7 +906,7 @@ fn a_redirect_is_refused_for_a_task_that_is_not_running() {
 }
 
 #[test]
-fn a_failed_resume_is_retried_on_the_next_tick_and_delivers_the_answer() {
+fn a_finished_session_is_answered_by_a_fresh_worker_instead_of_a_resume() {
     let golden = Golden::new(Validation::Passing);
     let daemon = golden.daemon();
     golden.propose();
@@ -875,44 +925,43 @@ fn a_failed_resume_is_retried_on_the_next_tick_and_delivers_the_answer() {
         "--project",
         SLUG,
     ]);
-    golden.boxr.respond("resume", "", "resume interrupted", 1);
+    const NEXT_SESSION: &str = "e18c4f";
+    golden.boxr.respond_launches(&[SESSION, NEXT_SESSION]);
+    golden
+        .boxr
+        .respond_status_sequence(&["running", "finished"]);
+    golden.boxr.report_running();
 
     daemon
         .tick()
-        .expect("a failed resume does not stop the daemon");
-    assert!(golden.history(TASK).contains(&RESUME_REQUESTED.to_string()));
-    assert_eq!(golden.boxr.calls_to("resume").len(), 1);
+        .expect("the daemon answers a finished session with a fresh worker");
+    assert!(
+        golden.boxr.calls_to("resume").is_empty(),
+        "a finished session is never resumed"
+    );
+    assert!(golden.history(TASK).contains(&LAUNCH_REQUESTED.to_string()));
     assert_eq!(golden.task().state, TaskState::Running);
+    let launches = golden.boxr.calls_to("--harness");
     assert_eq!(
-        golden
-            .history(TASK)
-            .iter()
-            .filter(|kind| kind.as_str() == TURN_STARTED)
-            .count(),
-        1,
-        "a resume that failed records no turn start"
+        launches.len(),
+        2,
+        "a fresh worker is launched, {launches:?}"
     );
-
-    golden.boxr.respond(
-        "resume",
-        &format!("session: {SESSION}\nstatus: running\n"),
-        "",
-        0,
+    let prompt = launches[1].last().expect("the launch prompt");
+    assert!(
+        prompt.contains("Which store?") && prompt.contains("sqlite in the depot home."),
+        "the relaunch brief carries the question and the answer: {prompt}"
     );
-    daemon.tick().expect("the next tick retries the resume");
 
     let task = golden.task();
-    assert_eq!(task.state, TaskState::Running);
-    let resumed = golden.boxr.calls_to("resume");
-    assert_eq!(resumed.len(), 2, "the answer is retried until it lands");
+    assert_eq!(task.attempts.len(), 2);
     assert_eq!(
-        resumed[1],
-        vec![
-            "resume",
-            SESSION,
-            "Your question \"Which store?\" was answered: sqlite in the depot home. Continue the task.",
-        ]
+        task.attempts[0].outcome,
+        AttemptOutcome::AwaitingAnswer,
+        "the dead turn is closed as awaiting the answer it received"
     );
+    assert_eq!(task.attempts[1].session, Some(SessionId::new(NEXT_SESSION)));
+    assert_eq!(task.attempts[1].worktree, Some(WorktreeLease::new(LEASE)));
     assert_eq!(
         golden
             .history(TASK)
@@ -920,7 +969,7 @@ fn a_failed_resume_is_retried_on_the_next_tick_and_delivers_the_answer() {
             .filter(|kind| kind.as_str() == TURN_STARTED)
             .count(),
         2,
-        "the turn starts when the resume lands"
+        "the fresh turn starts when the relaunch lands"
     );
 }
 

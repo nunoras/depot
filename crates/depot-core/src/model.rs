@@ -101,6 +101,7 @@ pub enum AttemptOutcome {
     Submitted,
     Stopped,
     Failed,
+    AwaitingAnswer,
     Unknown,
 }
 

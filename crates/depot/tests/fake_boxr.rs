@@ -38,10 +38,13 @@ fn respond(root: &Path, arguments: &[String]) -> ExitCode {
         .map(String::as_str)
         .unwrap_or("default")
         .to_owned();
-    let suffix = match sequence_index(root, &key) {
+    let mut suffix = match sequence_index(root, &key) {
         Some(index) => format!(".{index}"),
         None => String::new(),
     };
+    if !suffix.is_empty() && !root.join(format!("{key}.stdout{suffix}")).exists() {
+        suffix = String::new();
+    }
     if let Ok(text) = fs::read_to_string(root.join(format!("{key}.stdout{suffix}"))) {
         print!("{text}");
     }

@@ -738,6 +738,13 @@ where
         } else {
             context.brief(&task_record)?
         };
+        let mut prompt = brief;
+        let answers = self.answers_since_turn_start(&task)?;
+        let redirect = self.pending_redirect(&task)?;
+        if !answers.is_empty() || redirect.is_some() {
+            prompt.push_str("\n\n");
+            prompt.push_str(&resume_reason(&redirect, &answers));
+        }
         self.record(
             &event_key(&[
                 "worker_turn_launch_requested",
@@ -765,7 +772,7 @@ where
                     effort: spec.effort,
                 },
                 kind: Some(crate::vocabulary::role_name(task_record.role).to_owned()),
-                prompt: brief,
+                prompt,
             })
             .map_err(|error| Error::Project(error.to_string()))?;
         self.record(
@@ -819,6 +826,17 @@ where
                 "task `{task}` has no answer to resume"
             )));
         }
+        match self.sessions.status(&session) {
+            Ok(crate::adapters::sessions::SessionState::Running) => {}
+            Ok(state) => {
+                log(
+                    "resume_dead_session",
+                    &format!("{} is {state:?}", task.as_str()),
+                );
+                return self.relaunch(&task);
+            }
+            Err(error) => return Err(Error::Project(error.to_string())),
+        }
         let attempt = self.resume_attempts(&task)? + 1;
         if attempt > MAX_RESUME_ATTEMPTS {
             return self.surface_unresolved_turn(&task);
@@ -841,6 +859,24 @@ where
             return Ok(());
         }
         self.record_resumed(&task, &session)
+    }
+
+    fn relaunch(&self, task: &TaskId) -> Result<()> {
+        let attempt = self.task(task)?.attempts.len();
+        if attempt == 0 {
+            return Err(Error::Project(format!("task `{task}` has no attempt")));
+        }
+        self.record(
+            &event_key(&[
+                "worker_relaunch_requested",
+                task.as_str(),
+                &attempt.to_string(),
+            ]),
+            Fact {
+                at: now(),
+                kind: FactKind::WorkerRelaunchRequested { task: task.clone() },
+            },
+        )
     }
 
     fn stop(&self, task: TaskId) -> Result<()> {
@@ -1080,7 +1116,11 @@ where
             let resumable = task
                 .attempts
                 .last()
-                .is_some_and(|attempt| attempt.outcome.is_open() && attempt.session.is_some());
+                .is_some_and(|attempt| attempt.session.is_some())
+                && matches!(
+                    task.state,
+                    TaskState::Running | TaskState::WaitingOnQuestion
+                );
             if !resumable || task.has_unanswered_question() {
                 continue;
             }

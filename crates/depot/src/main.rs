@@ -5,7 +5,7 @@ mod tui;
 use depotd::{
     DepotHome, Error, StatusSelection, TaskRequest, acknowledge_task, add_project, add_task,
     answer_question, approve_tasks, ask_question, read_inbox, redirect_task, release_task,
-    render_status, retry_task, stop_task, submit_task, write_narrative,
+    render_status, retry_task, rework_task, stop_task, submit_task, write_narrative,
 };
 
 const USAGE: &str = "\
@@ -24,6 +24,7 @@ USAGE
   depot task acknowledge <task-id> [--project <name>]
   depot task retry <task-id> [--project <name>]
   depot task redirect <task-id> --text <direction> [--queue] [--project <name>]
+  depot task rework <task-id> --text <findings> [--project <name>]
   depot ask --task <task-id> --project <name> [--relay] <question>
   depot submit --task <task-id> --project <name>
   depot inbox [--project <name>]
@@ -43,6 +44,8 @@ NOTES
   the daemon delivers a queued or redirected direction when the worker's next turn starts.
   `task retry` sends a failed or cancelled task back to the approved queue; a worktree the task
   still leases is reused for the new attempt.
+  `task rework` files a fix task on an open pull request's branch and worktree; the original
+  task cannot auto-merge until the rework validates and lands on the same pull request.
 ";
 
 fn main() {
@@ -160,10 +163,11 @@ fn task_command(arguments: &[String]) -> Result<String, Failure> {
         Some("acknowledge") => task_acknowledge(&arguments[1..]),
         Some("retry") => task_retry(&arguments[1..]),
         Some("redirect") => task_redirect(&arguments[1..]),
+        Some("rework") => task_rework(&arguments[1..]),
         Some("release") => task_release(&arguments[1..]),
         Some(other) => Err(Failure::Usage(format!("unknown task command `{other}`"))),
         None => Err(Failure::Usage(
-            "`depot task` needs a subcommand: add, approve, answer, stop, retry or release"
+            "`depot task` needs a subcommand: add, approve, answer, stop, retry, rework or release"
                 .to_string(),
         )),
     }
@@ -300,6 +304,22 @@ fn task_redirect(arguments: &[String]) -> Result<String, Failure> {
     } else {
         Ok("queued, not yet delivered\n".to_string())
     }
+}
+
+fn task_rework(arguments: &[String]) -> Result<String, Failure> {
+    let flags = Flags::parse(arguments, &[])?;
+    flags.reject_unknown(&["text", "project"])?;
+    let ids = flags.positionals();
+    if ids.len() != 1 {
+        return Err(Failure::Usage(
+            "`depot task rework` needs exactly one task id".to_string(),
+        ));
+    }
+    let text = flags.required("text")?;
+
+    let home = DepotHome::resolve()?;
+    let original = rework_task(&home, flags.value("project"), &ids[0], text)?;
+    Ok(format!("rework filed against {}\n", original.id))
 }
 
 fn task_release(arguments: &[String]) -> Result<String, Failure> {

@@ -72,6 +72,7 @@ fn task(id: &str, state: TaskState) -> Task {
         redirect_text: None,
         redirect_delivered: false,
         acknowledged_at: None,
+        rework_of: None,
         hold_pr: false,
         retry: None,
         created_at: at(0),
@@ -4050,4 +4051,117 @@ fn rule_18_a_retry_sends_a_failed_or_cancelled_task_back_through_the_queue() {
         )
         .checking(|state| subject(state, "t5").acknowledged_at.is_none()),
     ]);
+}
+
+#[test]
+fn rule_19_a_rework_holds_an_open_pull_request_until_the_fix_lands() {
+    let fix_profile = profile("fix-profile");
+    let with_fix_role = |tasks: Vec<Task>| {
+        let mut state = state(tasks);
+        state.profiles.insert(Role::Fix, fix_profile.clone());
+        state.merge_policy = MergePolicy::AfterChecks;
+        state
+    };
+    let reworked = |millis: u64| {
+        fact(
+            millis,
+            FactKind::TaskReworked {
+                task: task_id("t1"),
+                fix: task_id("t2"),
+                text: "address review findings".to_owned(),
+            },
+        )
+    };
+    let mut base = pr_open("t1", "c1", 42);
+    base.attempts.push(Attempt {
+        session: Some(session("s1")),
+        worktree: Some(lease("w1")),
+        ..attempt(BUILD)
+    });
+
+    let start = with_fix_role(vec![base.clone()]);
+    let (next, actions) = reduce(&start, &reworked(1_000));
+    assert_eq!(
+        subject(&next, "t1").state,
+        TaskState::ReworkPending,
+        "the reworked task is held out of the merge path"
+    );
+    assert!(
+        !auto_merge_due(&next, subject(&next, "t1"), &commit("c1")),
+        "a rework blocks auto merge until the fix replaces the validated commit"
+    );
+    let fix = subject(&next, "t2");
+    assert_eq!(fix.state, TaskState::Running);
+    assert_eq!(fix.role, Role::Fix);
+    assert_eq!(fix.rework_of, Some(task_id("t1")));
+    assert_eq!(
+        fix.attempts
+            .last()
+            .and_then(|attempt| attempt.worktree.as_ref()),
+        base.attempts
+            .last()
+            .and_then(|attempt| attempt.worktree.as_ref()),
+        "the fix runs on the original task's lease, so on its branch"
+    );
+    assert_eq!(
+        fix.pull_request(),
+        base.pull_request(),
+        "the fix is linked to the same pull request"
+    );
+    assert_eq!(
+        actions,
+        vec![
+            Action::StopSession {
+                task: task_id("t1")
+            },
+            launch("t2", "fix-profile"),
+            Action::RenderChecklist
+        ],
+        "the original turn stops and the fix is launched into the reused lease"
+    );
+
+    let (next, _) = reduce(
+        &with_fix_role(vec![base.clone()]),
+        &fact(
+            1_000,
+            FactKind::TaskReworked {
+                task: task_id("t1"),
+                fix: task_id("t1"),
+                text: "collides with the original".to_owned(),
+            },
+        ),
+    );
+    assert_eq!(
+        subject(&next, "t1").state,
+        TaskState::PrOpen,
+        "a rework that cannot create its fix task is refused"
+    );
+
+    let mut state = with_fix_role(vec![base]);
+    for kind in [
+        reworked(1_000).kind,
+        submitted("t2", "c2"),
+        passed("t2", "c2"),
+        FactKind::BranchPushed {
+            task: task_id("t2"),
+            commit: commit("c2"),
+        },
+        FactKind::PullRequestMerged {
+            task: task_id("t2"),
+            commit: commit("c2"),
+        },
+    ] {
+        let (next, _) = reduce(&state, &fact(2_000, kind));
+        state = next;
+    }
+    assert_eq!(
+        subject(&state, "t2").state,
+        TaskState::Landed,
+        "the fix lands on the pull request"
+    );
+    assert_eq!(
+        subject(&state, "t1").state,
+        TaskState::Landed,
+        "landing the fix closes the original task"
+    );
 }

@@ -30,6 +30,7 @@ use crate::vocabulary::{FactTag, checks_name, fact_tag, fact_tag_name};
 pub const DAEMON_LOCK_FILE_NAME: &str = "depotd.lock";
 pub const DAEMON_SCOPE_FILE_NAME: &str = "depotd.scope.json";
 const MAX_RESUME_ATTEMPTS: u32 = 3;
+const MAX_DEFERRED_ATTEMPTS: u32 = 3;
 const LIVENESS_REFRESH_MILLIS: u64 = 60_000;
 const RELEASE_HOLD_BACKOFF_MILLIS: u64 = 60_000;
 
@@ -861,12 +862,14 @@ where
             .task(&self.project.id, &task)?
             .and_then(|task| task.attempts.last().map(|attempt| attempt.outcome))
             .is_some_and(|outcome| outcome == depot_core::AttemptOutcome::Unknown);
+        let recovered = self.deferred_attempts(&task)? > 0;
         let stale = previous.as_ref().is_none_or(|(_, at)| {
             now().millis().saturating_sub(at.millis()) >= LIVENESS_REFRESH_MILLIS
         });
         if previous.as_ref().map(|(value, _)| *value) == Some(liveness)
             && !resolves_unknown
             && !stale
+            && !recovered
         {
             return Ok(());
         }
@@ -1002,10 +1005,13 @@ where
 
     fn launch(&self, task: TaskId, profile: depot_core::ProfileId) -> Result<()> {
         if self.launch_is_pending(&task)? {
-            return self.surface_unresolved_turn(&task);
+            return self.surface_unresolved_turn(&task, "a previous launch intent never completed");
         }
         let task_record = self.task(&task)?;
-        let worktree = self.lease_for(&task_record)?;
+        let worktree = match self.lease_for(&task_record) {
+            Ok(worktree) => worktree,
+            Err(error) => return self.defer_turn(&task, &error.to_string()),
+        };
         let attempt = task_record.attempts.len();
         if attempt == 0 {
             return Err(Error::Project(format!("task `{task}` has no attempt")));
@@ -1117,7 +1123,7 @@ where
         Ok(())
     }
 
-    fn surface_unresolved_turn(&self, task: &TaskId) -> Result<()> {
+    fn surface_unresolved_turn(&self, task: &TaskId, reason: &str) -> Result<()> {
         let attempt = self.task(task)?.attempts.len();
         if attempt == 0 {
             return Err(Error::Project(format!("task `{task}` has no attempt")));
@@ -1130,9 +1136,65 @@ where
             ]),
             Fact {
                 at: now(),
-                kind: FactKind::WorkerTurnUnresolved { task: task.clone() },
+                kind: FactKind::WorkerTurnUnresolved {
+                    task: task.clone(),
+                    reason: reason.to_owned(),
+                },
             },
         )
+    }
+
+    fn defer_turn(&self, task: &TaskId, reason: &str) -> Result<()> {
+        let attempt = self.task(task)?.attempts.len();
+        if attempt == 0 {
+            return Err(Error::Project(format!("task `{task}` has no attempt")));
+        }
+        let attempts = self.deferred_attempts(task)? + 1;
+        if attempts > MAX_DEFERRED_ATTEMPTS {
+            return self.surface_unresolved_turn(
+                task,
+                &format!("the worker turn could not proceed after {attempts} attempts: {reason}"),
+            );
+        }
+        self.record(
+            &event_key(&[
+                "worker_turn_deferred",
+                task.as_str(),
+                &attempt.to_string(),
+                &attempts.to_string(),
+            ]),
+            Fact {
+                at: now(),
+                kind: FactKind::WorkerTurnDeferred {
+                    task: task.clone(),
+                    reason: reason.to_owned(),
+                },
+            },
+        )
+    }
+
+    fn deferred_attempts(&self, task: &TaskId) -> Result<u32> {
+        let started = self.store.last_event_id(
+            &self.project.id,
+            task,
+            fact_tag_name(FactTag::WorkerTurnStarted),
+        )?;
+        let observed = self.store.last_event_id(
+            &self.project.id,
+            task,
+            fact_tag_name(FactTag::WorkerLivenessChanged),
+        )?;
+        let after = started.unwrap_or(0).max(observed.unwrap_or(0));
+        let count = self
+            .store
+            .events_since(&self.project.id, after)?
+            .into_iter()
+            .filter(|event| {
+                event.task.as_ref() == Some(task)
+                    && event.kind == fact_tag_name(FactTag::WorkerTurnDeferred)
+            })
+            .count();
+        Ok(count as u32)
     }
 
     fn record_resumed(&self, task: &TaskId, session: &SessionId) -> Result<()> {
@@ -1168,11 +1230,14 @@ where
                 );
                 return self.relaunch(&task);
             }
-            Err(error) => return Err(Error::Project(error.to_string())),
+            Err(error) => return self.defer_turn(&task, &error.to_string()),
         }
         let attempt = self.resume_attempts(&task)? + 1;
         if attempt > MAX_RESUME_ATTEMPTS {
-            return self.surface_unresolved_turn(&task);
+            return self.surface_unresolved_turn(
+                &task,
+                "the worker did not come back after the resume attempts",
+            );
         }
         let prompt = resume_reason(&redirect, &answers);
         let redirect_event = self.pending_redirect_event(&task)?;
@@ -1250,8 +1315,18 @@ where
     }
 
     fn validate(&self, task: TaskId, commit: CommitId) -> Result<()> {
-        let task_record = self.task(&task)?;
-        let worktree = self.lease_for(&task_record)?.path;
+        let task_record = match self.task(&task) {
+            Ok(record) => record,
+            Err(error) => {
+                return self.record_validation_failure(&task, &commit, &error.to_string());
+            }
+        };
+        let worktree = match self.lease_for(&task_record) {
+            Ok(lease) => lease.path,
+            Err(error) => {
+                return self.record_validation_failure(&task, &commit, &error.to_string());
+            }
+        };
         let config = self.store.project_config(&self.project)?;
         let base = config.pull_request.base.clone();
         let command = config.validation.command.clone();
@@ -1757,12 +1832,10 @@ where
 
     fn session_turn_is_running(&self, task: &Task) -> Result<bool> {
         let session = self.session_for(task)?;
-        Ok(self
-            .sessions
-            .status(&session)
-            .map_err(|error| Error::Project(error.to_string()))?
-            .state
-            == crate::adapters::sessions::SessionState::Running)
+        Ok(matches!(
+            self.sessions.status(&session),
+            Ok(status) if status.state == crate::adapters::sessions::SessionState::Running
+        ))
     }
 
     fn leased_worktree(&self, task: &TaskId) -> Result<Option<WorktreeLease>> {
@@ -2047,10 +2120,13 @@ where
             else {
                 continue;
             };
-            let status = self
-                .sessions
-                .status(&session)
-                .map_err(|error| Error::Project(error.to_string()))?;
+            let status = match self.sessions.status(&session) {
+                Ok(status) => status,
+                Err(error) => {
+                    self.defer_turn(&task.id, &error.to_string())?;
+                    continue;
+                }
+            };
             match status.state {
                 crate::adapters::sessions::SessionState::Running => {
                     self.worker_liveness(task.id, Liveness::Live)?;
@@ -2100,7 +2176,18 @@ where
             if task.state != TaskState::Validating {
                 continue;
             }
-            let commit = self.submitted_commit(&task.id)?;
+            let commit = match self.submitted_commit(&task.id) {
+                Ok(commit) => commit,
+                Err(error) => {
+                    let commit = task
+                        .branch_head
+                        .clone()
+                        .or_else(|| task.validations.last().map(|record| record.commit.clone()))
+                        .unwrap_or_else(|| CommitId::new(""));
+                    self.record_validation_failure(&task.id, &commit, &error.to_string())?;
+                    continue;
+                }
+            };
             if task.validations.iter().any(|v| v.commit == commit) {
                 continue;
             }
@@ -2600,28 +2687,7 @@ where
     }
 
     fn lease_for(&self, task: &Task) -> Result<Lease> {
-        let lease = task
-            .attempts
-            .last()
-            .and_then(|attempt| attempt.worktree.as_ref())
-            .ok_or_else(|| Error::Project(format!("task `{}` has no worktree lease", task.id)))?;
-        let repo = self.repository()?;
-        self.worktrees
-            .pool(&repo)
-            .map_err(|error| Error::Project(error.to_string()))?
-            .into_iter()
-            .find(|entry| entry.lease.as_ref() == Some(lease))
-            .map(|entry| Lease {
-                lease: lease.clone(),
-                path: entry.path,
-                holder: entry.holder.unwrap_or_default(),
-                acquired_at: String::new(),
-            })
-            .ok_or_else(|| {
-                Error::Project(format!(
-                    "worktree lease `{lease}` is not present in the pool"
-                ))
-            })
+        resolve_worktree_lease(&self.worktrees, &self.repository()?, task)
     }
 
     fn session_for(&self, task: &Task) -> Result<SessionId> {
@@ -2684,6 +2750,34 @@ pub fn resume_reason(redirect: &Option<String>, answers: &[(String, String)]) ->
         parts.push(resume_prompt(answers));
     }
     parts.join(" ")
+}
+
+pub(crate) fn resolve_worktree_lease(
+    worktrees: &impl Worktrees,
+    repo: &std::path::Path,
+    task: &Task,
+) -> Result<Lease> {
+    let lease = task
+        .attempts
+        .last()
+        .and_then(|attempt| attempt.worktree.as_ref())
+        .ok_or_else(|| Error::Project(format!("task `{}` has no worktree lease", task.id)))?;
+    worktrees
+        .pool(repo)
+        .map_err(|error| Error::Project(error.to_string()))?
+        .into_iter()
+        .find(|entry| entry.lease.as_ref() == Some(lease))
+        .map(|entry| Lease {
+            lease: lease.clone(),
+            path: entry.path,
+            holder: entry.holder.unwrap_or_default(),
+            acquired_at: String::new(),
+        })
+        .ok_or_else(|| {
+            Error::Project(format!(
+                "worktree lease `{lease}` is not present in the pool"
+            ))
+        })
 }
 
 fn stripped(answer: &str) -> String {

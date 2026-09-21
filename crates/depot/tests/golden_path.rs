@@ -810,10 +810,9 @@ fn a_restart_without_a_leased_worktree_retries_the_acquire() {
     assert_eq!(calls_to(&golden.treehouse.calls(), "get").len(), 1);
 
     golden.allow_worktree_acquire();
-    assert!(
-        daemon.recover().is_err(),
-        "the launch waits until the pool reports the retried lease"
-    );
+    daemon
+        .recover()
+        .expect("the launch waits until the pool reports the retried lease");
 
     let retried = golden.task();
     assert_eq!(retried.state, TaskState::Running);
@@ -1308,10 +1307,9 @@ fn a_restart_with_a_task_in_flight_marks_it_unknown_and_launches_no_replacement(
     );
 
     golden.boxr.respond("status", "", "status interrupted", 1);
-    assert!(
-        daemon.recover().is_err(),
-        "recovery cannot observe liveness"
-    );
+    daemon
+        .recover()
+        .expect("recovery records the unreadable session without dying");
     let marked = golden.task();
     assert_eq!(marked.state, TaskState::Running);
     assert_eq!(
@@ -3486,5 +3484,320 @@ fn an_answer_delivered_to_a_previous_session_survives_a_later_fresh_launch() {
     assert!(
         prompt.contains("Which port?") && prompt.contains("8080."),
         "the newer answer reaches the same fresh turn: {prompt}"
+    );
+}
+
+#[test]
+fn a_submitted_commit_that_is_not_the_worktree_head_holds_only_its_task() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+
+    let second = golden.clone_second_lease("2", BRANCH_TWO);
+    std::fs::write(second.join("second.txt"), "the second task\n")
+        .expect("the second worktree file is written");
+    git::git(&second, &["add", "."]);
+    git::git(&second, &["commit", "-m", "the second task"]);
+    let second_commit = git::head(&second);
+    git::git(&second, &["push", "origin", "HEAD:main"]);
+    golden.hold_two_leases(&second, LEASE_TWO);
+    golden
+        .store
+        .put_task(&validated_task(
+            &golden.project.id,
+            TASK_TWO,
+            LEASE_TWO,
+            &second_commit,
+        ))
+        .expect("the second validated task is recorded");
+
+    let wrong = CommitId::new("0000000000000000000000000000000000000000");
+    daemon
+        .worker_submitted(TaskId::new(TASK), wrong)
+        .expect("the submission is recorded");
+
+    daemon
+        .tick()
+        .expect("a mismatched submission does not stop the tick");
+
+    let held = golden.task();
+    assert_eq!(held.state, TaskState::Failed);
+    assert!(
+        golden
+            .history(TASK)
+            .contains(&"validation_failed".to_string()),
+        "the mismatch is a recorded fact: {:?}",
+        golden.history(TASK)
+    );
+
+    let landed = golden
+        .store
+        .task(&golden.project.id, &TaskId::new(TASK_TWO))
+        .expect("the second task is read")
+        .expect("the second task exists");
+    assert_eq!(
+        landed.state,
+        TaskState::Landed,
+        "the other task still reaches its end"
+    );
+}
+
+#[test]
+fn a_submit_outside_the_leased_worktree_is_refused_and_records_nothing() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+
+    let refused = golden.worker_submits_outside_the_lease();
+    assert_ne!(
+        refused.status.code(),
+        Some(0),
+        "a submit outside the lease is refused"
+    );
+    let message = support::stderr(&refused);
+    assert!(
+        message.contains("must run in the task's leased worktree"),
+        "{message}"
+    );
+    let lease = std::fs::canonicalize(&golden.lease).expect("the lease canonicalizes");
+    assert!(message.contains(&lease.display().to_string()), "{message}");
+
+    assert_eq!(
+        golden.task().state,
+        TaskState::Running,
+        "a refused submit leaves the task running"
+    );
+    assert!(
+        !golden.history(TASK).contains(&SUBMITTED.to_string()),
+        "a refused submit records no fact: {:?}",
+        golden.history(TASK)
+    );
+}
+
+#[test]
+fn a_lease_missing_from_the_pool_fails_only_its_task_and_the_tick_survives() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_submits();
+
+    let second = golden.clone_second_lease("2", BRANCH_TWO);
+    std::fs::write(second.join("second.txt"), "the second task\n")
+        .expect("the second worktree file is written");
+    git::git(&second, &["add", "."]);
+    git::git(&second, &["commit", "-m", "the second task"]);
+    let second_commit = git::head(&second);
+    git::git(&second, &["push", "origin", "HEAD:main"]);
+    golden.hold_only_lease(&second, LEASE_TWO);
+    golden
+        .store
+        .put_task(&validated_task(
+            &golden.project.id,
+            TASK_TWO,
+            LEASE_TWO,
+            &second_commit,
+        ))
+        .expect("the second validated task is recorded");
+
+    daemon
+        .tick()
+        .expect("a lease missing from the pool does not stop the tick");
+
+    let held = golden.task();
+    assert_eq!(held.state, TaskState::Failed);
+    assert!(
+        golden
+            .history(TASK)
+            .contains(&"validation_failed".to_string()),
+        "the missing lease is a recorded fact: {:?}",
+        golden.history(TASK)
+    );
+    let inbox = golden.depot_ok(&["inbox", "--project", SLUG]);
+    assert!(
+        inbox.contains("could not run") && inbox.contains("not present in the pool"),
+        "the reason reaches the inbox: {inbox}"
+    );
+
+    let landed = golden
+        .store
+        .task(&golden.project.id, &TaskId::new(TASK_TWO))
+        .expect("the second task is read")
+        .expect("the second task exists");
+    assert_eq!(
+        landed.state,
+        TaskState::Landed,
+        "the other task still reaches its end"
+    );
+}
+
+#[test]
+fn an_unreadable_session_fails_only_its_task_and_the_tick_survives() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+
+    let second = golden.clone_second_lease("2", BRANCH_TWO);
+    std::fs::write(second.join("second.txt"), "the second task\n")
+        .expect("the second worktree file is written");
+    git::git(&second, &["add", "."]);
+    git::git(&second, &["commit", "-m", "the second task"]);
+    let second_commit = git::head(&second);
+    git::git(&second, &["push", "origin", "HEAD:main"]);
+    golden.hold_two_leases(&second, LEASE_TWO);
+    golden
+        .store
+        .put_task(&validated_task(
+            &golden.project.id,
+            TASK_TWO,
+            LEASE_TWO,
+            &second_commit,
+        ))
+        .expect("the second validated task is recorded");
+
+    golden.boxr.respond("status", "", "boxr is down", 1);
+
+    daemon
+        .tick()
+        .expect("an unreadable session does not stop the tick");
+
+    let tolerated = golden.task();
+    assert_eq!(
+        tolerated.state,
+        TaskState::Running,
+        "one unreadable poll does not fail the task"
+    );
+    assert!(
+        golden
+            .history(TASK)
+            .contains(&"worker_turn_deferred".to_string()),
+        "the unreadable session is recorded: {:?}",
+        golden.history(TASK)
+    );
+    let inbox = golden.depot_ok(&["inbox", "--project", SLUG]);
+    assert!(
+        inbox.contains("boxr is down"),
+        "the reason reaches the inbox: {inbox}"
+    );
+
+    for _ in 0..3 {
+        daemon
+            .tick()
+            .expect("an unreadable session does not stop the tick");
+    }
+
+    let held = golden.task();
+    assert_eq!(
+        held.state,
+        TaskState::Failed,
+        "the task is held once the bounded retries run out"
+    );
+    assert!(
+        golden
+            .history(TASK)
+            .contains(&"worker_turn_unresolved".to_string()),
+        "the unreadable session is a recorded fact: {:?}",
+        golden.history(TASK)
+    );
+    assert_eq!(
+        golden
+            .history(TASK)
+            .iter()
+            .filter(|kind| kind.as_str() == "worker_turn_deferred")
+            .count(),
+        3,
+        "the poll is retried a bounded number of times"
+    );
+
+    let landed = golden
+        .store
+        .task(&golden.project.id, &TaskId::new(TASK_TWO))
+        .expect("the second task is read")
+        .expect("the second task exists");
+    assert_eq!(
+        landed.state,
+        TaskState::Landed,
+        "the other task still reaches its end"
+    );
+}
+
+#[test]
+fn a_launch_with_a_lease_missing_from_the_pool_fails_only_its_task_and_the_tick_survives() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+
+    golden.propose();
+    let mut stalled = golden.task();
+    stalled.state = TaskState::Running;
+    let attempt = stalled.attempts.last_mut().expect("the attempt");
+    attempt.worktree = Some(WorktreeLease::new("absent"));
+    golden
+        .store
+        .put_task(&stalled)
+        .expect("the in-flight task is recorded");
+    let second = golden.clone_second_lease("2", BRANCH_TWO);
+    std::fs::write(second.join("second.txt"), "the second task\n")
+        .expect("the second worktree file is written");
+    git::git(&second, &["add", "."]);
+    git::git(&second, &["commit", "-m", "the second task"]);
+    let second_commit = git::head(&second);
+    git::git(&second, &["push", "origin", "HEAD:main"]);
+    golden.hold_two_leases(&second, LEASE_TWO);
+    golden
+        .store
+        .put_task(&validated_task(
+            &golden.project.id,
+            TASK_TWO,
+            LEASE_TWO,
+            &second_commit,
+        ))
+        .expect("the second validated task is recorded");
+
+    for _ in 0..4 {
+        daemon
+            .tick()
+            .expect("a lease missing from the pool does not stop the tick");
+    }
+
+    let held = golden.task();
+    assert_eq!(
+        held.state,
+        TaskState::Failed,
+        "the task is held once the bounded retries run out"
+    );
+    assert!(
+        golden
+            .history(TASK)
+            .contains(&"worker_turn_unresolved".to_string()),
+        "the missing lease is a recorded fact: {:?}",
+        golden.history(TASK)
+    );
+    assert_eq!(
+        golden
+            .history(TASK)
+            .iter()
+            .filter(|kind| kind.as_str() == "worker_turn_deferred")
+            .count(),
+        3,
+        "the launch is retried a bounded number of times"
+    );
+    let inbox = golden.depot_ok(&["inbox", "--project", SLUG]);
+    assert!(
+        inbox.contains("not present in the pool"),
+        "the reason reaches the inbox: {inbox}"
+    );
+
+    let landed = golden
+        .store
+        .task(&golden.project.id, &TaskId::new(TASK_TWO))
+        .expect("the second task is read")
+        .expect("the second task exists");
+    assert_eq!(
+        landed.state,
+        TaskState::Landed,
+        "the other task still reaches its end"
     );
 }

@@ -125,6 +125,7 @@ pub enum FactTag {
     WorkerRedirectDelivered,
     WorkerLivenessChanged,
     WorkerSessionFailed,
+    WorkerTurnDeferred,
     WorkerSubmissionRecorded,
     WorkerSubmitted,
     ValidationStarted,
@@ -180,6 +181,7 @@ pub fn fact_tag(kind: &FactKind) -> FactTag {
         FactKind::WorkerRedirectDelivered { .. } => FactTag::WorkerRedirectDelivered,
         FactKind::WorkerLivenessChanged { .. } => FactTag::WorkerLivenessChanged,
         FactKind::WorkerSessionFailed { .. } => FactTag::WorkerSessionFailed,
+        FactKind::WorkerTurnDeferred { .. } => FactTag::WorkerTurnDeferred,
         FactKind::WorkerSubmissionRecorded { .. } => FactTag::WorkerSubmissionRecorded,
         FactKind::WorkerSubmitted { .. } => FactTag::WorkerSubmitted,
         FactKind::ValidationStarted { .. } => FactTag::ValidationStarted,
@@ -236,6 +238,7 @@ pub fn fact_tag_name(tag: FactTag) -> &'static str {
         FactTag::WorkerRedirectDelivered => "worker_redirect_delivered",
         FactTag::WorkerLivenessChanged => "worker_liveness_changed",
         FactTag::WorkerSessionFailed => "worker_session_failed",
+        FactTag::WorkerTurnDeferred => "worker_turn_deferred",
         FactTag::WorkerSubmissionRecorded => "worker_submission_recorded",
         FactTag::WorkerSubmitted => "worker_submitted",
         FactTag::ValidationStarted => "validation_started",
@@ -291,6 +294,7 @@ pub fn fact_tag_from_name(name: &str) -> Result<FactTag> {
         "worker_redirect_delivered" => FactTag::WorkerRedirectDelivered,
         "worker_liveness_changed" => FactTag::WorkerLivenessChanged,
         "worker_session_failed" => FactTag::WorkerSessionFailed,
+        "worker_turn_deferred" => FactTag::WorkerTurnDeferred,
         "worker_relaunch_requested" => FactTag::WorkerRelaunchRequested,
         "worker_submission_recorded" => FactTag::WorkerSubmissionRecorded,
         "worker_submitted" => FactTag::WorkerSubmitted,
@@ -345,13 +349,14 @@ pub fn fact_task(kind: &FactKind) -> Option<TaskId> {
         | FactKind::WorkerTurnLaunchRequested { task }
         | FactKind::WorkerTurnResumeRequested { task }
         | FactKind::WorkerRelaunchRequested { task }
-        | FactKind::WorkerTurnUnresolved { task }
+        | FactKind::WorkerTurnUnresolved { task, .. }
         | FactKind::WorkerTurnStarted { task, .. }
         | FactKind::WorkerTurnEnded { task }
         | FactKind::WorkerRedirected { task, .. }
         | FactKind::WorkerRedirectDelivered { task, .. }
         | FactKind::WorkerLivenessChanged { task, .. }
         | FactKind::WorkerSessionFailed { task, .. }
+        | FactKind::WorkerTurnDeferred { task, .. }
         | FactKind::WorkerSubmissionRecorded { task, .. }
         | FactKind::WorkerSubmitted { task, .. }
         | FactKind::ValidationStarted { task, .. }

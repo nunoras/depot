@@ -25,6 +25,23 @@ impl FakeProgram {
         Program::new(&self.binary).with_env(RESPONSES, &self.dir)
     }
 
+    #[allow(dead_code)]
+    pub fn directory_env(&self) -> (String, PathBuf) {
+        (RESPONSES.to_string(), self.dir.clone())
+    }
+
+    #[allow(dead_code)]
+    pub fn install_into(&self, directory: &Path) -> PathBuf {
+        fs::create_dir_all(directory).expect("the install directory is created");
+        let target = directory.join(
+            self.binary
+                .file_name()
+                .expect("the fake binary has a file name"),
+        );
+        fs::copy(&self.binary, &target).expect("the fake binary is installed");
+        target
+    }
+
     pub fn respond(&self, key: &str, stdout: &str, stderr: &str, exit_code: i32) {
         fs::write(self.dir.join(format!("{key}.stdout")), stdout).expect("stdout is written");
         fs::write(self.dir.join(format!("{key}.stderr")), stderr).expect("stderr is written");
@@ -62,66 +79,86 @@ fn script(name: &str) -> PathBuf {
     let dir =
         Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("fake-{name}-{}", std::process::id()));
     fs::create_dir_all(&dir).expect("the fake program directory is created");
-    let binary = if cfg!(windows) {
-        let binary = dir.join(format!("{name}.cmd"));
-        fs::write(&binary, windows_script()).expect("the fake program is written");
-        binary
-    } else {
-        let binary = dir.join(name);
-        fs::write(&binary, unix_script()).expect("the fake program is written");
-        make_executable(&binary);
-        binary
-    };
+    let binary = dir.join(executable_name(name));
+    fs::copy(executable(), &binary).expect("the fake program is installed");
     scripts.insert(name.to_owned(), binary.clone());
     binary
 }
 
-#[cfg(unix)]
-fn make_executable(path: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-
-    let mut permissions = fs::metadata(path)
-        .expect("the fake program exists")
-        .permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(path, permissions).expect("the fake program is executable");
+fn executable_name(name: &str) -> String {
+    if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        name.to_owned()
+    }
 }
 
-#[cfg(not(unix))]
-fn make_executable(_path: &Path) {}
-
-fn unix_script() -> &'static str {
-    r#"#!/bin/sh
-dir="$DEPOT_FAKE_DIR"
-{
-  for argument in "$@"; do printf '%s\n' "$argument"; done
-  printf '\n'
-} >> "$dir/calls.txt"
-key="$1"
-if [ -z "$key" ]; then key=default; fi
-if [ -f "$dir/$key.stdout" ]; then cat "$dir/$key.stdout"; fi
-if [ -f "$dir/$key.stderr" ]; then cat "$dir/$key.stderr" >&2; fi
-if [ -f "$dir/$key.exit" ]; then exit "$(cat "$dir/$key.exit")"; fi
-exit 0
-"#
+fn executable() -> PathBuf {
+    static BUILT: OnceLock<PathBuf> = OnceLock::new();
+    BUILT
+        .get_or_init(|| built_beside_the_tests().unwrap_or_else(compile_beside_the_tests))
+        .clone()
 }
 
-fn windows_script() -> &'static str {
-    r#"@echo off
-set "dir=%DEPOT_FAKE_DIR%"
-set "key=%~1"
-if "%key%"=="" set "key=default"
-:arguments
-if "%~1"=="" goto done
-echo %~1>>"%dir%\calls.txt"
-shift
-goto arguments
-:done
-echo.>>"%dir%\calls.txt"
-if exist "%dir%\%key%.stdout" type "%dir%\%key%.stdout"
-if exist "%dir%\%key%.stderr" type "%dir%\%key%.stderr" 1>&2
-set "code=0"
-if exist "%dir%\%key%.exit" for /f "usebackq delims=" %%c in ("%dir%\%key%.exit") do set "code=%%c"
-exit /b %code%
-"#
+fn built_beside_the_tests() -> Option<PathBuf> {
+    let directory = std::env::current_exe()
+        .expect("the test binary path")
+        .parent()
+        .expect("the test binary directory")
+        .to_owned();
+    let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
+    for entry in fs::read_dir(directory).ok()? {
+        let entry = entry.ok()?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.starts_with("fake_command-") || !built_binary(&name) {
+            continue;
+        }
+        let modified = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        if newest.as_ref().is_none_or(|(at, _)| modified > *at) {
+            newest = Some((modified, entry.path()));
+        }
+    }
+    newest.map(|(_, path)| path)
+}
+
+fn built_binary(name: &str) -> bool {
+    if cfg!(windows) {
+        name.ends_with(".exe")
+    } else {
+        !name.contains('.')
+    }
+}
+
+fn compile_beside_the_tests() -> PathBuf {
+    let directory = std::env::current_exe()
+        .expect("the test binary path")
+        .parent()
+        .expect("the test binary directory")
+        .to_owned();
+    let source = directory.join("fake_command_source.rs");
+    fs::write(&source, include_str!("../fake_command.rs"))
+        .expect("the fake program source is written");
+    let binary = directory.join(if cfg!(windows) {
+        "fake_command_built.exe"
+    } else {
+        "fake_command_built"
+    });
+    let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
+    let output = std::process::Command::new(rustc)
+        .arg("--edition")
+        .arg("2024")
+        .arg(&source)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("rustc runs");
+    assert!(
+        output.status.success(),
+        "the fake program could not be built, so run the suite with `cargo test` instead: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    binary
 }

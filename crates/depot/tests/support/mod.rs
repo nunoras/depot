@@ -177,6 +177,7 @@ impl Golden {
         treehouse.respond("get", &lease_identity(&lease, LEASE), "", 0);
         treehouse.respond("return", "", "", 0);
         treehouse.respond("status", &pool(&lease, LEASE), "", 0);
+        treehouse.install_into(&fakes.join("bin"));
 
         let forge = FakeForge::start();
         forge.route_query(
@@ -393,6 +394,11 @@ impl Golden {
         );
     }
 
+    pub fn hold_only_lease(&self, lease: &Path, id: &str) {
+        self.treehouse
+            .respond("status", &single_lease_pool(lease, id), "", 0);
+    }
+
     pub fn script_pull_request_refused(&self) {
         self.forge.replace_route(
             "POST",
@@ -484,6 +490,13 @@ impl Golden {
         )]))
     }
 
+    pub fn worker_submits_outside_the_lease(&self) -> Output {
+        self.worker_in(
+            &self.repo,
+            &script(&[&format!("depot submit --task {TASK} --project {SLUG}")]),
+        )
+    }
+
     pub fn worker_commits_and_asks(&self, question: &str) -> Output {
         self.worker(&script(&[
             "printf 'the work\\n' > change.txt",
@@ -516,6 +529,10 @@ impl Golden {
     }
 
     fn worker(&self, body: &str) -> Output {
+        self.worker_in(&self.lease, body)
+    }
+
+    fn worker_in(&self, directory: &Path, body: &str) -> Output {
         let name = if cfg!(windows) {
             "worker.cmd"
         } else {
@@ -533,13 +550,20 @@ impl Golden {
             command
         };
         command
-            .current_dir(&self.lease)
+            .current_dir(directory)
             .env(HOME_ENV, self.home.root())
             .env("DEPOT_TASK_ID", TASK)
             .env("DEPOT_ATTEMPT_ID", LEASE)
             .env(
                 "PATH",
-                with_program(Path::new(DEPOT).parent().expect("the depot directory")),
+                with_programs(&[
+                    &self.fakes.join("bin"),
+                    Path::new(DEPOT).parent().expect("the depot directory"),
+                ]),
+            )
+            .env(
+                self.treehouse.directory_env().0,
+                self.treehouse.directory_env().1,
             )
             .output()
             .expect("the worker script runs")
@@ -982,7 +1006,11 @@ fn script(lines: &[&str]) -> String {
 }
 
 fn with_program(directory: &Path) -> OsString {
-    let mut paths = vec![directory.to_path_buf()];
+    with_programs(&[directory])
+}
+
+fn with_programs(directories: &[&Path]) -> OsString {
+    let mut paths: Vec<PathBuf> = directories.iter().map(|path| path.to_path_buf()).collect();
     paths.extend(env::split_paths(&env::var_os("PATH").unwrap_or_default()));
     env::join_paths(paths).expect("the path is joined")
 }
@@ -1007,6 +1035,13 @@ fn two_lease_pool(first: &Path, first_id: &str, second: &Path, second_id: &str) 
         "[{{\"name\":\"1\",\"path\":{},\"status\":\"leased\",\"lease_id\":\"{first_id}\",\"lease_holder\":\"depot:{TASK}\"}},{{\"name\":\"2\",\"path\":{},\"status\":\"leased\",\"lease_id\":\"{second_id}\",\"lease_holder\":\"depot:{TASK_TWO}\"}}]",
         quoted(first),
         quoted(second)
+    )
+}
+
+fn single_lease_pool(lease: &Path, id: &str) -> String {
+    format!(
+        "[{{\"name\":\"2\",\"path\":{},\"status\":\"leased\",\"lease_id\":\"{id}\",\"lease_holder\":\"depot:{TASK_TWO}\"}}]",
+        quoted(lease)
     )
 }
 

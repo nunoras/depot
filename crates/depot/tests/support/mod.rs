@@ -218,6 +218,7 @@ impl Golden {
         let lock = depotd::InstanceLock::acquire(&home).expect("the daemon takes the single lock");
         lock.record_scope(std::slice::from_ref(&project))
             .expect("the daemon scope is recorded");
+        hold_daemon_coverage(&home);
 
         Self {
             temp,
@@ -860,6 +861,19 @@ pub fn stderr(output: &Output) -> String {
 
 pub fn settings() -> Settings {
     settings_with_on_event(None)
+}
+
+fn hold_daemon_coverage(home: &DepotHome) {
+    let path = home.root().join(depotd::DAEMON_SCOPE_FILE_NAME);
+    let mut scope: depotd::DaemonScope =
+        serde_json::from_slice(&std::fs::read(&path).expect("the daemon scope record"))
+            .expect("the daemon scope record parses");
+    scope.heartbeat_millis = u64::MAX;
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&scope).expect("the daemon scope record encodes"),
+    )
+    .expect("the daemon scope record is rewritten");
 }
 
 pub fn settings_with_on_event(on_event: Option<OnEventSettings>) -> Settings {

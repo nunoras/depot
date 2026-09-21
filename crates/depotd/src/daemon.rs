@@ -394,7 +394,7 @@ fn delivery_branch(worktree: &Path, task: &Task) -> Result<String> {
     if !current.is_empty() {
         return Ok(current.to_owned());
     }
-    let branch = format!("depot-{}", task.id);
+    let branch = depot_core::delivery_branch(task, &[]);
     git_output(worktree, &["checkout", "-B", &branch])?;
     Ok(branch)
 }

@@ -194,10 +194,18 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                         .iter()
                         .all(|question| question.answer.is_some())
                 {
-                    task.state = TaskState::Running;
-                    actions.push(Action::ResumeSession {
-                        task: task.id.clone(),
-                    });
+                    if task
+                        .attempts
+                        .last()
+                        .is_some_and(|attempt| attempt.outcome.is_open())
+                    {
+                        task.state = TaskState::Running;
+                        actions.push(Action::ResumeSession {
+                            task: task.id.clone(),
+                        });
+                    } else {
+                        relaunch(task, fact.at, &mut actions);
+                    }
                 }
             }
         }
@@ -205,6 +213,25 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
         FactKind::WorktreeAcquireRequested { .. }
         | FactKind::WorkerTurnLaunchRequested { .. }
         | FactKind::WorkerTurnResumeRequested { .. } => {}
+
+        FactKind::WorkerRelaunchRequested { task } => {
+            let eligible = next.tasks.get(task).is_some_and(|task| {
+                matches!(
+                    task.state,
+                    TaskState::Running | TaskState::WaitingOnQuestion
+                ) && !task.has_unanswered_question()
+                    && task
+                        .attempts
+                        .last()
+                        .is_some_and(|attempt| attempt.session.is_some())
+            });
+            if eligible && let Some(task) = next.tasks.get_mut(task) {
+                close_attempt(task, AttemptOutcome::AwaitingAnswer, fact.at);
+                if relaunch(task, fact.at, &mut actions) {
+                    changed = true;
+                }
+            }
+        }
 
         FactKind::WorkerTurnUnresolved { task } => {
             let unresolved = next.tasks.get(task).is_some_and(|task| {
@@ -262,17 +289,23 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                 .tasks
                 .get(task)
                 .is_some_and(|task| task.has_unanswered_question());
-            if in_flight && open && !paused && *liveness == Liveness::Gone {
-                if let Some(task) = next.tasks.get_mut(task) {
-                    if let Some(attempt) = task.attempts.last_mut() {
+            if in_flight && open && *liveness == Liveness::Gone {
+                if paused {
+                    if let Some(task) = next.tasks.get_mut(task) {
+                        close_attempt(task, AttemptOutcome::AwaitingAnswer, fact.at);
+                        task.updated_at = fact.at;
+                    }
+                    changed = true;
+                } else if let Some(record) = next.tasks.get_mut(task) {
+                    if let Some(attempt) = record.attempts.last_mut() {
                         attempt.outcome = AttemptOutcome::Failed;
                         attempt.finished_at = Some(fact.at);
                     }
-                    task.state = TaskState::Failed;
-                    task.updated_at = fact.at;
+                    record.state = TaskState::Failed;
+                    record.updated_at = fact.at;
+                    changed = true;
+                    actions.push(Action::HoldForUser { task: task.clone() });
                 }
-                changed = true;
-                actions.push(Action::HoldForUser { task: task.clone() });
             } else if in_flight
                 && *liveness == Liveness::Live
                 && let Some(task) = next.tasks.get_mut(task)
@@ -898,6 +931,29 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
     }
 
     (next, actions)
+}
+
+fn relaunch(task: &mut Task, at: Timestamp, actions: &mut Vec<Action>) -> bool {
+    let Some(profile) = task.attempts.last().map(|attempt| attempt.profile.clone()) else {
+        return false;
+    };
+    let lease = take_last_worktree(task);
+    task.attempts.push(Attempt {
+        session: None,
+        profile: profile.clone(),
+        worktree: lease,
+        started_at: at,
+        finished_at: None,
+        outcome: AttemptOutcome::InFlight,
+        rebase: false,
+    });
+    task.state = TaskState::Running;
+    task.updated_at = at;
+    actions.push(Action::LaunchSession {
+        task: task.id.clone(),
+        profile,
+    });
+    true
 }
 
 fn close_attempt(task: &mut Task, outcome: AttemptOutcome, at: Timestamp) -> bool {

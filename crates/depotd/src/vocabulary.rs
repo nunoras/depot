@@ -63,6 +63,7 @@ pub fn outcome_name(outcome: AttemptOutcome) -> &'static str {
         AttemptOutcome::Stopped => "stopped",
         AttemptOutcome::Failed => "failed",
         AttemptOutcome::Unknown => "unknown",
+        AttemptOutcome::AwaitingAnswer => "awaiting_answer",
     }
 }
 
@@ -73,6 +74,7 @@ pub fn outcome_from_name(name: &str) -> Result<AttemptOutcome> {
         "stopped" => Ok(AttemptOutcome::Stopped),
         "failed" => Ok(AttemptOutcome::Failed),
         "unknown" => Ok(AttemptOutcome::Unknown),
+        "awaiting_answer" => Ok(AttemptOutcome::AwaitingAnswer),
         other => Err(Error::Schema(format!("unknown attempt outcome `{other}`"))),
     }
 }
@@ -110,6 +112,7 @@ pub enum FactTag {
     WorktreeAcquireRequested,
     WorkerTurnLaunchRequested,
     WorkerTurnResumeRequested,
+    WorkerRelaunchRequested,
     WorkerTurnUnresolved,
     WorkerTurnStarted,
     WorkerTurnEnded,
@@ -154,6 +157,7 @@ pub fn fact_tag(kind: &FactKind) -> FactTag {
         FactKind::WorktreeAcquireRequested { .. } => FactTag::WorktreeAcquireRequested,
         FactKind::WorkerTurnLaunchRequested { .. } => FactTag::WorkerTurnLaunchRequested,
         FactKind::WorkerTurnResumeRequested { .. } => FactTag::WorkerTurnResumeRequested,
+        FactKind::WorkerRelaunchRequested { .. } => FactTag::WorkerRelaunchRequested,
         FactKind::WorkerTurnUnresolved { .. } => FactTag::WorkerTurnUnresolved,
         FactKind::WorkerTurnStarted { .. } => FactTag::WorkerTurnStarted,
         FactKind::WorkerTurnEnded { .. } => FactTag::WorkerTurnEnded,
@@ -199,6 +203,7 @@ pub fn fact_tag_name(tag: FactTag) -> &'static str {
         FactTag::WorktreeAcquireRequested => "worktree_acquire_requested",
         FactTag::WorkerTurnLaunchRequested => "worker_turn_launch_requested",
         FactTag::WorkerTurnResumeRequested => "worker_turn_resume_requested",
+        FactTag::WorkerRelaunchRequested => "worker_relaunch_requested",
         FactTag::WorkerTurnUnresolved => "worker_turn_unresolved",
         FactTag::WorkerTurnStarted => "worker_turn_started",
         FactTag::WorkerTurnEnded => "worker_turn_ended",
@@ -293,6 +298,7 @@ pub fn fact_task(kind: &FactKind) -> Option<TaskId> {
         | FactKind::WorktreeAcquireRequested { task }
         | FactKind::WorkerTurnLaunchRequested { task }
         | FactKind::WorkerTurnResumeRequested { task }
+        | FactKind::WorkerRelaunchRequested { task }
         | FactKind::WorkerTurnUnresolved { task }
         | FactKind::WorkerTurnStarted { task, .. }
         | FactKind::WorkerTurnEnded { task }

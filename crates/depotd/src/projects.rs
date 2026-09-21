@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use depot_core::{ProjectId, ProjectState, TaskId, TaskState, Timestamp};
+use depot_core::{ProjectId, TaskId, TaskState, Timestamp};
 
 use crate::checklist::{render_checklist, render_checklist_observed};
 use crate::clock::now;
@@ -185,14 +185,13 @@ pub fn render_status_at(
     }
 
     let mut out = String::new();
-    let stale_after = home.load_settings()?.poll_interval().saturating_mul(3);
     for (index, project) in projects.iter().enumerate() {
         if index > 0 {
             out.push('\n');
         }
         let state = store.project_state(project)?;
-        let covered = daemon_scope_covers(home, &project.id, now, stale_after)?;
-        if !covered && needs_daemon(&state) {
+        let covered = daemon_scope_covers(home, &project.id, now)?;
+        if !covered && needs_daemon(state.tasks.values().map(|task| task.state)) {
             out.push_str("no daemon is driving this project\n\n");
         }
         out.push_str(&render_checklist_observed(&state, history, now));
@@ -200,11 +199,10 @@ pub fn render_status_at(
     Ok(out)
 }
 
-fn needs_daemon(state: &ProjectState) -> bool {
-    state
-        .tasks
-        .values()
-        .any(|task| task.state == TaskState::Approved || task.state.in_flight())
+pub fn needs_daemon(states: impl IntoIterator<Item = TaskState>) -> bool {
+    states
+        .into_iter()
+        .any(|state| state == TaskState::Approved || state.in_flight())
 }
 
 struct Resolved {

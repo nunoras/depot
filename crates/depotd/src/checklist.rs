@@ -6,7 +6,7 @@ use depot_core::{
 
 use crate::vocabulary::{checks_name, role_name};
 
-const UNOBSERVED_AFTER_MILLIS: u64 = 5 * 60 * 1000;
+pub const UNOBSERVED_AFTER_MILLIS: u64 = 5 * 60 * 1000;
 
 const SECTIONS: [(TaskState, &str, bool); 11] = [
     (
@@ -175,6 +175,10 @@ fn render_task(
             one_line(url),
             checks_name(checks)
         ));
+    }
+
+    if let Some(base) = &task.conflict_base {
+        out.push_str(&format!("  - conflicts with base `{base}`\n"));
     }
 
     if task.hold_pr {

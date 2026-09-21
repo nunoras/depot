@@ -1,6 +1,6 @@
 # Worker loop
 
-With the daemon running, an approved task gets a treehouse worktree on a `depot-<task>` branch, a real boxr worker session on the task's profile, and, when the worker calls `depot submit`, a validation run at the submitted commit followed by a push and a pull request.
+With the daemon running, an approved task gets a treehouse worktree on a delivery branch named from the task title and intent (a `feat`/`fix`/`chore`/`refactor` prefix plus a title slug), a real boxr worker session on the task's profile, and, when the worker calls `depot submit`, a validation run at the submitted commit followed by a push and a pull request.
 
 ## Sub-features
 

@@ -117,12 +117,8 @@ impl InstanceLock {
     }
 }
 
-pub fn daemon_scope_covers(
-    home: &DepotHome,
-    project: &ProjectId,
-    now: Timestamp,
-    stale_after: Duration,
-) -> Result<bool> {
+pub fn daemon_scope_covers(home: &DepotHome, project: &ProjectId, now: Timestamp) -> Result<bool> {
+    let stale_after = home.load_settings()?.poll_interval().saturating_mul(3);
     let path = home.root().join(DAEMON_SCOPE_FILE_NAME);
     let Ok(bytes) = std::fs::read(&path) else {
         return Ok(false);
@@ -454,7 +450,14 @@ fn delivery_branch(worktree: &Path, task: &Task) -> Result<String> {
     if !current.is_empty() {
         return Ok(current.to_owned());
     }
-    let branch = depot_core::delivery_branch(task, &[]);
+    let listed = git_output(worktree, &["branch", "--format=%(refname:short)"])?;
+    let taken: Vec<String> = listed
+        .lines()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .collect();
+    let branch = depot_core::delivery_branch(task, &taken);
     git_output(worktree, &["checkout", "-B", &branch])?;
     Ok(branch)
 }
@@ -2054,6 +2057,32 @@ where
                             },
                         )?;
                     }
+                    if let Some(mergeable) = observed.mergeable {
+                        let conflicting_base = (!mergeable).then(|| observed.base.clone());
+                        if task.conflict_base != conflicting_base {
+                            self.record(
+                                &event_key(&[
+                                    "pull_request_mergeability_changed",
+                                    task.id.as_str(),
+                                    if mergeable {
+                                        "mergeable"
+                                    } else {
+                                        "conflicting"
+                                    },
+                                    observed.base.as_str(),
+                                    &at.millis().to_string(),
+                                ]),
+                                Fact {
+                                    at,
+                                    kind: FactKind::PullRequestMergeabilityChanged {
+                                        task: task.id.clone(),
+                                        mergeable,
+                                        base: observed.base.clone(),
+                                    },
+                                },
+                            )?;
+                        }
+                    }
                     observed_open.push((task.id.clone(), number, observed));
                 }
             }
@@ -2364,9 +2393,15 @@ pub(crate) fn log_project_error(slug: &str, error: &Error) {
 #[cfg(test)]
 mod tests {
     use super::{
-        EventHook, EventNotice, ShellEventHook, ShellValidation, ValidationRunner, repo_slug,
+        EventHook, EventNotice, ShellEventHook, ShellValidation, ValidationRunner, delivery_branch,
+        repo_slug,
     };
-    use depot_core::CommitId;
+    use std::collections::BTreeMap;
+
+    use depot_core::{
+        CommitId, Fact, FactKind, Limits, MergePolicy, ProjectId, ProjectState, Role, Task, TaskId,
+        Timestamp,
+    };
     use tempfile::TempDir;
 
     fn git(path: &std::path::Path, args: &[&str]) -> String {
@@ -2382,6 +2417,41 @@ mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
         String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    }
+
+    fn task(id: &str, title: &str, intent: &str) -> Task {
+        let state = ProjectState {
+            project: ProjectId::new("test"),
+            slug: "test".to_owned(),
+            tasks: BTreeMap::new(),
+            coordinator: None,
+            profiles: BTreeMap::new(),
+            fallback_profiles: Vec::new(),
+            limits: Limits::default(),
+            always_relay_questions: false,
+            merge_policy: MergePolicy::Manual,
+        };
+        let (state, _) = depot_core::reduce(
+            &state,
+            &Fact {
+                at: Timestamp::from_millis(0),
+                kind: FactKind::TaskProposed {
+                    task: TaskId::new(id),
+                    title: title.to_owned(),
+                    intent: intent.to_owned(),
+                    role: Role::Build,
+                    dispatch_profile: None,
+                    dependencies: Vec::new(),
+                    base_dependency: None,
+                    hold_pr: false,
+                },
+            },
+        );
+        state
+            .tasks
+            .get(&TaskId::new(id))
+            .cloned()
+            .expect("the proposed task is in the state")
     }
 
     #[cfg(windows)]
@@ -2421,33 +2491,7 @@ mod tests {
             ],
         );
         git(&path, &["push", "origin", "HEAD:main"]);
-        let task = depot_core::Task {
-            id: depot_core::TaskId::new("T1"),
-            project: depot_core::ProjectId::new("test"),
-            title: "test".to_owned(),
-            intent: "test validation".to_owned(),
-            role: depot_core::Role::Build,
-            dispatch_profile: None,
-            state: depot_core::TaskState::Proposed,
-            dependencies: Vec::new(),
-            base_dependency: None,
-            attempts: Vec::new(),
-            questions: Vec::new(),
-            validations: Vec::new(),
-            submission: None,
-            artifacts: Vec::new(),
-            links: Vec::new(),
-            branch_head: None,
-            merge_refused: None,
-            redirect_text: None,
-            redirect_delivered: false,
-            acknowledged_at: None,
-            hold_pr: false,
-            rework_of: None,
-            retry: None,
-            created_at: depot_core::Timestamp::from_millis(0),
-            updated_at: depot_core::Timestamp::from_millis(0),
-        };
+        let task = task("T1", "test", "test validation");
         let result = ShellValidation
             .validate(&task, &path, &commit, "main", PRINT_VALIDATED_AND_EXIT_7)
             .expect("validation runs");
@@ -2463,6 +2507,65 @@ mod tests {
                 .validate(&task, &path, &wrong, "main", "true")
                 .is_err()
         );
+    }
+
+    #[test]
+    fn a_detached_worktree_falls_back_to_a_conventional_delivery_branch() {
+        let temp = TempDir::new().expect("temporary directory");
+        let path = temp.path();
+        git(path, &["init"]);
+        git(path, &["config", "user.email", "depot@example.test"]);
+        git(path, &["config", "user.name", "Depot"]);
+        std::fs::write(path.join("answer"), "42").expect("fixture is written");
+        git(path, &["add", "."]);
+        git(path, &["commit", "-m", "fixture"]);
+        git(path, &["checkout", "--detach", "HEAD"]);
+        assert_eq!(git(path, &["branch", "--show-current"]), "");
+
+        let task = task(
+            "t-64",
+            "Align branch naming",
+            "Correct the branch name claims.",
+        );
+
+        let branch = delivery_branch(path, &task).expect("a detached worktree names a branch");
+        assert_eq!(branch, "feat/align-branch-naming");
+        assert!(
+            !branch.starts_with("depot-"),
+            "{branch} names the lease holder"
+        );
+        assert_eq!(git(path, &["branch", "--show-current"]), branch);
+    }
+
+    #[test]
+    fn two_tasks_with_the_same_slug_get_distinct_delivery_branches() {
+        let temp = TempDir::new().expect("temporary directory");
+        let path = temp.path();
+        git(path, &["init"]);
+        git(path, &["config", "user.email", "depot@example.test"]);
+        git(path, &["config", "user.name", "Depot"]);
+        std::fs::write(path.join("answer"), "42").expect("fixture is written");
+        git(path, &["add", "."]);
+        git(path, &["commit", "-m", "fixture"]);
+        git(path, &["checkout", "--detach", "HEAD"]);
+
+        let first = task(
+            "t-64",
+            "Align branch naming",
+            "Correct the branch name claims.",
+        );
+        let branch = delivery_branch(path, &first).expect("the first task names a branch");
+        assert_eq!(branch, "feat/align-branch-naming");
+
+        git(path, &["checkout", "--detach", "HEAD"]);
+        let second = task(
+            "t-65",
+            "Align branch naming",
+            "Correct the branch name claims.",
+        );
+        let suffixed = delivery_branch(path, &second).expect("the second task names a branch");
+        assert_eq!(suffixed, "feat/align-branch-naming-2");
+        assert_ne!(branch, suffixed);
     }
 
     #[test]

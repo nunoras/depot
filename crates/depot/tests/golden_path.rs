@@ -1235,10 +1235,9 @@ fn a_configuration_error_before_a_launch_leaves_the_task_launchable() {
 
 #[test]
 fn a_restart_with_a_task_in_flight_marks_it_unknown_and_launches_no_replacement() {
-    let golden = Golden::new(Validation::Passing);
+    let mut golden = Golden::new(Validation::Passing);
 
     {
-        let _lock = InstanceLock::acquire(&golden.home).expect("the daemon takes the single lock");
         assert!(
             InstanceLock::acquire(&golden.home).is_err(),
             "a second daemon cannot run against the same home"
@@ -1254,7 +1253,7 @@ fn a_restart_with_a_task_in_flight_marks_it_unknown_and_launches_no_replacement(
     assert_eq!(in_flight.attempts[0].outcome, AttemptOutcome::InFlight);
     assert!(golden.history(TASK).contains(&LAUNCH_REQUESTED.to_string()));
 
-    let _lock = acquire_released_lock(&golden.home);
+    golden.restart_lock();
     let store = depotd::Store::open(&golden.home).expect("the restarted daemon reopens the store");
     let daemon = depotd::Daemon::new(
         &store,
@@ -1995,16 +1994,6 @@ fn forge_facts(golden: &Golden) -> Vec<String> {
         .filter(|event| event.kind.starts_with("pull_request_"))
         .map(|event| event.kind)
         .collect()
-}
-
-fn acquire_released_lock(home: &depotd::DepotHome) -> InstanceLock {
-    for _ in 0..500 {
-        match InstanceLock::acquire(home) {
-            Ok(lock) => return lock,
-            Err(_) => std::thread::sleep(std::time::Duration::from_millis(10)),
-        }
-    }
-    panic!("the lock is free once the first daemon stops");
 }
 
 fn user_section(rendered: &str) -> &str {

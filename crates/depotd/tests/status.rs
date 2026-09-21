@@ -413,3 +413,83 @@ fn the_written_checklist_stays_free_of_observation_time() {
         "the checklist must not carry time-shaped observations: {checklist}"
     );
 }
+
+#[test]
+fn status_warns_when_a_live_daemon_does_not_cover_a_project_with_open_work() {
+    let fixture = support::fixture();
+    let first = support::register(&fixture, "first");
+    let second = support::register(&fixture, "second");
+    let store = Store::open(&fixture.home).expect("store");
+    store
+        .put_task(&support::simple_task(
+            &second.project.id,
+            "t-1",
+            TaskState::Approved,
+            1,
+        ))
+        .expect("stored");
+
+    let lock = depotd::InstanceLock::acquire(&fixture.home).expect("lock");
+    lock.record_scope(std::slice::from_ref(&first.project))
+        .expect("scope");
+    let rendered = render_status(&fixture.home, &StatusSelection::All, false).expect("status");
+    assert!(
+        rendered.contains("no daemon is driving this project"),
+        "missing warning in\n{rendered}"
+    );
+}
+
+#[test]
+fn status_stays_quiet_when_a_live_daemon_covers_the_project() {
+    let fixture = support::fixture();
+    let first = support::register(&fixture, "first");
+    let second = support::register(&fixture, "second");
+    let store = Store::open(&fixture.home).expect("store");
+    store
+        .put_task(&support::simple_task(
+            &second.project.id,
+            "t-1",
+            TaskState::Approved,
+            1,
+        ))
+        .expect("stored");
+
+    let lock = depotd::InstanceLock::acquire(&fixture.home).expect("lock");
+    lock.record_scope(&[first.project.clone(), second.project.clone()])
+        .expect("scope");
+    let rendered = render_status(&fixture.home, &StatusSelection::All, false).expect("status");
+    assert!(
+        !rendered.contains("no daemon is driving this project"),
+        "unexpected warning in\n{rendered}"
+    );
+}
+
+#[test]
+fn status_treats_a_stale_heartbeat_as_no_coverage() {
+    let fixture = support::fixture();
+    let first = support::register(&fixture, "first");
+    let second = support::register(&fixture, "second");
+    let store = Store::open(&fixture.home).expect("store");
+    store
+        .put_task(&support::simple_task(
+            &second.project.id,
+            "t-1",
+            TaskState::Approved,
+            1,
+        ))
+        .expect("stored");
+
+    let lock = depotd::InstanceLock::acquire(&fixture.home).expect("lock");
+    lock.record_scope(&[first.project.clone(), second.project.clone()])
+        .expect("scope");
+    let path = fixture.home.root().join(depotd::DAEMON_LOCK_FILE_NAME);
+    let mut scope: depotd::DaemonScope =
+        serde_json::from_slice(&std::fs::read(&path).expect("lock record")).expect("parsed scope");
+    scope.heartbeat_millis -= 10 * 60 * 1000;
+    std::fs::write(&path, serde_json::to_vec(&scope).expect("encoded scope")).expect("rewritten");
+    let rendered = render_status(&fixture.home, &StatusSelection::All, false).expect("status");
+    assert!(
+        rendered.contains("no daemon is driving this project"),
+        "missing warning in\n{rendered}"
+    );
+}

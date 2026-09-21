@@ -2201,7 +2201,7 @@ fn user_section(rendered: &str) -> &str {
 fn the_on_event_hook_fires_once_per_blocking_event() {
     let golden = Golden::new(Validation::Passing);
     let log = golden.temp.path().join("hook.log");
-    let command = format!("cat >> {}; echo >> {}", log.display(), log.display());
+    let command = append_stdin_as_a_line_to(&log);
     golden
         .home
         .write_settings(&support::settings_with_on_event(Some(
@@ -2243,10 +2243,20 @@ fn the_on_event_hook_fires_once_per_blocking_event() {
     assert_eq!(hook_events(&log).len(), 1, "the same block fires once");
 }
 
+fn append_stdin_as_a_line_to(log: &std::path::Path) -> String {
+    let log = log.display();
+    if cfg!(windows) {
+        format!("findstr \"^\" >> \"{log}\" & echo.>> \"{log}\"")
+    } else {
+        format!("cat >> {log}; echo >> {log}")
+    }
+}
+
 fn hook_events(log: &std::path::Path) -> Vec<serde_json::Value> {
     std::fs::read_to_string(log)
         .expect("the hook log")
         .lines()
+        .filter(|line| !line.trim().is_empty())
         .map(|line| serde_json::from_str(line).expect("each hook line is a json payload"))
         .collect()
 }
@@ -2946,6 +2956,35 @@ fn a_run_duration_stop_that_fails_surfaces_rather_than_pretending_success() {
     assert!(
         error.to_string().contains("could not stop"),
         "the stop failure is named: {error}"
+    );
+}
+
+#[test]
+fn a_failed_stop_is_retried_until_the_session_is_gone() {
+    let golden = Golden::new(Validation::Passing);
+    zero_run_duration(&golden);
+    let daemon = golden.daemon();
+    golden.propose();
+    golden
+        .boxr
+        .respond("stop", "", "boxr could not stop the session", 1);
+
+    daemon.tick().expect_err("the first stop fails");
+    assert_eq!(golden.boxr.calls_to("stop").len(), 1);
+
+    golden.boxr.respond("stop", "", "", 0);
+    daemon.tick().expect("the next tick retries the stop");
+    assert_eq!(
+        golden.boxr.calls_to("stop").len(),
+        2,
+        "a session still reported running is stopped again"
+    );
+
+    daemon.tick().expect("a stopped session is left alone");
+    assert_eq!(
+        golden.boxr.calls_to("stop").len(),
+        2,
+        "the retry stops once the session is gone"
     );
 }
 

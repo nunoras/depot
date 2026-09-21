@@ -51,6 +51,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                         links: Vec::new(),
                         branch_head: None,
                         merge_refused: None,
+                        conflict_base: None,
                         failure: None,
                         redirect_text: None,
                         redirect_delivered: false,
@@ -121,6 +122,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                 task.state = TaskState::Cancelled;
                 task.retry = None;
                 task.merge_refused = None;
+                task.conflict_base = None;
                 task.updated_at = fact.at;
                 changed = true;
                 if stopped {
@@ -146,6 +148,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                 task.state = TaskState::Approved;
                 task.retry = None;
                 task.merge_refused = None;
+                task.conflict_base = None;
                 task.failure = None;
                 task.acknowledged_at = None;
                 task.updated_at = fact.at;
@@ -199,6 +202,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                         links,
                         branch_head: None,
                         merge_refused: None,
+                        conflict_base: None,
                         failure: None,
                         redirect_text: None,
                         redirect_delivered: false,
@@ -737,10 +741,12 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             let merged_head_mismatch = next.tasks.get(task).is_some_and(|task| {
                 task.state == TaskState::PrOpen && task.validated_commit() != Some(commit)
             });
-            if let Some(task) = next.tasks.get_mut(task)
-                && task.merge_refused.take().is_some()
-            {
-                changed = true;
+            if let Some(task) = next.tasks.get_mut(task) {
+                let cleared_refusal = task.merge_refused.take().is_some();
+                let cleared_conflict = task.conflict_base.take().is_some();
+                if cleared_refusal || cleared_conflict {
+                    changed = true;
+                }
             }
             if merged_head_mismatch {
                 if let Some(task) = next.tasks.get_mut(task) {
@@ -788,6 +794,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                 task.state = TaskState::Cancelled;
                 task.retry = None;
                 task.merge_refused = None;
+                task.conflict_base = None;
                 task.updated_at = fact.at;
                 changed = true;
                 if stopped {
@@ -1089,6 +1096,21 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             }
         }
 
+        FactKind::PullRequestMergeabilityChanged {
+            task,
+            mergeable,
+            base,
+        } => {
+            let conflict_base = (!mergeable).then(|| base.clone());
+            if let Some(task) = next.tasks.get_mut(task)
+                && task.conflict_base != conflict_base
+            {
+                task.conflict_base = conflict_base;
+                task.updated_at = fact.at;
+                changed = true;
+            }
+        }
+
         FactKind::EvidencePosted { .. } => {}
 
         FactKind::EvidenceFailed { task, required, .. } => {
@@ -1112,11 +1134,10 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
         }
 
         FactKind::RebaseScheduled { task, profile, .. } => {
-            let scheduled = next.merge_policy != MergePolicy::Manual
-                && next
-                    .profiles
-                    .get(&Role::Fix)
-                    .is_some_and(|configured| configured == profile)
+            let scheduled = next
+                .profiles
+                .get(&Role::Fix)
+                .is_some_and(|configured| configured == profile)
                 && next
                     .tasks
                     .get(task)
@@ -1357,8 +1378,7 @@ pub fn rebase_due(state: &ProjectState, task: &Task, conflicting: bool) -> Optio
 }
 
 fn rebase_allowed(state: &ProjectState, task: &Task) -> bool {
-    state.merge_policy != MergePolicy::Manual
-        && task.state == TaskState::PrOpen
+    task.state == TaskState::PrOpen
         && task
             .attempts
             .last()

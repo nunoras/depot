@@ -194,6 +194,11 @@ pub enum FactKind {
         checks: Checks,
         reason: String,
     },
+    PullRequestMergeabilityChanged {
+        task: TaskId,
+        mergeable: bool,
+        base: CommitId,
+    },
     EvidencePosted {
         task: TaskId,
         commit: CommitId,

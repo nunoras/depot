@@ -30,6 +30,7 @@ use crate::store::{EventOutcome, RecordedEvent, Store, event_key};
 use crate::vocabulary::{FactTag, checks_name, fact_tag, fact_tag_name};
 
 pub const DAEMON_LOCK_FILE_NAME: &str = "depotd.lock";
+pub const DAEMON_SCOPE_FILE_NAME: &str = "depotd.scope.json";
 const MAX_RESUME_ATTEMPTS: u32 = 3;
 const LIVENESS_REFRESH_MILLIS: u64 = 60_000;
 
@@ -60,7 +61,8 @@ impl DaemonScope {
 
 #[derive(Debug)]
 pub struct InstanceLock {
-    file: File,
+    _file: File,
+    scope_path: PathBuf,
 }
 
 impl InstanceLock {
@@ -71,22 +73,41 @@ impl InstanceLock {
     }
 
     pub fn refresh_heartbeat(&self) -> Result<()> {
-        let Some(mut scope) = read_scope_file(&self.file) else {
-            return Ok(());
-        };
+        let bytes = std::fs::read(&self.scope_path).map_err(|error| {
+            Error::Home(format!(
+                "could not read the daemon scope record {}: {error}",
+                self.scope_path.display()
+            ))
+        })?;
+        let mut scope: DaemonScope = serde_json::from_slice(&bytes).map_err(|error| {
+            Error::Home(format!(
+                "could not parse the daemon scope record {}: {error}",
+                self.scope_path.display()
+            ))
+        })?;
         scope.heartbeat_millis = now().millis();
         self.write_scope(&scope)
     }
 
     fn write_scope(&self, scope: &DaemonScope) -> Result<()> {
-        use std::io::{Seek, SeekFrom, Write};
-        let mut file = &self.file;
-        file.set_len(0)?;
-        file.seek(SeekFrom::Start(0))?;
-        serde_json::to_writer(&mut file, scope).map_err(|error| {
-            Error::Home(format!("could not write the daemon lock record: {error}"))
+        let mut temp_name = self.scope_path.as_os_str().to_os_string();
+        temp_name.push(".tmp");
+        let temp = PathBuf::from(temp_name);
+        let bytes = serde_json::to_vec(scope).map_err(|error| {
+            Error::Home(format!("could not encode the daemon scope record: {error}"))
         })?;
-        file.flush()?;
+        std::fs::write(&temp, bytes).map_err(|error| {
+            Error::Home(format!(
+                "could not write the daemon scope record {}: {error}",
+                temp.display()
+            ))
+        })?;
+        std::fs::rename(&temp, &self.scope_path).map_err(|error| {
+            Error::Home(format!(
+                "could not replace the daemon scope record {}: {error}",
+                self.scope_path.display()
+            ))
+        })?;
         Ok(())
     }
 
@@ -99,14 +120,17 @@ impl InstanceLock {
             .create(true)
             .truncate(false)
             .open(&path)?;
-        let scope = read_scope_file(&file);
+        let scope = daemon_scope(home);
         file.try_lock_exclusive().map_err(|error| {
             Error::Home(format!(
                 "{} ({error})",
                 lock_held_message(&path, scope.as_ref())
             ))
         })?;
-        Ok(Self { file })
+        Ok(Self {
+            _file: file,
+            scope_path: home.root().join(DAEMON_SCOPE_FILE_NAME),
+        })
     }
 }
 
@@ -131,7 +155,7 @@ fn lock_held_message(path: &Path, scope: Option<&DaemonScope>) -> String {
 }
 
 pub fn daemon_scope(home: &DepotHome) -> Option<DaemonScope> {
-    let bytes = std::fs::read(home.root().join(DAEMON_LOCK_FILE_NAME)).ok()?;
+    let bytes = std::fs::read(home.root().join(DAEMON_SCOPE_FILE_NAME)).ok()?;
     serde_json::from_slice(&bytes).ok()
 }
 
@@ -160,15 +184,6 @@ pub fn daemon_scope_covers(
     };
     Ok(scope_is_fresh(&scope, now, stale_after)
         && scope.projects.iter().any(|covered| covered == slug))
-}
-
-fn read_scope_file(file: &File) -> Option<DaemonScope> {
-    use std::io::{Read, Seek, SeekFrom};
-    let mut contents = String::new();
-    let mut reader = file;
-    reader.seek(SeekFrom::Start(0)).ok()?;
-    reader.read_to_string(&mut contents).ok()?;
-    serde_json::from_str(&contents).ok()
 }
 
 pub trait ValidationRunner {
@@ -466,8 +481,9 @@ impl EventHook for std::sync::Arc<dyn EventHook> {
 pub(crate) fn shell_command(command: &str) -> Command {
     #[cfg(windows)]
     let process = {
+        use std::os::windows::process::CommandExt;
         let mut process = Command::new("cmd");
-        process.args(["/C", command]);
+        process.arg("/C").raw_arg(command);
         process
     };
     #[cfg(not(windows))]
@@ -676,19 +692,7 @@ impl ShellEventHook {
 
 impl EventHook for ShellEventHook {
     fn notify(&self, notice: &EventNotice) -> Result<()> {
-        #[cfg(windows)]
-        let mut process = {
-            let mut process = Command::new("cmd");
-            process.args(["/C", &self.command]);
-            process
-        };
-        #[cfg(not(windows))]
-        let mut process = {
-            let mut process = Command::new("sh");
-            process.args(["-c", &self.command]);
-            process
-        };
-        let mut child = process
+        let mut child = shell_command(&self.command)
             .stdin(std::process::Stdio::piped())
             .spawn()
             .map_err(Error::Io)?;
@@ -797,6 +801,7 @@ where
         self.reconcile_resume()?;
         self.reconcile_budget()?;
         self.reconcile_sessions()?;
+        self.reconcile_stops()?;
         self.reconcile_leases()?;
         self.reconcile_notify()
     }
@@ -819,6 +824,7 @@ where
         self.reconcile_resume()?;
         self.reconcile_budget()?;
         self.reconcile_sessions()?;
+        self.reconcile_stops()?;
         self.reconcile_validation()?;
         self.reconcile_delivery()?;
         self.reconcile_evidence()?;
@@ -1915,7 +1921,11 @@ where
         let run_duration = self.store.home().load_settings()?.run_duration();
         let at = now();
         for task in self.store.tasks(&self.project.id)?.into_values() {
-            if !task.state.in_flight() {
+            if !task.state.in_flight()
+                || task.state == TaskState::WaitingOnQuestion
+                || self.answer_owed(&task.id)?
+                || self.pending_redirect(&task.id)?.is_some()
+            {
                 continue;
             }
             let Some(attempt) = task.attempts.last() else {
@@ -1944,6 +1954,32 @@ where
             )?;
         }
         Ok(())
+    }
+
+    fn reconcile_stops(&self) -> Result<()> {
+        for task in self.store.tasks(&self.project.id)?.into_values() {
+            let Some(attempt) = task.attempts.last() else {
+                continue;
+            };
+            if attempt.outcome != depot_core::AttemptOutcome::Stopped {
+                continue;
+            }
+            let Some(session) = attempt.session.clone() else {
+                continue;
+            };
+            if !self.session_is_running(&session)? {
+                continue;
+            }
+            self.stop(task.id.clone())?;
+        }
+        Ok(())
+    }
+
+    fn session_is_running(&self, session: &SessionId) -> Result<bool> {
+        Ok(matches!(
+            self.sessions.status(session),
+            Ok(status) if status.state == crate::adapters::sessions::SessionState::Running
+        ))
     }
 
     fn reconcile_sessions(&self) -> Result<()> {
@@ -2283,6 +2319,32 @@ where
                                 },
                             },
                         )?;
+                    }
+                    if let Some(mergeable) = observed.mergeable {
+                        let conflicting_base = (!mergeable).then(|| observed.base.clone());
+                        if task.conflict_base != conflicting_base {
+                            self.record(
+                                &event_key(&[
+                                    "pull_request_mergeability_changed",
+                                    task.id.as_str(),
+                                    if mergeable {
+                                        "mergeable"
+                                    } else {
+                                        "conflicting"
+                                    },
+                                    observed.base.as_str(),
+                                    &at.millis().to_string(),
+                                ]),
+                                Fact {
+                                    at,
+                                    kind: FactKind::PullRequestMergeabilityChanged {
+                                        task: task.id.clone(),
+                                        mergeable,
+                                        base: observed.base.clone(),
+                                    },
+                                },
+                            )?;
+                        }
                     }
                     observed_open.push((task.id.clone(), number, observed));
                 }
@@ -2646,6 +2708,11 @@ mod tests {
         String::from_utf8_lossy(&output.stdout).trim().to_owned()
     }
 
+    #[cfg(windows)]
+    const PRINT_VALIDATED_AND_EXIT_7: &str = "<nul set /p=validated& exit 7";
+    #[cfg(not(windows))]
+    const PRINT_VALIDATED_AND_EXIT_7: &str = "printf validated; exit 7";
+
     #[test]
     fn validation_runs_at_the_submitted_commit_and_keeps_its_output() {
         let temp = TempDir::new().expect("temporary directory");
@@ -2696,6 +2763,7 @@ mod tests {
             links: Vec::new(),
             branch_head: None,
             merge_refused: None,
+            conflict_base: None,
             failure: None,
             redirect_text: None,
             redirect_delivered: false,
@@ -2709,7 +2777,7 @@ mod tests {
             updated_at: depot_core::Timestamp::from_millis(0),
         };
         let result = ShellValidation
-            .validate(&task, &path, &commit, "main", "printf validated; exit 7")
+            .validate(&task, &path, &commit, "main", PRINT_VALIDATED_AND_EXIT_7)
             .expect("validation runs");
         assert_eq!(result.exit_code, 7);
         assert_eq!(result.output_tail, "validated");

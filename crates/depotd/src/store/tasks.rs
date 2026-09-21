@@ -96,7 +96,7 @@ impl Store {
 }
 
 const TASK_COLUMNS: &str = "project_id, id, title, intent, role, state, base_dependency, \
-     branch_head, retry_profile, retry_not_before, submission_summary, merge_refused, failure, redirect_text, redirect_delivered, created_at, updated_at, dispatch_profile, acknowledged_at, hold_pr, rework_of, release_pending, release_held";
+     branch_head, retry_profile, retry_not_before, submission_summary, merge_refused, conflict_base, failure, redirect_text, redirect_delivered, created_at, updated_at, dispatch_profile, acknowledged_at, hold_pr, rework_of, release_pending, release_held";
 
 struct RawTask {
     project_id: String,
@@ -112,6 +112,7 @@ struct RawTask {
     retry_not_before: Option<i64>,
     submission_summary: Option<String>,
     merge_refused: Option<String>,
+    conflict_base: Option<String>,
     failure: Option<String>,
     redirect_text: Option<String>,
     redirect_delivered: bool,
@@ -140,6 +141,7 @@ impl RawTask {
             retry_not_before: row.get("retry_not_before")?,
             submission_summary: row.get("submission_summary")?,
             merge_refused: row.get("merge_refused")?,
+            conflict_base: row.get("conflict_base")?,
             failure: row.get("failure")?,
             redirect_text: row.get("redirect_text")?,
             redirect_delivered: row.get::<_, i64>("redirect_delivered")? != 0,
@@ -200,6 +202,7 @@ impl RawTask {
             links: store.links(&project, &self.id)?,
             branch_head: self.branch_head.map(CommitId::new),
             merge_refused: self.merge_refused,
+            conflict_base: self.conflict_base.map(CommitId::new),
             failure: self.failure,
             redirect_text: self.redirect_text,
             redirect_delivered: self.redirect_delivered,
@@ -465,8 +468,8 @@ pub(super) fn write_task(transaction: &Transaction<'_>, task: &Task) -> Result<(
     transaction.execute(
         "INSERT INTO tasks (
                 project_id, id, title, intent, role, state, base_dependency, branch_head,
-                retry_profile, retry_not_before, submission_summary, merge_refused, failure, redirect_text, redirect_delivered, created_at, updated_at, dispatch_profile, acknowledged_at, hold_pr, rework_of, release_pending, release_held
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
+                retry_profile, retry_not_before, submission_summary, merge_refused, conflict_base, failure, redirect_text, redirect_delivered, created_at, updated_at, dispatch_profile, acknowledged_at, hold_pr, rework_of, release_pending, release_held
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
         params![
             task.project.as_str(),
             task.id.as_str(),
@@ -484,6 +487,7 @@ pub(super) fn write_task(transaction: &Transaction<'_>, task: &Task) -> Result<(
                 .as_ref()
                 .map(|submission| submission.summary.as_str()),
             task.merge_refused.as_deref(),
+            task.conflict_base.as_ref().map(CommitId::as_str),
             task.failure.as_deref(),
             task.redirect_text.as_deref(),
             task.redirect_delivered as i64,
@@ -679,6 +683,7 @@ mod tests {
             links: Vec::new(),
             branch_head: None,
             merge_refused: None,
+            conflict_base: None,
             failure: None,
             redirect_text: None,
             redirect_delivered: false,

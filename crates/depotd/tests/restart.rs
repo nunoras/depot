@@ -153,10 +153,12 @@ fn a_restart_gives_up_after_the_bound_and_never_touches_the_holder() {
 }
 
 #[test]
-fn a_restart_leaves_a_lock_record_it_cannot_read_alone() {
+fn a_restart_leaves_a_scope_record_it_cannot_read_alone() {
     let fixture = support::fixture();
     let lock = InstanceLock::acquire(&fixture.home).expect("the lock");
-    let path = fixture.home.root().join(depotd::DAEMON_LOCK_FILE_NAME);
+    lock.record_scope(&[]).expect("the scope");
+    let path = fixture.home.root().join(depotd::DAEMON_SCOPE_FILE_NAME);
+    let intact = std::fs::read(&path).expect("the scope record");
     std::fs::write(&path, b"{}").expect("a record without a pid");
 
     assert!(daemon_scope(&fixture.home).is_none());
@@ -180,6 +182,11 @@ fn a_restart_leaves_a_lock_record_it_cannot_read_alone() {
         InstanceLock::acquire(&fixture.home).is_err(),
         "the unidentified holder keeps the lock"
     );
+    assert!(
+        lock.refresh_heartbeat().is_err(),
+        "a corrupt scope record cannot be refreshed"
+    );
+    std::fs::write(&path, intact).expect("the scope record is restored");
     assert!(lock.refresh_heartbeat().is_ok());
 }
 
@@ -202,11 +209,14 @@ fn a_second_daemon_is_refused_with_the_holder_identity() {
 }
 
 #[test]
-fn a_second_daemon_names_an_unreadable_lock_record_as_such() {
+fn a_second_daemon_names_an_unreadable_scope_record_as_such() {
     let fixture = support::fixture();
     let _lock = InstanceLock::acquire(&fixture.home).expect("the lock");
-    std::fs::write(fixture.home.root().join(depotd::DAEMON_LOCK_FILE_NAME), b"")
-        .expect("an empty record");
+    std::fs::write(
+        fixture.home.root().join(depotd::DAEMON_SCOPE_FILE_NAME),
+        b"",
+    )
+    .expect("an empty record");
 
     let error = InstanceLock::acquire(&fixture.home).expect_err("the lock is taken");
     let message = error.to_string();
@@ -263,7 +273,7 @@ fn a_build_mismatch_is_reported_only_for_a_fresh_lock_from_another_commit() {
     let stale_after = Duration::from_secs(90);
     assert!(daemon_build_mismatch(&fixture.home, now, stale_after).is_none());
 
-    let path = fixture.home.root().join(depotd::DAEMON_LOCK_FILE_NAME);
+    let path = fixture.home.root().join(depotd::DAEMON_SCOPE_FILE_NAME);
     let mut scope: depotd::DaemonScope =
         serde_json::from_slice(&std::fs::read(&path).expect("record")).expect("parsed");
     scope.build_id = "0ldbu11d".to_string();
@@ -285,7 +295,7 @@ fn a_record_without_a_build_id_stays_quiet() {
     let fixture = support::fixture();
     let home = &fixture.home;
     std::fs::write(
-        home.root().join(depotd::DAEMON_LOCK_FILE_NAME),
+        home.root().join(depotd::DAEMON_SCOPE_FILE_NAME),
         br#"{"pid":41,"started_at_millis":1,"projects":["example"],"heartbeat_millis":1}"#,
     )
     .expect("a legacy record");

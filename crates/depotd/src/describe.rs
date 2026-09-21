@@ -209,6 +209,7 @@ mod tests {
             links: Vec::new(),
             branch_head: None,
             merge_refused: None,
+            conflict_base: None,
             failure: None,
             redirect_text: None,
             redirect_delivered: false,

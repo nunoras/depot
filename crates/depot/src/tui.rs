@@ -613,6 +613,7 @@ mod tests {
             failure: None,
             release_pending: Vec::new(),
             release_held: std::collections::BTreeMap::new(),
+            turn_deferral: None,
             redirect_text: None,
             redirect_delivered: false,
             acknowledged_at: None,

@@ -3,6 +3,8 @@ use std::time::Duration;
 
 mod tui;
 
+use depotd::adapters::process::Program;
+use depotd::adapters::worktrees::Treehouse;
 use depotd::{
     DepotHome, Error, StatusSelection, TaskRequest, acknowledge_task, add_artifact, add_project,
     add_task, answer_question, approve_tasks, ask_question, read_inbox, redirect_task,
@@ -555,7 +557,13 @@ fn submit_command(arguments: &[String]) -> Result<String, Failure> {
     flags.reject_unknown(&["task", "project"])?;
     flags.reject_positionals()?;
     let home = DepotHome::resolve()?;
-    let task = submit_task(&home, flags.value("project"), flags.required("task")?)?;
+    let worktrees = Treehouse::new(Program::new("treehouse"));
+    let task = submit_task(
+        &home,
+        flags.value("project"),
+        flags.required("task")?,
+        &worktrees,
+    )?;
     Ok(format!("submitted {}\n", task.id))
 }
 

@@ -125,7 +125,6 @@ fn need_for(tag: FactTag, task: Option<&Task>) -> Need {
         | FactTag::ValidationFailed
         | FactTag::WorkerLivenessChanged
         | FactTag::WorkerSessionFailed
-        | FactTag::WorkerTurnDeferred
         | FactTag::WorkerTurnUnresolved
         | FactTag::PushFailed
         | FactTag::DeliveryFailed
@@ -158,6 +157,7 @@ fn need_for(tag: FactTag, task: Option<&Task>) -> Need {
         | FactTag::WorkerTurnLaunchRequested
         | FactTag::WorkerTurnResumeRequested
         | FactTag::WorkerRelaunchRequested
+        | FactTag::WorkerTurnDeferred
         | FactTag::WorkerTurnStarted
         | FactTag::WorkerTurnEnded
         | FactTag::WorkerRedirected

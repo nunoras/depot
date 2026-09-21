@@ -399,6 +399,15 @@ impl Golden {
             .respond("status", &single_lease_pool(lease, id), "", 0);
     }
 
+    pub fn free_first_and_hold_second(&self, second: &Path, second_id: &str) {
+        self.treehouse.respond(
+            "status",
+            &free_first_leased_second_pool(&self.lease, second, second_id),
+            "",
+            0,
+        );
+    }
+
     pub fn script_pull_request_refused(&self) {
         self.forge.replace_route(
             "POST",
@@ -1042,6 +1051,14 @@ fn single_lease_pool(lease: &Path, id: &str) -> String {
     format!(
         "[{{\"name\":\"2\",\"path\":{},\"status\":\"leased\",\"lease_id\":\"{id}\",\"lease_holder\":\"depot:{TASK_TWO}\"}}]",
         quoted(lease)
+    )
+}
+
+fn free_first_leased_second_pool(first: &Path, second: &Path, second_id: &str) -> String {
+    format!(
+        "[{{\"name\":\"1\",\"path\":{},\"status\":\"free\",\"lease_id\":\"\",\"lease_holder\":\"\"}},{{\"name\":\"2\",\"path\":{},\"status\":\"leased\",\"lease_id\":\"{second_id}\",\"lease_holder\":\"depot:{TASK_TWO}\"}}]",
+        quoted(first),
+        quoted(second)
     )
 }
 

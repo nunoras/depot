@@ -773,7 +773,9 @@ fn a_restart_with_a_worktree_intent_completes_it_from_the_pool() {
     golden.reject_worktree_acquire();
     golden.propose();
 
-    assert!(daemon.tick().is_err(), "the acquire is interrupted");
+    daemon
+        .tick()
+        .expect("a failing acquire is deferred rather than fatal");
     assert!(
         golden
             .history(TASK)
@@ -806,7 +808,9 @@ fn a_restart_without_a_leased_worktree_retries_the_acquire() {
     golden.free_lease();
     golden.propose();
 
-    assert!(daemon.tick().is_err(), "the acquire is interrupted");
+    daemon
+        .tick()
+        .expect("a failing acquire is deferred rather than fatal");
     assert_eq!(calls_to(&golden.treehouse.calls(), "get").len(), 1);
 
     golden.allow_worktree_acquire();
@@ -873,7 +877,6 @@ fn a_redirect_queued_mid_turn_reaches_the_worker_at_the_next_turn() {
     );
 
     golden.boxr.report_running();
-    eprintln!("PHASE midturn");
     daemon
         .tick()
         .expect("a running worker is not interrupted mid-turn");
@@ -1173,7 +1176,9 @@ fn a_restart_with_a_launch_intent_surfaces_it_rather_than_launching_again() {
         .respond("--harness", "", "launch interrupted", 1);
     golden.propose();
 
-    assert!(daemon.tick().is_err(), "the launch is interrupted");
+    daemon
+        .tick()
+        .expect("a failing launch is deferred rather than fatal");
     assert!(golden.history(TASK).contains(&LAUNCH_REQUESTED.to_string()));
     assert!(!golden.history(TASK).contains(&TURN_STARTED.to_string()));
 
@@ -1723,10 +1728,9 @@ fn a_pending_acquire_that_takes_the_owed_lease_back_does_not_return_it() {
     golden.depot_ok(&["task", "stop", TASK, "--project", SLUG]);
     golden.depot_ok(&["task", "retry", TASK, "--project", SLUG]);
     golden.reject_worktree_acquire();
-    assert!(
-        daemon.tick().is_err(),
-        "a saturated pool aborts the tick before the release pass"
-    );
+    daemon
+        .tick()
+        .expect("a saturated pool defers the acquire instead of aborting the tick");
 
     golden.allow_worktree_acquire();
     daemon
@@ -3682,6 +3686,11 @@ fn an_unreadable_session_fails_only_its_task_and_the_tick_survives() {
         inbox.contains("boxr is down"),
         "the reason reaches the inbox: {inbox}"
     );
+    let checklist = golden.checklist();
+    assert!(
+        checklist.contains("worker turn deferred 1 time:") && checklist.contains("boxr is down"),
+        "the deferral is visible while the task still reads as running: {checklist}"
+    );
 
     for _ in 0..3 {
         daemon
@@ -3806,7 +3815,9 @@ fn a_launch_with_a_lease_missing_from_the_pool_fails_only_its_task_and_the_tick_
 fn a_failing_worker_launch_holds_only_its_task_and_the_tick_survives() {
     let golden = Golden::new(Validation::Passing);
     let daemon = golden.daemon();
-    golden.boxr.respond("--harness", "", "boxr launch is down", 1);
+    golden
+        .boxr
+        .respond("--harness", "", "boxr launch is down", 1);
     golden.propose();
 
     let second = golden.clone_second_lease("2", BRANCH_TWO);
@@ -3894,7 +3905,7 @@ fn a_failing_worktree_acquire_holds_only_its_task_and_the_tick_survives() {
     git::git(&second, &["commit", "-m", "the second task"]);
     let second_commit = git::head(&second);
     git::git(&second, &["push", "origin", "HEAD:main"]);
-    golden.hold_two_leases(&second, LEASE_TWO);
+    golden.free_first_and_hold_second(&second, LEASE_TWO);
     golden
         .store
         .put_task(&validated_task(
@@ -3948,5 +3959,80 @@ fn a_failing_worktree_acquire_holds_only_its_task_and_the_tick_survives() {
         landed.state,
         TaskState::Landed,
         "the other task still reaches its end"
+    );
+}
+
+#[test]
+fn a_retried_task_starts_its_deferral_ladder_from_zero() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.reject_worktree_acquire();
+    golden.free_lease();
+    golden.propose();
+
+    for _ in 0..4 {
+        daemon
+            .tick()
+            .expect("a failing worktree acquire does not stop the tick");
+    }
+    assert_eq!(golden.task().state, TaskState::Failed);
+
+    golden.depot_ok(&["task", "retry", TASK, "--project", SLUG]);
+    daemon
+        .tick()
+        .expect("the retried task defers on its own ladder");
+
+    let retried = golden.task();
+    assert_eq!(
+        retried.state,
+        TaskState::Running,
+        "a retry earns a fresh ladder instead of inheriting the spent one"
+    );
+    assert_eq!(
+        golden
+            .history(TASK)
+            .iter()
+            .filter(|kind| kind.as_str() == "worker_turn_deferred")
+            .count(),
+        4,
+        "the retried attempt records its own first deferral"
+    );
+    assert_eq!(
+        golden
+            .history(TASK)
+            .iter()
+            .filter(|kind| kind.as_str() == "worker_turn_unresolved")
+            .count(),
+        1,
+        "the retry does not hold the task again immediately"
+    );
+}
+
+#[test]
+fn one_tick_spends_one_rung_of_the_deferral_ladder() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.free_lease();
+    golden.propose();
+    let mut approved = golden.task();
+    approved.state = TaskState::Approved;
+    approved.attempts.clear();
+    golden
+        .store
+        .put_task(&approved)
+        .expect("the approved task is recorded");
+
+    daemon
+        .tick()
+        .expect("a launch that cannot find its lease does not stop the tick");
+
+    assert_eq!(
+        golden
+            .history(TASK)
+            .iter()
+            .filter(|kind| kind.as_str() == "worker_turn_deferred")
+            .count(),
+        1,
+        "one tick spends one rung, however many paths reach the same deferred turn"
     );
 }

@@ -17,7 +17,7 @@ pub use model::{
     Answer, AnsweredBy, Artifact, ArtifactKind, Attempt, AttemptOutcome, Checks, CommitId,
     CoordinatorSession, Dependency, Limits, Link, MergePolicy, ProfileId, ProjectId, ProjectState,
     Question, ReleaseHold, Retry, Role, SessionId, Submission, Task, TaskId, TaskState, Timestamp,
-    ValidationRecord, WorktreeLease,
+    TurnDeferral, ValidationRecord, WorktreeLease,
 };
 pub use reduce::{
     auto_merge_due, dependency_satisfied, publication_blocked, rebase_due, reduce,

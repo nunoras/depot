@@ -6,7 +6,7 @@ use crate::fact::{Fact, FactKind, Liveness};
 use crate::model::{
     Answer, Attempt, AttemptOutcome, Checks, CommitId, CoordinatorSession, Dependency, Limits,
     Link, MergePolicy, ProfileId, ProjectState, Question, ReleaseHold, Retry, Role, Submission,
-    Task, TaskId, TaskState, Timestamp, ValidationRecord, WorktreeLease,
+    Task, TaskId, TaskState, Timestamp, TurnDeferral, ValidationRecord, WorktreeLease,
 };
 
 pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) {
@@ -60,6 +60,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                         hold_pr: *hold_pr,
                         release_pending: Vec::new(),
                         release_held: BTreeMap::new(),
+                        turn_deferral: None,
                         retry: None,
                         created_at: fact.at,
                         updated_at: fact.at,
@@ -151,6 +152,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                 task.conflict_base = None;
                 task.failure = None;
                 task.acknowledged_at = None;
+                task.turn_deferral = None;
                 task.updated_at = fact.at;
                 changed = true;
                 approved.push(task.id.clone());
@@ -211,6 +213,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                         hold_pr: false,
                         release_pending: Vec::new(),
                         release_held: BTreeMap::new(),
+                        turn_deferral: None,
                         retry: None,
                         created_at: fact.at,
                         updated_at: fact.at,
@@ -313,7 +316,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             }
         }
 
-        FactKind::WorkerTurnUnresolved { task, .. } => {
+        FactKind::WorkerTurnUnresolved { task, reason } => {
             let unresolved = next.tasks.get(task).is_some_and(|task| {
                 task.state.in_flight()
                     && task
@@ -324,6 +327,8 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             if unresolved && let Some(task) = next.tasks.get_mut(task) {
                 close_attempt(task, AttemptOutcome::Failed, fact.at);
                 task.state = TaskState::Failed;
+                task.failure = Some(reason.clone());
+                task.turn_deferral = None;
                 task.updated_at = fact.at;
                 changed = true;
                 actions.push(Action::HoldForUser {
@@ -341,6 +346,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                 {
                     attempt.session = Some(session.clone());
                 }
+                task.turn_deferral = None;
                 task.updated_at = fact.at;
             }
         }
@@ -433,6 +439,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                 task.state = TaskState::Failed;
                 task.retry = None;
                 task.failure = Some(reason.clone());
+                task.turn_deferral = None;
                 task.updated_at = fact.at;
                 changed = true;
                 actions.push(Action::HoldForUser {
@@ -1189,7 +1196,23 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
         }
 
         FactKind::OnEventNotified { .. } => {}
-        FactKind::WorkerTurnDeferred { .. } => {}
+        FactKind::WorkerTurnDeferred { task, reason } => {
+            if let Some(task) = next.tasks.get_mut(task)
+                && task.state.in_flight()
+            {
+                let count = task
+                    .turn_deferral
+                    .as_ref()
+                    .map_or(0, |deferral| deferral.count)
+                    + 1;
+                task.turn_deferral = Some(TurnDeferral {
+                    count,
+                    reason: reason.clone(),
+                });
+                task.updated_at = fact.at;
+                changed = true;
+            }
+        }
         FactKind::Polled => {}
     }
 

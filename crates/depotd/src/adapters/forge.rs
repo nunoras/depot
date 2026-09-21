@@ -781,7 +781,7 @@ mod windows_token_acl {
             if allowed.Mask == 0 {
                 continue;
             }
-            let sid = ptr::addr_of!((*allowed).SidStart) as PSID;
+            let sid = ptr::addr_of!(allowed.SidStart) as PSID;
             if unsafe { IsValidSid(sid) } == 0 {
                 return Err("an allow ACE carried an invalid SID".to_owned());
             }

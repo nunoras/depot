@@ -51,6 +51,17 @@ pub enum TurnOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionStatus {
+    pub state: SessionState,
+    pub error: Option<String>,
+    pub capture_error: Option<String>,
+    pub limit_hit: bool,
+    pub started: Option<String>,
+    pub last_activity: Option<String>,
+    pub current_tool: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionSummary {
     pub session: SessionId,
     pub state: SessionState,
@@ -61,8 +72,8 @@ pub struct SessionSummary {
 pub trait Sessions {
     fn capabilities(&self) -> Result<Capabilities, SessionError>;
     fn launch(&self, request: &LaunchRequest) -> Result<SessionId, SessionError>;
-    fn resume(&self, session: &SessionId, prompt: &str) -> Result<(), SessionError>;
-    fn status(&self, session: &SessionId) -> Result<SessionState, SessionError>;
+    fn resume(&self, session: &SessionId, prompt: &str) -> Result<SessionId, SessionError>;
+    fn status(&self, session: &SessionId) -> Result<SessionStatus, SessionError>;
     fn wait(
         &self,
         session: &SessionId,
@@ -95,6 +106,28 @@ impl Boxr {
             command: command.to_owned(),
             detail: error.to_string(),
         })
+    }
+
+    fn session_id(&self, command: &str, output: &Output) -> Result<SessionId, SessionError> {
+        let id = match bare_session_id(&output.stdout) {
+            Some(id) => id,
+            None => {
+                let document = self.document(command, output)?;
+                document
+                    .scalar("session")
+                    .or_else(|| document.scalar("id"))
+                    .map(str::to_owned)
+                    .ok_or(SessionError::MissingSessionId {
+                        command: command.to_owned(),
+                    })?
+            }
+        };
+        match id.trim() {
+            "" => Err(SessionError::MissingSessionId {
+                command: command.to_owned(),
+            }),
+            id => Ok(SessionId::new(id)),
+        }
     }
 }
 
@@ -171,36 +204,22 @@ impl Sessions for Boxr {
 
         let command = self.program.command_line(&args);
         let output = self.output(&args, Some(&request.directory))?;
-        let id = match bare_session_id(&output.stdout) {
-            Some(id) => id,
-            None => {
-                let document = self.document(&command, &output)?;
-                document
-                    .scalar("session")
-                    .or_else(|| document.scalar("id"))
-                    .map(str::to_owned)
-                    .ok_or(SessionError::MissingSessionId {
-                        command: command.clone(),
-                    })?
-            }
-        };
-        match id.trim() {
-            "" => Err(SessionError::MissingSessionId { command }),
-            id => Ok(SessionId::new(id)),
-        }
+        self.session_id(&command, &output)
     }
 
-    fn resume(&self, session: &SessionId, prompt: &str) -> Result<(), SessionError> {
+    fn resume(&self, session: &SessionId, prompt: &str) -> Result<SessionId, SessionError> {
         let args = vec![
             "resume".to_owned(),
+            "--detach".to_owned(),
             session.as_str().to_owned(),
             prompt.to_owned(),
         ];
-        self.output(&args, None)?;
-        Ok(())
+        let command = self.program.command_line(&args);
+        let output = self.output(&args, None)?;
+        self.session_id(&command, &output)
     }
 
-    fn status(&self, session: &SessionId) -> Result<SessionState, SessionError> {
+    fn status(&self, session: &SessionId) -> Result<SessionStatus, SessionError> {
         let args = vec!["status".to_owned(), session.as_str().to_owned()];
         let command = self.program.command_line(&args);
         let output = self.output(&args, None)?;
@@ -211,7 +230,15 @@ impl Sessions for Boxr {
                 command: command.clone(),
                 detail: format!("no state field in {:?}", output.stdout_trimmed()),
             })?;
-        session_state(&command, state)
+        Ok(SessionStatus {
+            state: session_state(&command, state)?,
+            error: optional_scalar(&document, "error"),
+            capture_error: optional_scalar(&document, "captureError"),
+            limit_hit: document.scalar("limitHit") == Some("true"),
+            started: optional_scalar(&document, "started"),
+            last_activity: optional_scalar(&document, "lastActivity"),
+            current_tool: optional_scalar(&document, "currentTool"),
+        })
     }
 
     fn wait(
@@ -301,6 +328,13 @@ impl Sessions for Boxr {
             })
             .collect()
     }
+}
+
+fn optional_scalar(document: &Document, key: &str) -> Option<String> {
+    document
+        .scalar(key)
+        .filter(|value| *value != "null" && !value.is_empty())
+        .map(str::to_owned)
 }
 
 fn session_state(command: &str, state: &str) -> Result<SessionState, SessionError> {

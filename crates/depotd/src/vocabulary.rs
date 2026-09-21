@@ -124,6 +124,7 @@ pub enum FactTag {
     WorkerRedirected,
     WorkerRedirectDelivered,
     WorkerLivenessChanged,
+    WorkerSessionFailed,
     WorkerSubmissionRecorded,
     WorkerSubmitted,
     ValidationStarted,
@@ -176,6 +177,7 @@ pub fn fact_tag(kind: &FactKind) -> FactTag {
         FactKind::WorkerRedirected { .. } => FactTag::WorkerRedirected,
         FactKind::WorkerRedirectDelivered { .. } => FactTag::WorkerRedirectDelivered,
         FactKind::WorkerLivenessChanged { .. } => FactTag::WorkerLivenessChanged,
+        FactKind::WorkerSessionFailed { .. } => FactTag::WorkerSessionFailed,
         FactKind::WorkerSubmissionRecorded { .. } => FactTag::WorkerSubmissionRecorded,
         FactKind::WorkerSubmitted { .. } => FactTag::WorkerSubmitted,
         FactKind::ValidationStarted { .. } => FactTag::ValidationStarted,
@@ -229,6 +231,7 @@ pub fn fact_tag_name(tag: FactTag) -> &'static str {
         FactTag::WorkerRedirected => "worker_redirected",
         FactTag::WorkerRedirectDelivered => "worker_redirect_delivered",
         FactTag::WorkerLivenessChanged => "worker_liveness_changed",
+        FactTag::WorkerSessionFailed => "worker_session_failed",
         FactTag::WorkerSubmissionRecorded => "worker_submission_recorded",
         FactTag::WorkerSubmitted => "worker_submitted",
         FactTag::ValidationStarted => "validation_started",
@@ -281,6 +284,8 @@ pub fn fact_tag_from_name(name: &str) -> Result<FactTag> {
         "worker_redirected" => FactTag::WorkerRedirected,
         "worker_redirect_delivered" => FactTag::WorkerRedirectDelivered,
         "worker_liveness_changed" => FactTag::WorkerLivenessChanged,
+        "worker_session_failed" => FactTag::WorkerSessionFailed,
+        "worker_relaunch_requested" => FactTag::WorkerRelaunchRequested,
         "worker_submission_recorded" => FactTag::WorkerSubmissionRecorded,
         "worker_submitted" => FactTag::WorkerSubmitted,
         "validation_started" => FactTag::ValidationStarted,
@@ -338,6 +343,7 @@ pub fn fact_task(kind: &FactKind) -> Option<TaskId> {
         | FactKind::WorkerRedirected { task, .. }
         | FactKind::WorkerRedirectDelivered { task, .. }
         | FactKind::WorkerLivenessChanged { task, .. }
+        | FactKind::WorkerSessionFailed { task, .. }
         | FactKind::WorkerSubmissionRecorded { task, .. }
         | FactKind::WorkerSubmitted { task, .. }
         | FactKind::ValidationStarted { task, .. }

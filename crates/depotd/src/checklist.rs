@@ -189,6 +189,10 @@ fn render_task(
         out.push_str(&format!("  - auto-merge refused: {}\n", one_line(reason)));
     }
 
+    if let Some(reason) = &task.failure {
+        out.push_str(&format!("  - failure: {}\n", one_line(reason)));
+    }
+
     if task.state.in_flight()
         && let Some(text) = &task.redirect_text
     {

@@ -286,11 +286,14 @@ fn a_second_daemon_is_refused_with_the_holder_identity() {
 }
 
 #[test]
-fn a_second_daemon_names_an_unreadable_lock_record_as_such() {
+fn a_second_daemon_names_an_unreadable_scope_record_as_such() {
     let fixture = support::fixture();
     let _lock = InstanceLock::acquire(&fixture.home).expect("the lock");
-    std::fs::write(fixture.home.root().join(depotd::DAEMON_LOCK_FILE_NAME), b"")
-        .expect("an empty record");
+    std::fs::write(
+        fixture.home.root().join(depotd::DAEMON_SCOPE_FILE_NAME),
+        b"",
+    )
+    .expect("an empty record");
 
     let error = InstanceLock::acquire(&fixture.home).expect_err("the lock is taken");
     let message = error.to_string();

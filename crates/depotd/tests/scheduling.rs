@@ -1,10 +1,16 @@
+mod support;
+
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use depot_core::{Fact, FactKind, ProjectId, Role, SessionId, TaskId, Timestamp, WorktreeLease};
+use depot_core::{
+    Attempt, AttemptOutcome, Fact, FactKind, ProfileId, ProjectId, Role, SessionId, TaskId,
+    TaskState, Timestamp, WorktreeLease,
+};
 use depotd::adapters::sessions::{
-    Capabilities, LaunchRequest, SessionError, SessionState, SessionSummary, Sessions, TurnOutcome,
+    Capabilities, LaunchRequest, SessionError, SessionState, SessionStatus, SessionSummary,
+    Sessions, TurnOutcome,
 };
 use depotd::adapters::worktrees::{AcquireRequest, Lease, PoolEntry, WorktreeError, Worktrees};
 use depotd::{
@@ -98,12 +104,20 @@ impl Sessions for FakeSessions {
         Ok(SessionId::new("s-1"))
     }
 
-    fn resume(&self, _session: &SessionId, _prompt: &str) -> Result<(), SessionError> {
-        Ok(())
+    fn resume(&self, _session: &SessionId, _prompt: &str) -> Result<SessionId, SessionError> {
+        Ok(SessionId::new("s-2"))
     }
 
-    fn status(&self, _session: &SessionId) -> Result<SessionState, SessionError> {
-        Ok(SessionState::Running)
+    fn status(&self, _session: &SessionId) -> Result<SessionStatus, SessionError> {
+        Ok(SessionStatus {
+            state: SessionState::Running,
+            error: None,
+            capture_error: None,
+            limit_hit: false,
+            started: None,
+            last_activity: None,
+            current_tool: None,
+        })
     }
 
     fn wait(
@@ -125,6 +139,7 @@ impl Sessions for FakeSessions {
 
 struct Fixture {
     _temp: TempDir,
+    home: DepotHome,
     store: Store,
     projects: Vec<Project>,
     worktrees: FakeWorktrees,
@@ -149,6 +164,7 @@ fn register_project(store: &Store, home: &DepotHome, name: &str, config: &str) -
 }
 
 fn propose_and_approve(store: &Store, project: &Project, task: &str) {
+    let at = Timestamp::from_millis(0);
     for (key, kind) in [
         (
             format!("proposed:{task}"),
@@ -171,14 +187,7 @@ fn propose_and_approve(store: &Store, project: &Project, task: &str) {
         ),
     ] {
         store
-            .apply_fact(
-                project,
-                &key,
-                &Fact {
-                    at: Timestamp::from_millis(0),
-                    kind,
-                },
-            )
+            .apply_fact(project, &key, &Fact { at, kind })
             .expect("the fact applies");
     }
 }
@@ -189,6 +198,7 @@ fn fixture(concurrency: usize) -> Fixture {
     home.ensure().expect("the depot home");
     home.write_settings(&Settings {
         concurrency,
+        run_duration_minutes: 60 * 24 * 365 * 100,
         profiles: BTreeMap::from([(
             PROFILE.to_string(),
             depotd::ProfileSettings {
@@ -207,6 +217,7 @@ fn fixture(concurrency: usize) -> Fixture {
     let b = register_project(&store, &home, "beta", &config);
     Fixture {
         _temp: temp,
+        home,
         store,
         projects: vec![a, b],
         worktrees: FakeWorktrees::default(),
@@ -379,4 +390,85 @@ fn only_project_errors_are_treated_as_continuable() {
     assert!(!depotd::Error::Home("x".to_owned()).is_project());
     assert!(!depotd::Error::NotFound("x".to_owned()).is_project());
     assert!(!depotd::Error::Config("x".to_owned()).is_project());
+}
+
+fn set_run_duration(fixture: &Fixture, minutes: u64) {
+    let mut settings = fixture.home.load_settings().expect("settings");
+    settings.run_duration_minutes = minutes;
+    fixture
+        .home
+        .write_settings(&settings)
+        .expect("the settings are written");
+}
+
+fn seed_task(store: &Store, project: &Project, id: &str, state: TaskState) {
+    let mut task = support::simple_task(&project.id, id, state, 0);
+    task.attempts.push(Attempt {
+        session: Some(SessionId::new("s-1")),
+        profile: ProfileId::new(PROFILE),
+        worktree: Some(WorktreeLease::new("l-1")),
+        started_at: Timestamp::from_millis(0),
+        finished_at: None,
+        outcome: AttemptOutcome::InFlight,
+        rebase: false,
+        last_seen_at: None,
+    });
+    store.put_task(&task).expect("the task is stored");
+}
+
+fn daemon<'a>(
+    fixture: &'a Fixture,
+    project: &Project,
+) -> Daemon<
+    'a,
+    FakeSessions,
+    FakeWorktrees,
+    ShellValidation,
+    ForgeDelivery<depotd::adapters::forge::GitHub>,
+    NoEventHook,
+> {
+    Daemon::new(
+        &fixture.store,
+        project.clone(),
+        FakeSessions,
+        fixture.worktrees.clone(),
+        ShellValidation,
+        ForgeDelivery::new(depotd::adapters::forge::GitHub::new(
+            "http://forge.test",
+            "token".to_owned(),
+        )),
+        NoEventHook,
+    )
+}
+
+#[test]
+fn the_budget_covers_unattended_work_only() {
+    let fixture = fixture(1);
+    let a = &fixture.projects[0];
+    set_run_duration(&fixture, 0);
+    seed_task(&fixture.store, a, "t-wait", TaskState::WaitingOnQuestion);
+    seed_task(&fixture.store, a, "t-run", TaskState::Running);
+
+    daemon(&fixture, a).tick().expect("the tick runs");
+
+    let waiting = fixture
+        .store
+        .task(&a.id, &TaskId::new("t-wait"))
+        .expect("the task is read")
+        .expect("the task exists");
+    assert_eq!(
+        waiting.state,
+        TaskState::WaitingOnQuestion,
+        "a task waiting on an answer is not over its unattended budget"
+    );
+    let running = fixture
+        .store
+        .task(&a.id, &TaskId::new("t-run"))
+        .expect("the task is read")
+        .expect("the task exists");
+    assert_eq!(
+        running.state,
+        TaskState::Failed,
+        "a task running past its budget is failed"
+    );
 }

@@ -70,6 +70,7 @@ fn task(id: &str, state: TaskState) -> Task {
         branch_head: None,
         merge_refused: None,
         conflict_base: None,
+        failure: None,
         redirect_text: None,
         redirect_delivered: false,
         acknowledged_at: None,
@@ -799,6 +800,48 @@ fn rule_06_a_run_duration_overrun_pauses_the_task_and_keeps_its_work() {
             )],
         )
         .when("t1", TaskState::Validated, vec![]),
+    ]);
+}
+
+#[test]
+fn a_terminal_session_failure_records_its_reason_and_holds_the_task() {
+    run(vec![
+        case(
+            "a failed session with a reported error parks the task with the reason",
+            state(vec![running_with_session("t1", "s1", "w1")]),
+            vec![fact(
+                7_000,
+                FactKind::WorkerSessionFailed {
+                    task: task_id("t1"),
+                    reason: "the harness crashed".to_string(),
+                },
+            )],
+        )
+        .when(
+            "t1",
+            TaskState::Failed,
+            vec![hold("t1"), Action::RenderChecklist],
+        )
+        .checking(|state| {
+            subject(state, "t1").failure.as_deref() == Some("the harness crashed")
+                && subject(state, "t1")
+                    .attempts
+                    .last()
+                    .is_some_and(|attempt| attempt.outcome == AttemptOutcome::Failed)
+        }),
+        case(
+            "a task that is not in flight is left alone",
+            state(vec![validated("t1", "c1")]),
+            vec![fact(
+                8_000,
+                FactKind::WorkerSessionFailed {
+                    task: task_id("t1"),
+                    reason: "late".to_string(),
+                },
+            )],
+        )
+        .when("t1", TaskState::Validated, vec![])
+        .checking(|state| subject(state, "t1").failure.is_none()),
     ]);
 }
 

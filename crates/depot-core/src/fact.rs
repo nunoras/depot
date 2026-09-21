@@ -103,6 +103,10 @@ pub enum FactKind {
         task: TaskId,
         liveness: Liveness,
     },
+    WorkerSessionFailed {
+        task: TaskId,
+        reason: String,
+    },
     WorkerSubmissionRecorded {
         task: TaskId,
         summary: String,

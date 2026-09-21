@@ -210,6 +210,7 @@ mod tests {
             branch_head: None,
             merge_refused: None,
             conflict_base: None,
+            failure: None,
             redirect_text: None,
             redirect_delivered: false,
             acknowledged_at: None,
@@ -319,7 +320,7 @@ mod tests {
     use std::path::PathBuf;
 
     use crate::adapters::sessions::{
-        Capabilities, LaunchRequest, SessionError, SessionState, SessionSummary,
+        Capabilities, LaunchRequest, SessionError, SessionStatus, SessionSummary,
     };
 
     struct FakeSessions {
@@ -345,10 +346,10 @@ mod tests {
             self.finish_turn();
             Ok(SessionId::new("sess-1"))
         }
-        fn resume(&self, _: &SessionId, _: &str) -> Result<(), SessionError> {
+        fn resume(&self, _: &SessionId, _: &str) -> Result<SessionId, SessionError> {
             unimplemented!()
         }
-        fn status(&self, _: &SessionId) -> Result<SessionState, SessionError> {
+        fn status(&self, _: &SessionId) -> Result<SessionStatus, SessionError> {
             unimplemented!()
         }
         fn wait(&self, _: &SessionId, _: Option<Duration>) -> Result<TurnOutcome, SessionError> {

@@ -1041,6 +1041,7 @@ fn task(project: &str, id: &str, state: TaskState, offset: u64) -> depot_core::T
         branch_head: None,
         merge_refused: None,
         conflict_base: None,
+        failure: None,
         redirect_text: None,
         redirect_delivered: false,
         acknowledged_at: None,

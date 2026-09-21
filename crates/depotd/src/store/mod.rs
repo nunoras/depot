@@ -187,12 +187,12 @@ impl Store {
         &self,
         project: &ProjectId,
         task: &depot_core::TaskId,
-    ) -> Result<Option<depot_core::Liveness>> {
+    ) -> Result<Option<(depot_core::Liveness, depot_core::Timestamp)>> {
         use rusqlite::OptionalExtension;
-        let payload: Option<String> = self
+        let row: Option<(String, i64)> = self
             .connection
             .query_row(
-                "SELECT payload FROM events
+                "SELECT payload, at FROM events
                  WHERE project_id = ?1 AND task_id = ?2 AND kind = ?3
                  ORDER BY id DESC LIMIT 1",
                 params![
@@ -202,19 +202,23 @@ impl Store {
                         crate::vocabulary::FactTag::WorkerLivenessChanged
                     )
                 ],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?;
-        let payload = match payload {
-            Some(payload) => payload,
+        let (payload, at) = match row {
+            Some(row) => row,
             None => return Ok(None),
         };
         let name = factcodec::payload_field(&payload, "liveness")?;
-        if name == factcodec::liveness_name(depot_core::Liveness::Live) {
-            Ok(Some(depot_core::Liveness::Live))
+        let liveness = if name == factcodec::liveness_name(depot_core::Liveness::Live) {
+            depot_core::Liveness::Live
         } else {
-            Ok(Some(depot_core::Liveness::Gone))
-        }
+            depot_core::Liveness::Gone
+        };
+        let at = u64::try_from(at)
+            .map(depot_core::Timestamp::from_millis)
+            .map_err(|_| Error::Schema(format!("{at} is not a millisecond count")))?;
+        Ok(Some((liveness, at)))
     }
 
     pub fn last_event_id(

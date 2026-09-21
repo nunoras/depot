@@ -2396,7 +2396,7 @@ where
                     continue;
                 }
             };
-            let Some(observed) = observed else {
+            let Some(mut observed) = observed else {
                 continue;
             };
             let at = now();
@@ -2445,6 +2445,17 @@ where
                                 },
                             },
                         )?;
+                    }
+                    if observed.mergeable == Some(false) {
+                        match self.mergeability_against_fresh_base(task, &observed.commit) {
+                            Ok((base, mergeable)) => {
+                                observed.base = base;
+                                observed.mergeable = Some(mergeable);
+                            }
+                            Err(error) => {
+                                log("mergeability_check_failed", &error.to_string());
+                            }
+                        }
                     }
                     if let Some(mergeable) = observed.mergeable {
                         let conflicting_base = (!mergeable).then(|| observed.base.clone());
@@ -2552,6 +2563,19 @@ where
             }
         }
         Ok(())
+    }
+
+    fn mergeability_against_fresh_base(
+        &self,
+        task: &Task,
+        commit: &CommitId,
+    ) -> Result<(CommitId, bool)> {
+        let worktree = self.lease_for(task)?.path;
+        let base = self.store.project_config(&self.project)?.pull_request.base;
+        let fresh = fetch_base(&worktree, &base)?;
+        let scratch = ScratchWorktree::add(&worktree, commit)?;
+        let mergeable = merge_base(scratch.path(), &base)?.is_none();
+        Ok((fresh, mergeable))
     }
 
     fn schedule_rebases(&self, observed_open: &[(TaskId, u64, ObservedPullRequest)]) -> Result<()> {

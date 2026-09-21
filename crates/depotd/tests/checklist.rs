@@ -529,3 +529,24 @@ fn a_single_deferral_reads_as_one_time() {
         "got\n{rendered}"
     );
 }
+
+#[test]
+fn a_deferral_on_a_task_past_running_does_not_render() {
+    let mut state = support::varied_state();
+    let task = state
+        .tasks
+        .values_mut()
+        .find(|task| task.state == TaskState::Running)
+        .expect("a running task");
+    task.state = TaskState::Validating;
+    task.turn_deferral = Some(TurnDeferral {
+        count: 1,
+        reason: "boxr is down".to_string(),
+    });
+
+    let rendered = render_checklist(&state, false);
+    assert!(
+        !rendered.contains("worker turn deferred"),
+        "a deferral is stale once the task leaves running\n{rendered}"
+    );
+}

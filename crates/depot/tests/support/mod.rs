@@ -369,6 +369,15 @@ impl Golden {
         git::git(&self.lease, &["branch", "-D", base]);
     }
 
+    pub fn drop_profiles(&self) {
+        self.home
+            .write_settings(&Settings {
+                profiles: BTreeMap::new(),
+                ..settings()
+            })
+            .expect("the settings are rewritten without profiles");
+    }
+
     pub fn clone_second_lease(&self, name: &str, branch: &str) -> PathBuf {
         let lease = self.base.join("pool").join(name);
         let _ = fs::remove_dir_all(&lease);

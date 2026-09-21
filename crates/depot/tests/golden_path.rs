@@ -3185,7 +3185,7 @@ fn a_run_past_its_duration_stops_the_session_once_and_holds_the_task() {
 }
 
 #[test]
-fn a_run_duration_stop_that_fails_surfaces_rather_than_pretending_success() {
+fn a_run_duration_stop_that_fails_defers_its_task_instead_of_stopping_the_daemon() {
     let golden = Golden::new(Validation::Passing);
     zero_run_duration(&golden);
     let daemon = golden.daemon();
@@ -3194,12 +3194,15 @@ fn a_run_duration_stop_that_fails_surfaces_rather_than_pretending_success() {
         .boxr
         .respond("stop", "", "boxr could not stop the session", 1);
 
-    let error = daemon
+    daemon
         .tick()
-        .expect_err("the failed stop is surfaced, not swallowed");
+        .expect("a failed stop is deferred rather than fatal");
     assert!(
-        error.to_string().contains("could not stop"),
-        "the stop failure is named: {error}"
+        golden
+            .history(TASK)
+            .contains(&"worker_turn_deferred".to_string()),
+        "the failed stop is recorded: {:?}",
+        golden.history(TASK)
     );
 }
 
@@ -3213,7 +3216,9 @@ fn a_failed_stop_is_retried_until_the_session_is_gone() {
         .boxr
         .respond("stop", "", "boxr could not stop the session", 1);
 
-    daemon.tick().expect_err("the first stop fails");
+    daemon
+        .tick()
+        .expect("a failed stop is deferred rather than fatal");
     assert_eq!(golden.boxr.calls_to("stop").len(), 1);
 
     golden.boxr.respond("stop", "", "", 0);
@@ -3730,6 +3735,101 @@ fn an_unreadable_session_fails_only_its_task_and_the_tick_survives() {
         landed.state,
         TaskState::Landed,
         "the other task still reaches its end"
+    );
+}
+
+#[test]
+fn a_recovered_worker_turn_clears_its_deferral() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+
+    golden.boxr.respond("status", "", "boxr is down", 1);
+    daemon
+        .tick()
+        .expect("an unreadable session does not stop the tick");
+    assert!(
+        golden.checklist().contains("worker turn deferred 1 time:"),
+        "the deferral is visible while the outage lasts: {}",
+        golden.checklist()
+    );
+
+    golden.boxr.report_running();
+    daemon
+        .tick()
+        .expect("a recovered session does not stop the tick");
+
+    let recovered = golden.task();
+    assert_eq!(recovered.state, TaskState::Running);
+    assert!(
+        recovered.turn_deferral.is_none(),
+        "recovery clears the deferral: {:?}",
+        recovered.turn_deferral
+    );
+    assert!(
+        !golden.checklist().contains("worker turn deferred"),
+        "the checklist drops the cleared line: {}",
+        golden.checklist()
+    );
+}
+
+#[test]
+fn a_missing_profile_holds_only_its_task_and_the_tick_survives() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    golden.drop_profiles();
+
+    daemon
+        .tick()
+        .expect("a missing profile holds the task instead of stopping the daemon");
+
+    let held = golden.task();
+    assert_eq!(
+        held.state,
+        TaskState::Failed,
+        "the task is held when its profile cannot be resolved"
+    );
+    assert!(
+        held.failure
+            .as_deref()
+            .is_some_and(|reason| reason.contains("not defined in machine-local settings")),
+        "the task names the config problem: {:?}",
+        held.failure
+    );
+    assert!(
+        golden
+            .history(TASK)
+            .contains(&"worker_turn_unresolved".to_string()),
+        "the config problem is a recorded fact: {:?}",
+        golden.history(TASK)
+    );
+}
+
+#[test]
+fn an_unreadable_worktree_pool_skips_the_lease_pass_and_the_tick_survives() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+
+    golden.depot_ok(&["task", "stop", TASK, "--project", SLUG]);
+    assert!(
+        !golden.task().release_pending.is_empty(),
+        "the stopped task owes its lease"
+    );
+
+    golden
+        .treehouse
+        .respond("status", "", "treehouse is down", 1);
+    daemon
+        .tick()
+        .expect("an unreadable pool skips the lease pass instead of stopping the tick");
+
+    assert!(
+        !golden.task().release_pending.is_empty(),
+        "the lease stays owed until the pool is readable"
     );
 }
 

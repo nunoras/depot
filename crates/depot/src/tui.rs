@@ -105,7 +105,6 @@ struct ProjectView {
 fn collect(home: &DepotHome, selection: &StatusSelection) -> Result<Vec<ProjectView>, Error> {
     let store = Store::open(home)?;
     let now = Timestamp::from_millis(unix_millis());
-    let stale_after = home.load_settings()?.poll_interval().saturating_mul(3);
     let projects: Vec<Project> = match selection {
         StatusSelection::All => store.projects()?,
         StatusSelection::Project(name) => vec![select_project(&store, Some(name))?],
@@ -157,7 +156,7 @@ fn collect(home: &DepotHome, selection: &StatusSelection) -> Result<Vec<ProjectV
             tasks.sort_by_key(|task| task.state != TaskState::WaitingOnQuestion);
             Ok(ProjectView {
                 slug: project.slug,
-                daemon_scope_covers: daemon_scope_covers(home, &project.id, now, stale_after)?,
+                daemon_scope_covers: daemon_scope_covers(home, &project.id, now)?,
                 tasks,
             })
         })
@@ -524,6 +523,9 @@ impl Drop for Terminal {
 
 #[cfg(test)]
 mod tests {
+    use depot_core::ProjectId;
+    use depotd::{LocationKind, Task};
+
     use super::*;
 
     fn view(id: &str, title: &str, state: TaskState) -> TaskView {
@@ -552,6 +554,46 @@ mod tests {
             daemon_scope_covers,
             tasks,
         }]
+    }
+
+    fn stored_project() -> Project {
+        Project {
+            id: ProjectId::new("https://example.test/repo"),
+            kind: LocationKind::Url,
+            slug: "depot".to_string(),
+            created_at: Timestamp::from_millis(0),
+        }
+    }
+
+    fn stored_task(state: TaskState) -> Task {
+        Task {
+            id: TaskId::new("t-1"),
+            project: ProjectId::new("https://example.test/repo"),
+            title: "task t-1".to_string(),
+            intent: "intent for t-1".to_string(),
+            role: Role::Build,
+            dispatch_profile: None,
+            state,
+            dependencies: Vec::new(),
+            base_dependency: None,
+            attempts: Vec::new(),
+            questions: Vec::new(),
+            validations: Vec::new(),
+            submission: None,
+            artifacts: Vec::new(),
+            links: Vec::new(),
+            branch_head: None,
+            merge_refused: None,
+            conflict_base: None,
+            redirect_text: None,
+            redirect_delivered: false,
+            acknowledged_at: None,
+            rework_of: None,
+            hold_pr: false,
+            retry: None,
+            created_at: Timestamp::from_millis(0),
+            updated_at: Timestamp::from_millis(0),
+        }
     }
 
     fn split(lines: &[Line]) -> (Vec<String>, Vec<String>) {
@@ -681,9 +723,25 @@ mod tests {
 
     #[test]
     fn a_selected_uncovered_project_still_warns() {
-        let projects = covered_project(false, vec![view("t-1", "task t-1", TaskState::Running)]);
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let home = DepotHome::at(temp.path().join("depot-home"));
+        home.ensure().expect("depot home");
+        let store = Store::open(&home).expect("store");
+        let project = stored_project();
+        store.put_project(&project).expect("project");
+        store
+            .put_task(&stored_task(TaskState::Running))
+            .expect("task");
+
+        let projects =
+            collect(&home, &StatusSelection::Project(project.slug.clone())).expect("collected");
+        assert_eq!(projects.len(), 1);
+        assert!(!projects[0].daemon_scope_covers);
         let (_, body) = split(&frame(&projects, 0, 0, 80, false));
-        assert!(body.iter().any(|line| line.contains("no daemon")));
+        assert!(
+            body.iter()
+                .any(|line| line == "  no daemon is driving this project")
+        );
     }
 
     #[test]

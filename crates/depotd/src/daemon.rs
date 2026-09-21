@@ -117,12 +117,8 @@ impl InstanceLock {
     }
 }
 
-pub fn daemon_scope_covers(
-    home: &DepotHome,
-    project: &ProjectId,
-    now: Timestamp,
-    stale_after: Duration,
-) -> Result<bool> {
+pub fn daemon_scope_covers(home: &DepotHome, project: &ProjectId, now: Timestamp) -> Result<bool> {
+    let stale_after = home.load_settings()?.poll_interval().saturating_mul(3);
     let path = home.root().join(DAEMON_SCOPE_FILE_NAME);
     let Ok(bytes) = std::fs::read(&path) else {
         return Ok(false);

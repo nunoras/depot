@@ -185,13 +185,12 @@ pub fn render_status_at(
     }
 
     let mut out = String::new();
-    let stale_after = home.load_settings()?.poll_interval().saturating_mul(3);
     for (index, project) in projects.iter().enumerate() {
         if index > 0 {
             out.push('\n');
         }
         let state = store.project_state(project)?;
-        let covered = daemon_scope_covers(home, &project.id, now, stale_after)?;
+        let covered = daemon_scope_covers(home, &project.id, now)?;
         if !covered && needs_daemon(state.tasks.values().map(|task| task.state)) {
             out.push_str("no daemon is driving this project\n\n");
         }

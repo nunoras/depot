@@ -109,6 +109,8 @@ command = "cargo test"
 [pull_request]
 base = "main"
 merge = "manual"
+describe_profile = "my-describer"
+describe_style = "Write in the house voice: plain sentences, no emoji."
 ```
 
 6. Start the daemon:

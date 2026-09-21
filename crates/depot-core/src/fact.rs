@@ -120,9 +120,15 @@ pub enum FactKind {
         task: TaskId,
         command: String,
         commit: CommitId,
+        base_commit: Option<CommitId>,
         exit_code: i32,
         duration: Duration,
         output_tail: String,
+    },
+    ValidationFailed {
+        task: TaskId,
+        commit: CommitId,
+        reason: String,
     },
     WorktreeAcquired {
         task: TaskId,

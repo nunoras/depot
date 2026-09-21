@@ -251,6 +251,7 @@ fn drive_to_pr_open(fixture: &Fixture, commit: &str) {
                 task: TaskId::new("t-1"),
                 command: "cargo test".to_owned(),
                 commit: depot_core::CommitId::new(commit),
+                base_commit: None,
                 exit_code: 0,
                 duration: Duration::from_secs(1),
                 output_tail: String::new(),

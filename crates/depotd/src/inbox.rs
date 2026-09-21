@@ -122,6 +122,7 @@ fn need_for(tag: FactTag, task: Option<&Task>) -> Need {
             _ => Need::Nothing,
         },
         FactTag::ValidationFinished
+        | FactTag::ValidationFailed
         | FactTag::WorkerLivenessChanged
         | FactTag::WorkerTurnUnresolved
         | FactTag::PushFailed
@@ -247,6 +248,10 @@ fn headline(tag: FactTag, event: &RecordedEvent, task: Option<&Task>) -> Result<
             ),
             None => "validation finished".to_string(),
         },
+        FactTag::ValidationFailed => {
+            let reason = payload_field(&event.payload, "reason")?;
+            format!("the validation could not run: {}", one_line(&reason))
+        }
         FactTag::WorktreeAcquired => match lease(task) {
             Some(lease) => format!("worktree lease `{lease}` acquired"),
             None => "a worktree was acquired".to_string(),

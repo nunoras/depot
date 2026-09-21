@@ -2,8 +2,9 @@ use std::cell::Cell;
 use std::fs::{File, OpenOptions};
 
 use fs2::FileExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use depot_core::{
@@ -129,6 +130,7 @@ pub trait ValidationRunner {
         task: &Task,
         worktree: &Path,
         commit: &CommitId,
+        base: &str,
         command: &str,
     ) -> Result<ValidationResult>;
 }
@@ -200,6 +202,7 @@ impl ValidationRunner for ShellValidation {
         _task: &Task,
         worktree: &Path,
         commit: &CommitId,
+        base: &str,
         command: &str,
     ) -> Result<ValidationResult> {
         let head = git_output(worktree, &["rev-parse", "HEAD"])?;
@@ -210,12 +213,18 @@ impl ValidationRunner for ShellValidation {
                 head.trim()
             )));
         }
+        let base_commit = fetch_base(worktree, base)?;
+        let scratch = ScratchWorktree::add(worktree, commit)?;
         let started = Instant::now();
-        let output = shell(command, worktree)?;
+        let output = match merge_base(scratch.path(), base)? {
+            Some(conflict) => conflict,
+            None => shell(command, scratch.path())?,
+        };
         Ok(ValidationResult {
             exit_code: output.status.code().unwrap_or(-1),
             duration: started.elapsed(),
             output_tail: output_tail(&output),
+            base_commit: Some(base_commit),
         })
     }
 }
@@ -258,7 +267,7 @@ impl<F: Forge> Delivery for ForgeDelivery<F> {
         base: &str,
         commit: &CommitId,
     ) -> Result<bool> {
-        git_output(worktree, &["fetch", "origin", base])?;
+        fetch_base(worktree, base)?;
         match git_exit(
             worktree,
             &[
@@ -457,6 +466,94 @@ fn git_exit(worktree: &Path, args: &[&str]) -> Result<i32> {
     Ok(output.status.code().unwrap_or(-1))
 }
 
+fn fetch_base(worktree: &Path, base: &str) -> Result<CommitId> {
+    let refspec = format!("+refs/heads/{base}:refs/remotes/origin/{base}");
+    git_output(worktree, &["fetch", "origin", &refspec])
+        .map_err(|error| Error::Project(format!("could not fetch base `{base}`: {error}")))?;
+    let commit = git_output(
+        worktree,
+        &["rev-parse", &format!("refs/remotes/origin/{base}")],
+    )?;
+    Ok(CommitId::new(commit.trim()))
+}
+
+fn merge_base(scratch: &Path, base: &str) -> Result<Option<std::process::Output>> {
+    let hooks = scratch.join("depot-merge-hooks");
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(scratch)
+        .args(["-c"])
+        .arg(format!("core.hooksPath={}", hooks.display()))
+        .args(["merge", "--no-commit", "--no-ff", &format!("origin/{base}")])
+        .output()
+        .map_err(Error::Io)?;
+    if output.status.success() {
+        Ok(None)
+    } else {
+        Ok(Some(output))
+    }
+}
+
+struct ScratchWorktree {
+    repo: PathBuf,
+    path: PathBuf,
+}
+
+impl ScratchWorktree {
+    fn add(repo: &Path, commit: &CommitId) -> Result<Self> {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "depot-validation-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(["worktree", "remove", "--force"])
+            .arg(&path)
+            .output();
+        let _ = std::fs::remove_dir_all(&path);
+        let path_text = path
+            .to_str()
+            .ok_or_else(|| Error::Project("the scratch worktree path is not utf-8".into()))?;
+        if let Err(error) = git_output(
+            repo,
+            &[
+                "worktree",
+                "add",
+                "--detach",
+                "--force",
+                path_text,
+                commit.as_str(),
+            ],
+        ) {
+            let _ = std::fs::remove_dir_all(&path);
+            return Err(error);
+        }
+        Ok(Self {
+            repo: repo.to_path_buf(),
+            path,
+        })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for ScratchWorktree {
+    fn drop(&mut self) {
+        let _ = Command::new("git")
+            .arg("-C")
+            .arg(&self.repo)
+            .args(["worktree", "remove", "--force"])
+            .arg(&self.path)
+            .output();
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
 fn output_tail(output: &std::process::Output) -> String {
     let mut combined = String::from_utf8_lossy(&output.stdout).into_owned();
     combined.push_str(&String::from_utf8_lossy(&output.stderr));
@@ -583,6 +680,7 @@ pub struct ValidationResult {
     pub exit_code: i32,
     pub duration: Duration,
     pub output_tail: String,
+    pub base_commit: Option<CommitId>,
 }
 
 enum DescribeOutcome {
@@ -1061,10 +1159,19 @@ where
     fn validate(&self, task: TaskId, commit: CommitId) -> Result<()> {
         let task_record = self.task(&task)?;
         let worktree = self.lease_for(&task_record)?.path;
-        let command = self.store.project_config(&self.project)?.validation.command;
-        let result = self
-            .validation
-            .validate(&task_record, &worktree, &commit, &command)?;
+        let config = self.store.project_config(&self.project)?;
+        let base = config.pull_request.base.clone();
+        let command = config.validation.command.clone();
+        let result =
+            match self
+                .validation
+                .validate(&task_record, &worktree, &commit, &base, &command)
+            {
+                Ok(result) => result,
+                Err(error) => {
+                    return self.record_validation_failure(&task, &commit, &error.to_string());
+                }
+            };
         self.record(
             &event_key(&["validation_finished", task.as_str(), commit.as_str()]),
             Fact {
@@ -1073,9 +1180,30 @@ where
                     task,
                     command,
                     commit,
+                    base_commit: result.base_commit,
                     exit_code: result.exit_code,
                     duration: result.duration,
                     output_tail: result.output_tail,
+                },
+            },
+        )
+    }
+
+    fn record_validation_failure(
+        &self,
+        task: &TaskId,
+        commit: &CommitId,
+        reason: &str,
+    ) -> Result<()> {
+        log("validation-failed", reason);
+        self.record(
+            &event_key(&["validation_failed", task.as_str(), commit.as_str()]),
+            Fact {
+                at: now(),
+                kind: FactKind::ValidationFailed {
+                    task: task.clone(),
+                    commit: commit.clone(),
+                    reason: reason.to_owned(),
                 },
             },
         )
@@ -1278,9 +1406,11 @@ where
     ) -> Result<describe::DescribeOutput> {
         let settings = self.store.home().load_settings()?;
         let spec = settings.profile_spec(depot_core::ProfileId::new(profile.to_owned()))?;
-        let base = &config.pull_request.base;
-        let diff = git_output(worktree, &["diff", &format!("{base}...HEAD")])?;
-        let diffstat = git_output(worktree, &["diff", "--stat", &format!("{base}...HEAD")])?;
+        let base = config.pull_request.base.clone();
+        fetch_base(worktree, &base)?;
+        let range = format!("origin/{base}...HEAD");
+        let diff = git_output(worktree, &["diff", &range])?;
+        let diffstat = git_output(worktree, &["diff", "--stat", &range])?;
         let describer = describe::SessionDescriber::new(
             &self.sessions,
             spec,
@@ -1289,6 +1419,7 @@ where
         describer.describe(&describe::DescribeInput {
             title: task.title.clone(),
             diff: describe::diff_section(&diff, &diffstat),
+            style: config.pull_request.describe_style.clone(),
             directory: worktree.to_path_buf(),
             output_path: std::env::temp_dir().join(format!(
                 "depot-describe-{}-{}.md",
@@ -2247,14 +2378,35 @@ mod tests {
     #[test]
     fn validation_runs_at_the_submitted_commit_and_keeps_its_output() {
         let temp = TempDir::new().expect("temporary directory");
-        let path = temp.path();
-        git(path, &["init"]);
-        git(path, &["config", "user.email", "depot@example.test"]);
-        git(path, &["config", "user.name", "Depot"]);
+        let path = temp.path().join("work");
+        std::fs::create_dir_all(&path).expect("work directory");
+        git(&path, &["init"]);
+        git(&path, &["config", "user.email", "depot@example.test"]);
+        git(&path, &["config", "user.name", "Depot"]);
         std::fs::write(path.join("answer"), "42").expect("fixture is written");
-        git(path, &["add", "."]);
-        git(path, &["commit", "-m", "fixture"]);
-        let commit = CommitId::new(git(path, &["rev-parse", "HEAD"]));
+        git(&path, &["add", "."]);
+        git(&path, &["commit", "-m", "fixture"]);
+        let commit = CommitId::new(git(&path, &["rev-parse", "HEAD"]));
+        let origin = temp.path().join("origin.git");
+        git(
+            temp.path(),
+            &[
+                "init",
+                "--bare",
+                "--initial-branch=main",
+                origin.to_str().expect("the origin is utf-8"),
+            ],
+        );
+        git(
+            &path,
+            &[
+                "remote",
+                "add",
+                "origin",
+                origin.to_str().expect("the origin is utf-8"),
+            ],
+        );
+        git(&path, &["push", "origin", "HEAD:main"]);
         let task = depot_core::Task {
             id: depot_core::TaskId::new("T1"),
             project: depot_core::ProjectId::new("test"),
@@ -2283,15 +2435,82 @@ mod tests {
             updated_at: depot_core::Timestamp::from_millis(0),
         };
         let result = ShellValidation
-            .validate(&task, path, &commit, "printf validated; exit 7")
+            .validate(&task, &path, &commit, "main", "printf validated; exit 7")
             .expect("validation runs");
         assert_eq!(result.exit_code, 7);
         assert_eq!(result.output_tail, "validated");
+        assert_eq!(
+            result.base_commit.as_ref().map(CommitId::as_str),
+            Some(commit.as_str())
+        );
         let wrong = CommitId::new("0000000000000000000000000000000000000000");
         assert!(
             ShellValidation
-                .validate(&task, path, &wrong, "true")
+                .validate(&task, &path, &wrong, "main", "true")
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn fetching_the_base_updates_a_stale_ref_without_a_local_branch() {
+        let temp = TempDir::new().expect("temporary directory");
+        let origin = temp.path().join("origin.git");
+        git(
+            temp.path(),
+            &[
+                "init",
+                "--bare",
+                "--initial-branch=main",
+                origin.to_str().expect("the origin is utf-8"),
+            ],
+        );
+        let work = temp.path().join("work");
+        std::fs::create_dir_all(&work).expect("work directory");
+        git(&work, &["init", "--initial-branch=main"]);
+        git(&work, &["config", "user.email", "depot@example.test"]);
+        git(&work, &["config", "user.name", "Depot"]);
+        git(
+            &work,
+            &[
+                "remote",
+                "add",
+                "origin",
+                origin.to_str().expect("the origin is utf-8"),
+            ],
+        );
+        std::fs::write(work.join("base.txt"), "a").expect("the base file is written");
+        git(&work, &["add", "."]);
+        git(&work, &["commit", "-m", "the first base"]);
+        git(&work, &["push", "origin", "HEAD:main"]);
+        git(&work, &["fetch", "origin", "main"]);
+        git(&work, &["checkout", "--detach"]);
+        git(&work, &["branch", "-D", "main"]);
+
+        let second = temp.path().join("second");
+        std::fs::create_dir_all(&second).expect("second directory");
+        git(
+            &second,
+            &["clone", origin.to_str().expect("the origin is utf-8"), "."],
+        );
+        git(&second, &["config", "user.email", "depot@example.test"]);
+        git(&second, &["config", "user.name", "Depot"]);
+        std::fs::write(second.join("base.txt"), "b").expect("the base file is written");
+        git(&second, &["add", "."]);
+        git(&second, &["commit", "-m", "the base moves on"]);
+        git(&second, &["push", "origin", "HEAD:main"]);
+        let moved = git(&second, &["rev-parse", "HEAD"]);
+        assert_ne!(
+            git(&work, &["rev-parse", "refs/remotes/origin/main"]),
+            moved,
+            "the local remote-tracking ref starts stale"
+        );
+
+        let fetched = super::fetch_base(&work, "main").expect("the base is fetched");
+        assert_eq!(fetched.as_str(), moved);
+        assert_eq!(
+            git(&work, &["rev-parse", "refs/remotes/origin/main"]),
+            moved,
+            "the fetch moves the remote-tracking ref to the current base"
         );
     }
 

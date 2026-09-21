@@ -128,6 +128,7 @@ pub enum FactTag {
     WorkerSubmitted,
     ValidationStarted,
     ValidationFinished,
+    ValidationFailed,
     WorktreeAcquired,
     BranchPushed,
     PullRequestOpened,
@@ -178,6 +179,7 @@ pub fn fact_tag(kind: &FactKind) -> FactTag {
         FactKind::WorkerSubmitted { .. } => FactTag::WorkerSubmitted,
         FactKind::ValidationStarted { .. } => FactTag::ValidationStarted,
         FactKind::ValidationFinished { .. } => FactTag::ValidationFinished,
+        FactKind::ValidationFailed { .. } => FactTag::ValidationFailed,
         FactKind::WorktreeAcquired { .. } => FactTag::WorktreeAcquired,
         FactKind::BranchPushed { .. } => FactTag::BranchPushed,
         FactKind::PullRequestOpened { .. } => FactTag::PullRequestOpened,
@@ -229,6 +231,7 @@ pub fn fact_tag_name(tag: FactTag) -> &'static str {
         FactTag::WorkerSubmitted => "worker_submitted",
         FactTag::ValidationStarted => "validation_started",
         FactTag::ValidationFinished => "validation_finished",
+        FactTag::ValidationFailed => "validation_failed",
         FactTag::WorktreeAcquired => "worktree_acquired",
         FactTag::BranchPushed => "branch_pushed",
         FactTag::PullRequestOpened => "pull_request_opened",
@@ -279,6 +282,7 @@ pub fn fact_tag_from_name(name: &str) -> Result<FactTag> {
         "worker_submitted" => FactTag::WorkerSubmitted,
         "validation_started" => FactTag::ValidationStarted,
         "validation_finished" => FactTag::ValidationFinished,
+        "validation_failed" => FactTag::ValidationFailed,
         "worktree_acquired" => FactTag::WorktreeAcquired,
         "branch_pushed" => FactTag::BranchPushed,
         "pull_request_opened" => FactTag::PullRequestOpened,
@@ -334,6 +338,7 @@ pub fn fact_task(kind: &FactKind) -> Option<TaskId> {
         | FactKind::WorkerSubmitted { task, .. }
         | FactKind::ValidationStarted { task, .. }
         | FactKind::ValidationFinished { task, .. }
+        | FactKind::ValidationFailed { task, .. }
         | FactKind::WorktreeAcquired { task, .. }
         | FactKind::BranchPushed { task, .. }
         | FactKind::PullRequestOpened { task, .. }

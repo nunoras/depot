@@ -463,6 +463,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             task,
             command,
             commit,
+            base_commit,
             exit_code,
             duration,
             output_tail,
@@ -480,6 +481,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                     task.validations.push(ValidationRecord {
                         command: command.clone(),
                         commit: commit.clone(),
+                        base_commit: base_commit.clone(),
                         exit_code: *exit_code,
                         duration: *duration,
                         output_tail: output_tail.clone(),
@@ -784,6 +786,22 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                 task.acknowledged_at = Some(fact.at);
                 task.updated_at = fact.at;
                 changed = true;
+            }
+        }
+
+        FactKind::ValidationFailed { task, .. } => {
+            let accepting = next
+                .tasks
+                .get(task)
+                .is_some_and(|task| task.state == TaskState::Validating);
+            if accepting && let Some(task) = next.tasks.get_mut(task) {
+                task.state = TaskState::Failed;
+                task.retry = None;
+                task.updated_at = fact.at;
+                changed = true;
+                actions.push(Action::HoldForUser {
+                    task: task.id.clone(),
+                });
             }
         }
 

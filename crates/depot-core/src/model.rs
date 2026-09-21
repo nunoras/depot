@@ -215,6 +215,7 @@ pub struct Submission {
 pub struct ValidationRecord {
     pub command: String,
     pub commit: CommitId,
+    pub base_commit: Option<CommitId>,
     pub exit_code: i32,
     pub duration: Duration,
     pub output_tail: String,

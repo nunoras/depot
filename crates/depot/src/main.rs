@@ -123,7 +123,10 @@ fn dispatch(arguments: &[String]) -> Result<String, Failure> {
             require_coordinator()?;
             inbox_command(&arguments[1..])
         }
-        Some("artifact") => artifact_command(&arguments[1..]),
+        Some("artifact") => {
+            require_coordinator()?;
+            artifact_command(&arguments[1..])
+        }
         Some("daemon") => {
             require_coordinator()?;
             daemon_command(&arguments[1..])
@@ -503,6 +506,7 @@ fn daemon_restart(arguments: &[String]) -> Result<String, Failure> {
         &depotd::RestartOptions {
             program: depotd::installed_daemon()?,
             timeout,
+            takeover_timeout: timeout,
         },
     )?;
     let mut out = String::new();

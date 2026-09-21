@@ -31,7 +31,8 @@ depot daemon restart
 ```
 
 The command stops the daemon by pid, waits for the lock to free, then starts `depotd` beside the `depot` binary.
-It appends the new daemon's output to `<depot home>/depotd.log` and prints the new pid and the scope it covers.
+It waits for the new daemon to record its scope, then appends the new daemon's output to `<depot home>/depotd.log` and prints the new pid and the scope it covers.
+When the new daemon never records a fresh scope naming its pid, the command exits nonzero and says the daemon did not take the instance lock.
 
 Stopping is a request, not a signal.
 The command writes `<depot home>/depotd.stop` naming the pid and the daemon's start time.
@@ -76,7 +77,7 @@ depot --version
 depotd --version
 ```
 
-The daemon records its build id in its lock file.
+The daemon records its build id in `<depot home>/depotd.scope.json`.
 When the running daemon was built from a different commit than the `depot` you are running, `depot status` and `depot status --tui` print a warning naming both builds.
 Restart the daemon to clear it.
-A lock file from a build that predates this check carries no build id, so no warning is printed for it.
+A scope record from a build that predates this check carries no build id, so no warning is printed for it.

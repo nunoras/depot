@@ -6,18 +6,21 @@ use std::time::{Duration, Instant};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 
-use crate::daemon::{DAEMON_LOCK_FILE_NAME, DaemonScope, daemon_scope};
+use crate::clock::now;
+use crate::daemon::{DAEMON_LOCK_FILE_NAME, DAEMON_SCOPE_FILE_NAME, DaemonScope, daemon_scope};
 use crate::error::{Error, Result};
 use crate::home::DepotHome;
 
 pub const DAEMON_LOG_FILE_NAME: &str = "depotd.log";
 pub const DAEMON_STOP_FILE_NAME: &str = "depotd.stop";
 const STOP_POLL: Duration = Duration::from_millis(100);
+const TAKEOVER_POLL: Duration = Duration::from_millis(50);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RestartOptions {
     pub program: PathBuf,
     pub timeout: Duration,
+    pub takeover_timeout: Duration,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,13 +54,41 @@ pub fn restart_daemon(home: &DepotHome, options: &RestartOptions) -> Result<Rest
     };
     let projects = previous.map(|scope| scope.projects).unwrap_or_default();
     let spec = launch_spec(home, options.program.clone(), &projects);
+    let launched_at = now().millis();
     let pid = launch_detached(&spec)?;
+    wait_for_takeover(home, pid, launched_at, options.takeover_timeout)?;
     Ok(Restarted {
         stopped,
         pid,
         log: spec.log,
         projects,
     })
+}
+
+fn wait_for_takeover(
+    home: &DepotHome,
+    pid: u32,
+    launched_at_millis: u64,
+    timeout: Duration,
+) -> Result<()> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(scope) = daemon_scope(home)
+            && scope.pid == pid
+            && scope.heartbeat_millis >= launched_at_millis
+        {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(Error::Home(format!(
+                "depotd pid {pid} did not take the instance lock within {}s; read {} and {}",
+                timeout.as_secs_f64(),
+                home.root().join(DAEMON_LOG_FILE_NAME).display(),
+                home.root().join(DAEMON_SCOPE_FILE_NAME).display()
+            )));
+        }
+        std::thread::sleep(TAKEOVER_POLL);
+    }
 }
 
 pub fn installed_daemon() -> Result<PathBuf> {

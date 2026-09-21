@@ -215,6 +215,7 @@ pub struct Submission {
 pub struct ValidationRecord {
     pub command: String,
     pub commit: CommitId,
+    pub base_commit: Option<CommitId>,
     pub exit_code: i32,
     pub duration: Duration,
     pub output_tail: String,
@@ -239,6 +240,7 @@ pub struct Task {
     pub links: Vec<Link>,
     pub branch_head: Option<CommitId>,
     pub merge_refused: Option<String>,
+    pub conflict_base: Option<CommitId>,
     pub redirect_text: Option<String>,
     pub redirect_delivered: bool,
     pub acknowledged_at: Option<Timestamp>,

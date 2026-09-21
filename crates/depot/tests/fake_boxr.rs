@@ -33,6 +33,7 @@ fn record(root: &Path, arguments: &[String]) -> io::Result<()> {
 }
 
 fn respond(root: &Path, arguments: &[String]) -> ExitCode {
+    write_describe_output(arguments);
     let key = arguments
         .first()
         .map(String::as_str)
@@ -63,6 +64,28 @@ fn respond(root: &Path, arguments: &[String]) -> ExitCode {
         let _ = fs::write(root.join("status.stdout"), state);
     }
     ExitCode::from(code)
+}
+
+fn write_describe_output(arguments: &[String]) {
+    let describing = arguments
+        .windows(2)
+        .any(|pair| pair[0] == "--kind" && pair[1] == "describe");
+    if !describing {
+        return;
+    }
+    let Some(prompt) = arguments.last() else {
+        return;
+    };
+    let Some(rest) = prompt.split_once("to the file ").map(|(_, rest)| rest) else {
+        return;
+    };
+    let Some(path) = rest.lines().next().map(str::trim) else {
+        return;
+    };
+    let _ = fs::write(
+        path,
+        "Describe the change\n\n## Why\n\nThe worker wrote this from the fetched base diff.\n",
+    );
 }
 
 fn sequence_index(root: &Path, key: &str) -> Option<usize> {

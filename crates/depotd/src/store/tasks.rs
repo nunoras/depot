@@ -96,7 +96,7 @@ impl Store {
 }
 
 const TASK_COLUMNS: &str = "project_id, id, title, intent, role, state, base_dependency, \
-     branch_head, retry_profile, retry_not_before, submission_summary, merge_refused, redirect_text, redirect_delivered, created_at, updated_at, dispatch_profile, acknowledged_at, hold_pr, rework_of";
+     branch_head, retry_profile, retry_not_before, submission_summary, merge_refused, conflict_base, redirect_text, redirect_delivered, created_at, updated_at, dispatch_profile, acknowledged_at, hold_pr, rework_of";
 
 struct RawTask {
     project_id: String,
@@ -112,6 +112,7 @@ struct RawTask {
     retry_not_before: Option<i64>,
     submission_summary: Option<String>,
     merge_refused: Option<String>,
+    conflict_base: Option<String>,
     redirect_text: Option<String>,
     redirect_delivered: bool,
     acknowledged_at: Option<i64>,
@@ -137,6 +138,7 @@ impl RawTask {
             retry_not_before: row.get("retry_not_before")?,
             submission_summary: row.get("submission_summary")?,
             merge_refused: row.get("merge_refused")?,
+            conflict_base: row.get("conflict_base")?,
             redirect_text: row.get("redirect_text")?,
             redirect_delivered: row.get::<_, i64>("redirect_delivered")? != 0,
             acknowledged_at: row.get("acknowledged_at")?,
@@ -194,6 +196,7 @@ impl RawTask {
             links: store.links(&project, &self.id)?,
             branch_head: self.branch_head.map(CommitId::new),
             merge_refused: self.merge_refused,
+            conflict_base: self.conflict_base.map(CommitId::new),
             redirect_text: self.redirect_text,
             redirect_delivered: self.redirect_delivered,
             acknowledged_at: self
@@ -308,13 +311,14 @@ impl Store {
 
     fn validations(&self, project: &ProjectId, task: &str) -> Result<Vec<ValidationRecord>> {
         let mut statement = self.connection().prepare(
-            "SELECT command, commit_id, exit_code, duration_millis, output_tail
+            "SELECT command, commit_id, base_commit, exit_code, duration_millis, output_tail
              FROM task_validations WHERE project_id = ?1 AND task_id = ?2 ORDER BY position",
         )?;
         let rows = statement.query_map(params![project.as_str(), task], |row| {
             Ok(RawValidation {
                 command: row.get("command")?,
                 commit: row.get("commit_id")?,
+                base_commit: row.get("base_commit")?,
                 exit_code: row.get("exit_code")?,
                 duration_millis: row.get("duration_millis")?,
                 output_tail: row.get("output_tail")?,
@@ -326,6 +330,7 @@ impl Store {
             validations.push(ValidationRecord {
                 command: raw.command,
                 commit: CommitId::new(raw.commit),
+                base_commit: raw.base_commit.map(CommitId::new),
                 exit_code: raw.exit_code,
                 duration: Duration::from_millis(raw.duration_millis.max(0) as u64),
                 output_tail: raw.output_tail,
@@ -427,6 +432,7 @@ struct RawQuestion {
 struct RawValidation {
     command: String,
     commit: String,
+    base_commit: Option<String>,
     exit_code: i32,
     duration_millis: i64,
     output_tail: String,
@@ -453,8 +459,8 @@ pub(super) fn write_task(transaction: &Transaction<'_>, task: &Task) -> Result<(
     transaction.execute(
         "INSERT INTO tasks (
                 project_id, id, title, intent, role, state, base_dependency, branch_head,
-                retry_profile, retry_not_before, submission_summary, merge_refused, redirect_text, redirect_delivered, created_at, updated_at, dispatch_profile, acknowledged_at, hold_pr, rework_of
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+                retry_profile, retry_not_before, submission_summary, merge_refused, conflict_base, redirect_text, redirect_delivered, created_at, updated_at, dispatch_profile, acknowledged_at, hold_pr, rework_of
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
         params![
             task.project.as_str(),
             task.id.as_str(),
@@ -472,6 +478,7 @@ pub(super) fn write_task(transaction: &Transaction<'_>, task: &Task) -> Result<(
                 .as_ref()
                 .map(|submission| submission.summary.as_str()),
             task.merge_refused.as_deref(),
+            task.conflict_base.as_ref().map(CommitId::as_str),
             task.redirect_text.as_deref(),
             task.redirect_delivered as i64,
             task.created_at.millis() as i64,
@@ -547,15 +554,16 @@ pub(super) fn write_task(transaction: &Transaction<'_>, task: &Task) -> Result<(
     for (position, record) in task.validations.iter().enumerate() {
         transaction.execute(
             "INSERT INTO task_validations (
-                    project_id, task_id, position, command, commit_id, exit_code,
+                    project_id, task_id, position, command, commit_id, base_commit, exit_code,
                     duration_millis, output_tail
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 task.project.as_str(),
                 task.id.as_str(),
                 position as i64,
                 record.command,
                 record.commit.as_str(),
+                record.base_commit.as_ref().map(CommitId::as_str),
                 record.exit_code,
                 record.duration.as_millis() as i64,
                 record.output_tail,
@@ -663,6 +671,7 @@ mod tests {
             links: Vec::new(),
             branch_head: None,
             merge_refused: None,
+            conflict_base: None,
             redirect_text: None,
             redirect_delivered: false,
             acknowledged_at: None,

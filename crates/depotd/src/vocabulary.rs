@@ -128,17 +128,21 @@ pub enum FactTag {
     WorkerSubmitted,
     ValidationStarted,
     ValidationFinished,
+    ValidationFailed,
     WorktreeAcquired,
     BranchPushed,
     PullRequestOpened,
+    TaskLandedOnBase,
     PullRequestChecksChanged,
     PullRequestMerged,
     PullRequestClosedUnmerged,
     PullRequestMergeRefused,
+    PullRequestMergeabilityChanged,
     DescribeFailed,
     EvidencePosted,
     EvidenceFailed,
     PushFailed,
+    DeliveryFailed,
     RebaseScheduled,
     RunDurationExceeded,
     RetryExhausted,
@@ -176,17 +180,21 @@ pub fn fact_tag(kind: &FactKind) -> FactTag {
         FactKind::WorkerSubmitted { .. } => FactTag::WorkerSubmitted,
         FactKind::ValidationStarted { .. } => FactTag::ValidationStarted,
         FactKind::ValidationFinished { .. } => FactTag::ValidationFinished,
+        FactKind::ValidationFailed { .. } => FactTag::ValidationFailed,
         FactKind::WorktreeAcquired { .. } => FactTag::WorktreeAcquired,
         FactKind::BranchPushed { .. } => FactTag::BranchPushed,
         FactKind::PullRequestOpened { .. } => FactTag::PullRequestOpened,
+        FactKind::TaskLandedOnBase { .. } => FactTag::TaskLandedOnBase,
         FactKind::PullRequestChecksChanged { .. } => FactTag::PullRequestChecksChanged,
         FactKind::PullRequestMerged { .. } => FactTag::PullRequestMerged,
         FactKind::PullRequestClosedUnmerged { .. } => FactTag::PullRequestClosedUnmerged,
         FactKind::PullRequestMergeRefused { .. } => FactTag::PullRequestMergeRefused,
+        FactKind::PullRequestMergeabilityChanged { .. } => FactTag::PullRequestMergeabilityChanged,
         FactKind::DescribeFailed { .. } => FactTag::DescribeFailed,
         FactKind::EvidencePosted { .. } => FactTag::EvidencePosted,
         FactKind::EvidenceFailed { .. } => FactTag::EvidenceFailed,
         FactKind::PushFailed { .. } => FactTag::PushFailed,
+        FactKind::DeliveryFailed { .. } => FactTag::DeliveryFailed,
         FactKind::RebaseScheduled { .. } => FactTag::RebaseScheduled,
         FactKind::RunDurationExceeded { .. } => FactTag::RunDurationExceeded,
         FactKind::RetryExhausted { .. } => FactTag::RetryExhausted,
@@ -225,17 +233,21 @@ pub fn fact_tag_name(tag: FactTag) -> &'static str {
         FactTag::WorkerSubmitted => "worker_submitted",
         FactTag::ValidationStarted => "validation_started",
         FactTag::ValidationFinished => "validation_finished",
+        FactTag::ValidationFailed => "validation_failed",
         FactTag::WorktreeAcquired => "worktree_acquired",
         FactTag::BranchPushed => "branch_pushed",
         FactTag::PullRequestOpened => "pull_request_opened",
+        FactTag::TaskLandedOnBase => "task_landed_on_base",
         FactTag::PullRequestChecksChanged => "pull_request_checks_changed",
         FactTag::PullRequestMerged => "pull_request_merged",
         FactTag::PullRequestClosedUnmerged => "pull_request_closed_unmerged",
         FactTag::PullRequestMergeRefused => "pull_request_merge_refused",
+        FactTag::PullRequestMergeabilityChanged => "pull_request_mergeability_changed",
         FactTag::DescribeFailed => "describe_failed",
         FactTag::EvidencePosted => "evidence_posted",
         FactTag::EvidenceFailed => "evidence_failed",
         FactTag::PushFailed => "push_failed",
+        FactTag::DeliveryFailed => "delivery_failed",
         FactTag::RebaseScheduled => "rebase_scheduled",
         FactTag::RunDurationExceeded => "run_duration_exceeded",
         FactTag::RetryExhausted => "retry_exhausted",
@@ -273,17 +285,21 @@ pub fn fact_tag_from_name(name: &str) -> Result<FactTag> {
         "worker_submitted" => FactTag::WorkerSubmitted,
         "validation_started" => FactTag::ValidationStarted,
         "validation_finished" => FactTag::ValidationFinished,
+        "validation_failed" => FactTag::ValidationFailed,
         "worktree_acquired" => FactTag::WorktreeAcquired,
         "branch_pushed" => FactTag::BranchPushed,
         "pull_request_opened" => FactTag::PullRequestOpened,
+        "task_landed_on_base" => FactTag::TaskLandedOnBase,
         "pull_request_checks_changed" => FactTag::PullRequestChecksChanged,
         "pull_request_merged" => FactTag::PullRequestMerged,
         "pull_request_closed_unmerged" => FactTag::PullRequestClosedUnmerged,
         "pull_request_merge_refused" => FactTag::PullRequestMergeRefused,
+        "pull_request_mergeability_changed" => FactTag::PullRequestMergeabilityChanged,
         "describe_failed" => FactTag::DescribeFailed,
         "evidence_posted" => FactTag::EvidencePosted,
         "evidence_failed" => FactTag::EvidenceFailed,
         "push_failed" => FactTag::PushFailed,
+        "delivery_failed" => FactTag::DeliveryFailed,
         "rebase_scheduled" => FactTag::RebaseScheduled,
         "run_duration_exceeded" => FactTag::RunDurationExceeded,
         "retry_exhausted" => FactTag::RetryExhausted,
@@ -326,17 +342,21 @@ pub fn fact_task(kind: &FactKind) -> Option<TaskId> {
         | FactKind::WorkerSubmitted { task, .. }
         | FactKind::ValidationStarted { task, .. }
         | FactKind::ValidationFinished { task, .. }
+        | FactKind::ValidationFailed { task, .. }
         | FactKind::WorktreeAcquired { task, .. }
         | FactKind::BranchPushed { task, .. }
         | FactKind::PullRequestOpened { task, .. }
+        | FactKind::TaskLandedOnBase { task, .. }
         | FactKind::PullRequestChecksChanged { task, .. }
         | FactKind::PullRequestMerged { task, .. }
         | FactKind::PullRequestMergeRefused { task, .. }
+        | FactKind::PullRequestMergeabilityChanged { task, .. }
         | FactKind::PullRequestClosedUnmerged { task }
         | FactKind::DescribeFailed { task, .. }
         | FactKind::EvidencePosted { task, .. }
         | FactKind::EvidenceFailed { task, .. }
         | FactKind::PushFailed { task, .. }
+        | FactKind::DeliveryFailed { task, .. }
         | FactKind::RebaseScheduled { task, .. }
         | FactKind::RunDurationExceeded { task }
         | FactKind::RetryExhausted { task }

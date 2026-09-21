@@ -122,9 +122,11 @@ fn need_for(tag: FactTag, task: Option<&Task>) -> Need {
             _ => Need::Nothing,
         },
         FactTag::ValidationFinished
+        | FactTag::ValidationFailed
         | FactTag::WorkerLivenessChanged
         | FactTag::WorkerTurnUnresolved
         | FactTag::PushFailed
+        | FactTag::DeliveryFailed
         | FactTag::DescribeFailed
         | FactTag::EvidenceFailed
         | FactTag::RunDurationExceeded
@@ -163,7 +165,9 @@ fn need_for(tag: FactTag, task: Option<&Task>) -> Need {
         | FactTag::WorktreeAcquired
         | FactTag::BranchPushed
         | FactTag::PullRequestOpened
+        | FactTag::TaskLandedOnBase
         | FactTag::PullRequestChecksChanged
+        | FactTag::PullRequestMergeabilityChanged
         | FactTag::EvidencePosted
         | FactTag::CoordinatorSessionStarted
         | FactTag::CoordinatorContextMeasured
@@ -245,6 +249,10 @@ fn headline(tag: FactTag, event: &RecordedEvent, task: Option<&Task>) -> Result<
             ),
             None => "validation finished".to_string(),
         },
+        FactTag::ValidationFailed => {
+            let reason = payload_field(&event.payload, "reason")?;
+            format!("the validation could not run: {}", one_line(&reason))
+        }
         FactTag::WorktreeAcquired => match lease(task) {
             Some(lease) => format!("worktree lease `{lease}` acquired"),
             None => "a worktree was acquired".to_string(),
@@ -270,6 +278,12 @@ fn headline(tag: FactTag, event: &RecordedEvent, task: Option<&Task>) -> Result<
                 None => format!("the forge refused to merge: {}", one_line(&reason)),
             }
         }
+        FactTag::PullRequestMergeabilityChanged => {
+            match task.and_then(|task| task.conflict_base.as_ref()) {
+                Some(base) => format!("the pull request conflicts with base `{base}`"),
+                None => "the pull request no longer conflicts with its base".to_string(),
+            }
+        }
         FactTag::EvidencePosted => match task.and_then(|task| task.pull_request()) {
             Some((number, _, _)) => format!("evidence was posted to pull request #{number}"),
             None => "evidence was posted".to_string(),
@@ -281,6 +295,14 @@ fn headline(tag: FactTag, event: &RecordedEvent, task: Option<&Task>) -> Result<
         FactTag::PushFailed => {
             let reason = payload_field(&event.payload, "reason")?;
             format!("the push was rejected: {}", one_line(&reason))
+        }
+        FactTag::DeliveryFailed => {
+            let reason = payload_field(&event.payload, "reason")?;
+            format!("the delivery failed: {}", one_line(&reason))
+        }
+        FactTag::TaskLandedOnBase => {
+            "the validated commit was already on the base branch; the task landed without a pull request"
+                .to_string()
         }
         FactTag::DescribeFailed => {
             let reason = payload_field(&event.payload, "reason")?;

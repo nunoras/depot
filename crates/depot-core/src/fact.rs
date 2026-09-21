@@ -120,9 +120,15 @@ pub enum FactKind {
         task: TaskId,
         command: String,
         commit: CommitId,
+        base_commit: Option<CommitId>,
         exit_code: i32,
         duration: Duration,
         output_tail: String,
+    },
+    ValidationFailed {
+        task: TaskId,
+        commit: CommitId,
+        reason: String,
     },
     WorktreeAcquired {
         task: TaskId,
@@ -138,6 +144,15 @@ pub enum FactKind {
         task: TaskId,
         commit: CommitId,
         reason: String,
+    },
+    DeliveryFailed {
+        task: TaskId,
+        commit: CommitId,
+        reason: String,
+    },
+    TaskLandedOnBase {
+        task: TaskId,
+        commit: CommitId,
     },
     PullRequestOpened {
         task: TaskId,
@@ -165,6 +180,11 @@ pub enum FactKind {
         base: CommitId,
         checks: Checks,
         reason: String,
+    },
+    PullRequestMergeabilityChanged {
+        task: TaskId,
+        mergeable: bool,
+        base: CommitId,
     },
     EvidencePosted {
         task: TaskId,

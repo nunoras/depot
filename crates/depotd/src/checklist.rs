@@ -177,6 +177,10 @@ fn render_task(
         ));
     }
 
+    if let Some(base) = &task.conflict_base {
+        out.push_str(&format!("  - conflicts with base `{base}`\n"));
+    }
+
     if task.hold_pr {
         out.push_str("  - pull request held until `depot task release`\n");
     }

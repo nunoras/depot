@@ -2,8 +2,9 @@ use std::cell::Cell;
 use std::fs::{File, OpenOptions};
 
 use fs2::FileExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use depot_core::{
@@ -27,6 +28,7 @@ use crate::store::{EventOutcome, RecordedEvent, Store, event_key};
 use crate::vocabulary::{FactTag, checks_name, fact_tag_name};
 
 pub const DAEMON_LOCK_FILE_NAME: &str = "depotd.lock";
+pub const DAEMON_SCOPE_FILE_NAME: &str = "depotd.scope.json";
 const MAX_RESUME_ATTEMPTS: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,7 +40,8 @@ pub struct DaemonScope {
 }
 
 pub struct InstanceLock {
-    file: File,
+    _file: File,
+    scope_path: PathBuf,
 }
 
 impl InstanceLock {
@@ -55,22 +58,41 @@ impl InstanceLock {
     }
 
     pub fn refresh_heartbeat(&self) -> Result<()> {
-        let Some(mut scope) = read_scope_file(&self.file) else {
-            return Ok(());
-        };
+        let bytes = std::fs::read(&self.scope_path).map_err(|error| {
+            Error::Home(format!(
+                "could not read the daemon scope record {}: {error}",
+                self.scope_path.display()
+            ))
+        })?;
+        let mut scope: DaemonScope = serde_json::from_slice(&bytes).map_err(|error| {
+            Error::Home(format!(
+                "could not parse the daemon scope record {}: {error}",
+                self.scope_path.display()
+            ))
+        })?;
         scope.heartbeat_millis = now().millis();
         self.write_scope(&scope)
     }
 
     fn write_scope(&self, scope: &DaemonScope) -> Result<()> {
-        use std::io::{Seek, SeekFrom, Write};
-        let mut file = &self.file;
-        file.set_len(0)?;
-        file.seek(SeekFrom::Start(0))?;
-        serde_json::to_writer(&mut file, scope).map_err(|error| {
-            Error::Home(format!("could not write the daemon lock record: {error}"))
+        let mut temp_name = self.scope_path.as_os_str().to_os_string();
+        temp_name.push(".tmp");
+        let temp = PathBuf::from(temp_name);
+        let bytes = serde_json::to_vec(scope).map_err(|error| {
+            Error::Home(format!("could not encode the daemon scope record: {error}"))
         })?;
-        file.flush()?;
+        std::fs::write(&temp, bytes).map_err(|error| {
+            Error::Home(format!(
+                "could not write the daemon scope record {}: {error}",
+                temp.display()
+            ))
+        })?;
+        std::fs::rename(&temp, &self.scope_path).map_err(|error| {
+            Error::Home(format!(
+                "could not replace the daemon scope record {}: {error}",
+                self.scope_path.display()
+            ))
+        })?;
         Ok(())
     }
 
@@ -88,7 +110,10 @@ impl InstanceLock {
                 path.display()
             ))
         })?;
-        Ok(Self { file })
+        Ok(Self {
+            _file: file,
+            scope_path: home.root().join(DAEMON_SCOPE_FILE_NAME),
+        })
     }
 }
 
@@ -98,7 +123,7 @@ pub fn daemon_scope_covers(
     now: Timestamp,
     stale_after: Duration,
 ) -> Result<bool> {
-    let path = home.root().join(DAEMON_LOCK_FILE_NAME);
+    let path = home.root().join(DAEMON_SCOPE_FILE_NAME);
     let Ok(bytes) = std::fs::read(&path) else {
         return Ok(false);
     };
@@ -114,27 +139,26 @@ pub fn daemon_scope_covers(
             .any(|covered| covered == project.as_str()))
 }
 
-fn read_scope_file(file: &File) -> Option<DaemonScope> {
-    use std::io::{Read, Seek, SeekFrom};
-    let mut contents = String::new();
-    let mut reader = file;
-    reader.seek(SeekFrom::Start(0)).ok()?;
-    reader.read_to_string(&mut contents).ok()?;
-    serde_json::from_str(&contents).ok()
-}
-
 pub trait ValidationRunner {
     fn validate(
         &self,
         task: &Task,
         worktree: &Path,
         commit: &CommitId,
+        base: &str,
         command: &str,
     ) -> Result<ValidationResult>;
 }
 
 pub trait Delivery {
     fn push(&self, task: &Task, worktree: &Path, commit: &CommitId) -> Result<()>;
+    fn commit_on_base(
+        &self,
+        task: &Task,
+        worktree: &Path,
+        base: &str,
+        commit: &CommitId,
+    ) -> Result<bool>;
     fn open_pull_request(
         &self,
         task: &Task,
@@ -193,6 +217,7 @@ impl ValidationRunner for ShellValidation {
         _task: &Task,
         worktree: &Path,
         commit: &CommitId,
+        base: &str,
         command: &str,
     ) -> Result<ValidationResult> {
         let head = git_output(worktree, &["rev-parse", "HEAD"])?;
@@ -203,12 +228,18 @@ impl ValidationRunner for ShellValidation {
                 head.trim()
             )));
         }
+        let base_commit = fetch_base(worktree, base)?;
+        let scratch = ScratchWorktree::add(worktree, commit)?;
         let started = Instant::now();
-        let output = shell(command, worktree)?;
+        let output = match merge_base(scratch.path(), base)? {
+            Some(conflict) => conflict,
+            None => shell(command, scratch.path())?,
+        };
         Ok(ValidationResult {
             exit_code: output.status.code().unwrap_or(-1),
             duration: started.elapsed(),
             output_tail: output_tail(&output),
+            base_commit: Some(base_commit),
         })
     }
 }
@@ -242,6 +273,32 @@ impl<F: Forge> Delivery for ForgeDelivery<F> {
         let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         git_output(worktree, &arg_refs)?;
         Ok(())
+    }
+
+    fn commit_on_base(
+        &self,
+        _task: &Task,
+        worktree: &Path,
+        base: &str,
+        commit: &CommitId,
+    ) -> Result<bool> {
+        fetch_base(worktree, base)?;
+        match git_exit(
+            worktree,
+            &[
+                "merge-base",
+                "--is-ancestor",
+                commit.as_str(),
+                &format!("origin/{base}"),
+            ],
+        )? {
+            0 => Ok(true),
+            1 => Ok(false),
+            code => Err(Error::Project(format!(
+                "git merge-base --is-ancestor exited {code} for {} against origin/{base}",
+                commit.as_str()
+            ))),
+        }
     }
 
     fn open_pull_request(
@@ -368,8 +425,9 @@ impl EventHook for std::sync::Arc<dyn EventHook> {
 pub(crate) fn shell_command(command: &str) -> Command {
     #[cfg(windows)]
     let process = {
+        use std::os::windows::process::CommandExt;
         let mut process = Command::new("cmd");
-        process.args(["/C", command]);
+        process.arg("/C").raw_arg(command);
         process
     };
     #[cfg(not(windows))]
@@ -394,7 +452,14 @@ fn delivery_branch(worktree: &Path, task: &Task) -> Result<String> {
     if !current.is_empty() {
         return Ok(current.to_owned());
     }
-    let branch = depot_core::delivery_branch(task, &[]);
+    let listed = git_output(worktree, &["branch", "--format=%(refname:short)"])?;
+    let taken: Vec<String> = listed
+        .lines()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .collect();
+    let branch = depot_core::delivery_branch(task, &taken);
     git_output(worktree, &["checkout", "-B", &branch])?;
     Ok(branch)
 }
@@ -412,6 +477,104 @@ fn git_output(worktree: &Path, args: &[&str]) -> Result<String> {
     Err(Error::Project(
         String::from_utf8_lossy(&output.stderr).trim().to_owned(),
     ))
+}
+
+fn git_exit(worktree: &Path, args: &[&str]) -> Result<i32> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(worktree)
+        .args(args)
+        .output()
+        .map_err(Error::Io)?;
+    Ok(output.status.code().unwrap_or(-1))
+}
+
+fn fetch_base(worktree: &Path, base: &str) -> Result<CommitId> {
+    let refspec = format!("+refs/heads/{base}:refs/remotes/origin/{base}");
+    git_output(worktree, &["fetch", "origin", &refspec])
+        .map_err(|error| Error::Project(format!("could not fetch base `{base}`: {error}")))?;
+    let commit = git_output(
+        worktree,
+        &["rev-parse", &format!("refs/remotes/origin/{base}")],
+    )?;
+    Ok(CommitId::new(commit.trim()))
+}
+
+fn merge_base(scratch: &Path, base: &str) -> Result<Option<std::process::Output>> {
+    let hooks = scratch.join("depot-merge-hooks");
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(scratch)
+        .args(["-c"])
+        .arg(format!("core.hooksPath={}", hooks.display()))
+        .args(["merge", "--no-commit", "--no-ff", &format!("origin/{base}")])
+        .output()
+        .map_err(Error::Io)?;
+    if output.status.success() {
+        Ok(None)
+    } else {
+        Ok(Some(output))
+    }
+}
+
+struct ScratchWorktree {
+    repo: PathBuf,
+    path: PathBuf,
+}
+
+impl ScratchWorktree {
+    fn add(repo: &Path, commit: &CommitId) -> Result<Self> {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "depot-validation-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(["worktree", "remove", "--force"])
+            .arg(&path)
+            .output();
+        let _ = std::fs::remove_dir_all(&path);
+        let path_text = path
+            .to_str()
+            .ok_or_else(|| Error::Project("the scratch worktree path is not utf-8".into()))?;
+        if let Err(error) = git_output(
+            repo,
+            &[
+                "worktree",
+                "add",
+                "--detach",
+                "--force",
+                path_text,
+                commit.as_str(),
+            ],
+        ) {
+            let _ = std::fs::remove_dir_all(&path);
+            return Err(error);
+        }
+        Ok(Self {
+            repo: repo.to_path_buf(),
+            path,
+        })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for ScratchWorktree {
+    fn drop(&mut self) {
+        let _ = Command::new("git")
+            .arg("-C")
+            .arg(&self.repo)
+            .args(["worktree", "remove", "--force"])
+            .arg(&self.path)
+            .output();
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
 }
 
 fn output_tail(output: &std::process::Output) -> String {
@@ -480,19 +643,7 @@ impl ShellEventHook {
 
 impl EventHook for ShellEventHook {
     fn notify(&self, notice: &EventNotice) -> Result<()> {
-        #[cfg(windows)]
-        let mut process = {
-            let mut process = Command::new("cmd");
-            process.args(["/C", &self.command]);
-            process
-        };
-        #[cfg(not(windows))]
-        let mut process = {
-            let mut process = Command::new("sh");
-            process.args(["-c", &self.command]);
-            process
-        };
-        let mut child = process
+        let mut child = shell_command(&self.command)
             .stdin(std::process::Stdio::piped())
             .spawn()
             .map_err(Error::Io)?;
@@ -540,6 +691,7 @@ pub struct ValidationResult {
     pub exit_code: i32,
     pub duration: Duration,
     pub output_tail: String,
+    pub base_commit: Option<CommitId>,
 }
 
 enum DescribeOutcome {
@@ -1018,10 +1170,19 @@ where
     fn validate(&self, task: TaskId, commit: CommitId) -> Result<()> {
         let task_record = self.task(&task)?;
         let worktree = self.lease_for(&task_record)?.path;
-        let command = self.store.project_config(&self.project)?.validation.command;
-        let result = self
-            .validation
-            .validate(&task_record, &worktree, &commit, &command)?;
+        let config = self.store.project_config(&self.project)?;
+        let base = config.pull_request.base.clone();
+        let command = config.validation.command.clone();
+        let result =
+            match self
+                .validation
+                .validate(&task_record, &worktree, &commit, &base, &command)
+            {
+                Ok(result) => result,
+                Err(error) => {
+                    return self.record_validation_failure(&task, &commit, &error.to_string());
+                }
+            };
         self.record(
             &event_key(&["validation_finished", task.as_str(), commit.as_str()]),
             Fact {
@@ -1030,6 +1191,7 @@ where
                     task,
                     command,
                     commit,
+                    base_commit: result.base_commit,
                     exit_code: result.exit_code,
                     duration: result.duration,
                     output_tail: result.output_tail,
@@ -1038,9 +1200,52 @@ where
         )
     }
 
+    fn record_validation_failure(
+        &self,
+        task: &TaskId,
+        commit: &CommitId,
+        reason: &str,
+    ) -> Result<()> {
+        log("validation-failed", reason);
+        self.record(
+            &event_key(&["validation_failed", task.as_str(), commit.as_str()]),
+            Fact {
+                at: now(),
+                kind: FactKind::ValidationFailed {
+                    task: task.clone(),
+                    commit: commit.clone(),
+                    reason: reason.to_owned(),
+                },
+            },
+        )
+    }
+
     fn push(&self, task: TaskId, commit: CommitId) -> Result<()> {
         let task_record = self.task(&task)?;
-        let worktree = self.lease_for(&task_record)?.path;
+        let worktree = match self.lease_for(&task_record) {
+            Ok(lease) => lease.path,
+            Err(error) => {
+                return self.record_delivery_failure(&task, &commit, &error.to_string());
+            }
+        };
+        if task_record.state == TaskState::Validated {
+            let base = self
+                .store
+                .project_config(&self.project)?
+                .pull_request
+                .base
+                .clone();
+            match self
+                .delivery
+                .commit_on_base(&task_record, &worktree, &base, &commit)
+            {
+                Ok(true) => return self.record_landed_on_base(&task, &commit),
+                Ok(false) => {}
+                Err(error) => {
+                    return self.record_delivery_failure(&task, &commit, &error.to_string());
+                }
+            }
+        }
         if let Err(error) = self.delivery.push(&task_record, &worktree, &commit) {
             let reason = error.to_string();
             log("push-failed", &reason);
@@ -1065,12 +1270,61 @@ where
         )
     }
 
+    fn record_delivery_failure(
+        &self,
+        task: &TaskId,
+        commit: &CommitId,
+        reason: &str,
+    ) -> Result<()> {
+        log("delivery-failed", reason);
+        self.record(
+            &event_key(&["delivery_failed", task.as_str(), commit.as_str()]),
+            Fact {
+                at: now(),
+                kind: FactKind::DeliveryFailed {
+                    task: task.clone(),
+                    commit: commit.clone(),
+                    reason: reason.to_owned(),
+                },
+            },
+        )
+    }
+
+    fn record_landed_on_base(&self, task: &TaskId, commit: &CommitId) -> Result<()> {
+        log("landed-on-base", task.as_str());
+        self.record(
+            &event_key(&["task_landed_on_base", task.as_str(), commit.as_str()]),
+            Fact {
+                at: now(),
+                kind: FactKind::TaskLandedOnBase {
+                    task: task.clone(),
+                    commit: commit.clone(),
+                },
+            },
+        )
+    }
+
     fn open_pull_request(&self, task: TaskId, commit: CommitId) -> Result<()> {
         let task_record = self.task(&task)?;
-        let worktree = self.lease_for(&task_record)?.path;
+        if task_record.state != TaskState::Validated || task_record.pull_request().is_some() {
+            return Ok(());
+        }
+        let worktree = match self.lease_for(&task_record) {
+            Ok(lease) => lease.path,
+            Err(error) => {
+                return self.record_delivery_failure(&task, &commit, &error.to_string());
+            }
+        };
         let config = self.store.project_config(&self.project)?;
         let base = config.pull_request.base.clone();
-        match self.describe_pull_request(&task_record, &worktree, &commit, &config)? {
+        let described = match self.describe_pull_request(&task_record, &worktree, &commit, &config)
+        {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                return self.record_delivery_failure(&task, &commit, &error.to_string());
+            }
+        };
+        match described {
             DescribeOutcome::Output(describe) => {
                 let (title, body) = describe::assemble(Some(describe), &task_record, &commit);
                 self.open_pull_request_with(&task_record, &worktree, &commit, &base, &title, &body)
@@ -1093,16 +1347,19 @@ where
         body: &str,
     ) -> Result<()> {
         let task = task_record.id.clone();
-        let (number, url) =
-            self.delivery
-                .open_pull_request(task_record, worktree, commit, base, title, body)?;
-        self.record(
-            &event_key(&["pull_request_opened", task.as_str(), &number.to_string()]),
-            Fact {
-                at: now(),
-                kind: FactKind::PullRequestOpened { task, number, url },
-            },
-        )
+        match self
+            .delivery
+            .open_pull_request(task_record, worktree, commit, base, title, body)
+        {
+            Ok((number, url)) => self.record(
+                &event_key(&["pull_request_opened", task.as_str(), &number.to_string()]),
+                Fact {
+                    at: now(),
+                    kind: FactKind::PullRequestOpened { task, number, url },
+                },
+            ),
+            Err(error) => self.record_delivery_failure(&task, commit, &error.to_string()),
+        }
     }
 
     fn describe_pull_request(
@@ -1160,9 +1417,11 @@ where
     ) -> Result<describe::DescribeOutput> {
         let settings = self.store.home().load_settings()?;
         let spec = settings.profile_spec(depot_core::ProfileId::new(profile.to_owned()))?;
-        let base = &config.pull_request.base;
-        let diff = git_output(worktree, &["diff", &format!("{base}...HEAD")])?;
-        let diffstat = git_output(worktree, &["diff", "--stat", &format!("{base}...HEAD")])?;
+        let base = config.pull_request.base.clone();
+        fetch_base(worktree, &base)?;
+        let range = format!("origin/{base}...HEAD");
+        let diff = git_output(worktree, &["diff", &range])?;
+        let diffstat = git_output(worktree, &["diff", "--stat", &range])?;
         let describer = describe::SessionDescriber::new(
             &self.sessions,
             spec,
@@ -1171,6 +1430,7 @@ where
         describer.describe(&describe::DescribeInput {
             title: task.title.clone(),
             diff: describe::diff_section(&diff, &diffstat),
+            style: config.pull_request.describe_style.clone(),
             directory: worktree.to_path_buf(),
             output_path: std::env::temp_dir().join(format!(
                 "depot-describe-{}-{}.md",
@@ -1796,6 +2056,32 @@ where
                             },
                         )?;
                     }
+                    if let Some(mergeable) = observed.mergeable {
+                        let conflicting_base = (!mergeable).then(|| observed.base.clone());
+                        if task.conflict_base != conflicting_base {
+                            self.record(
+                                &event_key(&[
+                                    "pull_request_mergeability_changed",
+                                    task.id.as_str(),
+                                    if mergeable {
+                                        "mergeable"
+                                    } else {
+                                        "conflicting"
+                                    },
+                                    observed.base.as_str(),
+                                    &at.millis().to_string(),
+                                ]),
+                                Fact {
+                                    at,
+                                    kind: FactKind::PullRequestMergeabilityChanged {
+                                        task: task.id.clone(),
+                                        mergeable,
+                                        base: observed.base.clone(),
+                                    },
+                                },
+                            )?;
+                        }
+                    }
                     observed_open.push((task.id.clone(), number, observed));
                 }
             }
@@ -2099,13 +2385,22 @@ fn log(kind: &str, value: &str) {
     eprintln!("{{\"kind\":\"{}\",\"value\":{:?}}}", kind, value);
 }
 
+pub(crate) fn log_project_error(slug: &str, error: &Error) {
+    log("project-error", &format!("{slug}: {error}"));
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         EventHook, EventNotice, ShellEventHook, ShellValidation, ValidationRunner, delivery_branch,
         repo_slug,
     };
-    use depot_core::CommitId;
+    use std::collections::BTreeMap;
+
+    use depot_core::{
+        CommitId, Fact, FactKind, Limits, MergePolicy, ProjectId, ProjectState, Role, Task, TaskId,
+        Timestamp,
+    };
     use tempfile::TempDir;
 
     fn git(path: &std::path::Path, args: &[&str]) -> String {
@@ -2123,53 +2418,92 @@ mod tests {
         String::from_utf8_lossy(&output.stdout).trim().to_owned()
     }
 
+    fn task(id: &str, title: &str, intent: &str) -> Task {
+        let state = ProjectState {
+            project: ProjectId::new("test"),
+            slug: "test".to_owned(),
+            tasks: BTreeMap::new(),
+            coordinator: None,
+            profiles: BTreeMap::new(),
+            fallback_profiles: Vec::new(),
+            limits: Limits::default(),
+            always_relay_questions: false,
+            merge_policy: MergePolicy::Manual,
+        };
+        let (state, _) = depot_core::reduce(
+            &state,
+            &Fact {
+                at: Timestamp::from_millis(0),
+                kind: FactKind::TaskProposed {
+                    task: TaskId::new(id),
+                    title: title.to_owned(),
+                    intent: intent.to_owned(),
+                    role: Role::Build,
+                    dispatch_profile: None,
+                    dependencies: Vec::new(),
+                    base_dependency: None,
+                    hold_pr: false,
+                },
+            },
+        );
+        state
+            .tasks
+            .get(&TaskId::new(id))
+            .cloned()
+            .expect("the proposed task is in the state")
+    }
+
+    #[cfg(windows)]
+    const PRINT_VALIDATED_AND_EXIT_7: &str = "<nul set /p=validated& exit 7";
+    #[cfg(not(windows))]
+    const PRINT_VALIDATED_AND_EXIT_7: &str = "printf validated; exit 7";
+
     #[test]
     fn validation_runs_at_the_submitted_commit_and_keeps_its_output() {
         let temp = TempDir::new().expect("temporary directory");
-        let path = temp.path();
-        git(path, &["init"]);
-        git(path, &["config", "user.email", "depot@example.test"]);
-        git(path, &["config", "user.name", "Depot"]);
+        let path = temp.path().join("work");
+        std::fs::create_dir_all(&path).expect("work directory");
+        git(&path, &["init"]);
+        git(&path, &["config", "user.email", "depot@example.test"]);
+        git(&path, &["config", "user.name", "Depot"]);
         std::fs::write(path.join("answer"), "42").expect("fixture is written");
-        git(path, &["add", "."]);
-        git(path, &["commit", "-m", "fixture"]);
-        let commit = CommitId::new(git(path, &["rev-parse", "HEAD"]));
-        let task = depot_core::Task {
-            id: depot_core::TaskId::new("T1"),
-            project: depot_core::ProjectId::new("test"),
-            title: "test".to_owned(),
-            intent: "test validation".to_owned(),
-            role: depot_core::Role::Build,
-            dispatch_profile: None,
-            state: depot_core::TaskState::Proposed,
-            dependencies: Vec::new(),
-            base_dependency: None,
-            attempts: Vec::new(),
-            questions: Vec::new(),
-            validations: Vec::new(),
-            submission: None,
-            artifacts: Vec::new(),
-            links: Vec::new(),
-            branch_head: None,
-            merge_refused: None,
-            redirect_text: None,
-            redirect_delivered: false,
-            acknowledged_at: None,
-            hold_pr: false,
-            rework_of: None,
-            retry: None,
-            created_at: depot_core::Timestamp::from_millis(0),
-            updated_at: depot_core::Timestamp::from_millis(0),
-        };
+        git(&path, &["add", "."]);
+        git(&path, &["commit", "-m", "fixture"]);
+        let commit = CommitId::new(git(&path, &["rev-parse", "HEAD"]));
+        let origin = temp.path().join("origin.git");
+        git(
+            temp.path(),
+            &[
+                "init",
+                "--bare",
+                "--initial-branch=main",
+                origin.to_str().expect("the origin is utf-8"),
+            ],
+        );
+        git(
+            &path,
+            &[
+                "remote",
+                "add",
+                "origin",
+                origin.to_str().expect("the origin is utf-8"),
+            ],
+        );
+        git(&path, &["push", "origin", "HEAD:main"]);
+        let task = task("T1", "test", "test validation");
         let result = ShellValidation
-            .validate(&task, path, &commit, "printf validated; exit 7")
+            .validate(&task, &path, &commit, "main", PRINT_VALIDATED_AND_EXIT_7)
             .expect("validation runs");
         assert_eq!(result.exit_code, 7);
         assert_eq!(result.output_tail, "validated");
+        assert_eq!(
+            result.base_commit.as_ref().map(CommitId::as_str),
+            Some(commit.as_str())
+        );
         let wrong = CommitId::new("0000000000000000000000000000000000000000");
         assert!(
             ShellValidation
-                .validate(&task, path, &wrong, "true")
+                .validate(&task, &path, &wrong, "main", "true")
                 .is_err()
         );
     }
@@ -2187,33 +2521,11 @@ mod tests {
         git(path, &["checkout", "--detach", "HEAD"]);
         assert_eq!(git(path, &["branch", "--show-current"]), "");
 
-        let task = depot_core::Task {
-            id: depot_core::TaskId::new("t-64"),
-            project: depot_core::ProjectId::new("test"),
-            title: "Align branch naming".to_owned(),
-            intent: "Correct the branch name claims.".to_owned(),
-            role: depot_core::Role::Build,
-            dispatch_profile: None,
-            state: depot_core::TaskState::Running,
-            dependencies: Vec::new(),
-            base_dependency: None,
-            attempts: Vec::new(),
-            questions: Vec::new(),
-            validations: Vec::new(),
-            submission: None,
-            artifacts: Vec::new(),
-            links: Vec::new(),
-            branch_head: None,
-            merge_refused: None,
-            redirect_text: None,
-            redirect_delivered: false,
-            acknowledged_at: None,
-            hold_pr: false,
-            rework_of: None,
-            retry: None,
-            created_at: depot_core::Timestamp::from_millis(0),
-            updated_at: depot_core::Timestamp::from_millis(0),
-        };
+        let task = task(
+            "t-64",
+            "Align branch naming",
+            "Correct the branch name claims.",
+        );
 
         let branch = delivery_branch(path, &task).expect("a detached worktree names a branch");
         assert_eq!(branch, "feat/align-branch-naming");
@@ -2222,6 +2534,100 @@ mod tests {
             "{branch} names the lease holder"
         );
         assert_eq!(git(path, &["branch", "--show-current"]), branch);
+    }
+
+    #[test]
+    fn two_tasks_with_the_same_slug_get_distinct_delivery_branches() {
+        let temp = TempDir::new().expect("temporary directory");
+        let path = temp.path();
+        git(path, &["init"]);
+        git(path, &["config", "user.email", "depot@example.test"]);
+        git(path, &["config", "user.name", "Depot"]);
+        std::fs::write(path.join("answer"), "42").expect("fixture is written");
+        git(path, &["add", "."]);
+        git(path, &["commit", "-m", "fixture"]);
+        git(path, &["checkout", "--detach", "HEAD"]);
+
+        let first = task(
+            "t-64",
+            "Align branch naming",
+            "Correct the branch name claims.",
+        );
+        let branch = delivery_branch(path, &first).expect("the first task names a branch");
+        assert_eq!(branch, "feat/align-branch-naming");
+
+        git(path, &["checkout", "--detach", "HEAD"]);
+        let second = task(
+            "t-65",
+            "Align branch naming",
+            "Correct the branch name claims.",
+        );
+        let suffixed = delivery_branch(path, &second).expect("the second task names a branch");
+        assert_eq!(suffixed, "feat/align-branch-naming-2");
+        assert_ne!(branch, suffixed);
+    }
+
+    #[test]
+    fn fetching_the_base_updates_a_stale_ref_without_a_local_branch() {
+        let temp = TempDir::new().expect("temporary directory");
+        let origin = temp.path().join("origin.git");
+        git(
+            temp.path(),
+            &[
+                "init",
+                "--bare",
+                "--initial-branch=main",
+                origin.to_str().expect("the origin is utf-8"),
+            ],
+        );
+        let work = temp.path().join("work");
+        std::fs::create_dir_all(&work).expect("work directory");
+        git(&work, &["init", "--initial-branch=main"]);
+        git(&work, &["config", "user.email", "depot@example.test"]);
+        git(&work, &["config", "user.name", "Depot"]);
+        git(
+            &work,
+            &[
+                "remote",
+                "add",
+                "origin",
+                origin.to_str().expect("the origin is utf-8"),
+            ],
+        );
+        std::fs::write(work.join("base.txt"), "a").expect("the base file is written");
+        git(&work, &["add", "."]);
+        git(&work, &["commit", "-m", "the first base"]);
+        git(&work, &["push", "origin", "HEAD:main"]);
+        git(&work, &["fetch", "origin", "main"]);
+        git(&work, &["checkout", "--detach"]);
+        git(&work, &["branch", "-D", "main"]);
+
+        let second = temp.path().join("second");
+        std::fs::create_dir_all(&second).expect("second directory");
+        git(
+            &second,
+            &["clone", origin.to_str().expect("the origin is utf-8"), "."],
+        );
+        git(&second, &["config", "user.email", "depot@example.test"]);
+        git(&second, &["config", "user.name", "Depot"]);
+        std::fs::write(second.join("base.txt"), "b").expect("the base file is written");
+        git(&second, &["add", "."]);
+        git(&second, &["commit", "-m", "the base moves on"]);
+        git(&second, &["push", "origin", "HEAD:main"]);
+        let moved = git(&second, &["rev-parse", "HEAD"]);
+        assert_ne!(
+            git(&work, &["rev-parse", "refs/remotes/origin/main"]),
+            moved,
+            "the local remote-tracking ref starts stale"
+        );
+
+        let fetched = super::fetch_base(&work, "main").expect("the base is fetched");
+        assert_eq!(fetched.as_str(), moved);
+        assert_eq!(
+            git(&work, &["rev-parse", "refs/remotes/origin/main"]),
+            moved,
+            "the fetch moves the remote-tracking ref to the current base"
+        );
     }
 
     #[test]

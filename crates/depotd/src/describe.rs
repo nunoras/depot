@@ -13,6 +13,7 @@ const TRUNCATED_DIFF_BYTES: usize = 40_000;
 pub struct DescribeInput {
     pub title: String,
     pub diff: String,
+    pub style: String,
     pub directory: PathBuf,
     pub output_path: PathBuf,
 }
@@ -86,11 +87,15 @@ pub fn diff_section(diff: &str, diffstat: &str) -> String {
     )
 }
 
-pub fn prompt(title: &str, diff: &str, output_path: &Path) -> String {
+pub fn prompt(style: &str, title: &str, diff: &str, output_path: &Path) -> String {
+    let style = style.trim();
+    let preface = if style.is_empty() {
+        String::new()
+    } else {
+        format!("{style}\n\n")
+    };
     format!(
-        "Load the /technical-writing skill and apply its unslop rules before writing.\n\
-         \n\
-         You are writing the description of a pull request for its reviewers. \
+        "{preface}You are writing the description of a pull request for its reviewers. \
          The one-line summary of the change is: {title}\n\
          \n\
          Write a reviewer-facing description: the one-line title on the first line, \
@@ -143,7 +148,7 @@ impl<S: Sessions> Describer for SessionDescriber<'_, S> {
                     effort: self.spec.effort.clone(),
                 },
                 kind: Some("describe".to_owned()),
-                prompt: prompt(&input.title, &input.diff, &input.output_path),
+                prompt: prompt(&input.style, &input.title, &input.diff, &input.output_path),
             })
             .map_err(|error| Error::Project(error.to_string()))?;
         let outcome = self
@@ -194,6 +199,7 @@ mod tests {
             validations: vec![ValidationRecord {
                 command: "cargo test".to_owned(),
                 commit: CommitId::new("abc123"),
+                base_commit: None,
                 exit_code: 0,
                 duration: Duration::from_secs(5),
                 output_tail: String::new(),
@@ -203,6 +209,7 @@ mod tests {
             links: Vec::new(),
             branch_head: None,
             merge_refused: None,
+            conflict_base: None,
             redirect_text: None,
             redirect_delivered: false,
             acknowledged_at: None,
@@ -273,11 +280,30 @@ mod tests {
 
     #[test]
     fn the_prompt_carries_the_title_not_the_intent() {
-        let text = prompt("The title", "the diff", std::path::Path::new("/tmp/out.md"));
+        let text = prompt(
+            "",
+            "The title",
+            "the diff",
+            std::path::Path::new("/tmp/out.md"),
+        );
         assert!(text.contains("The title"));
         assert!(text.contains("/tmp/out.md"));
-        assert!(text.contains("/technical-writing"));
-        assert!(text.contains("unslop"));
+        assert!(
+            !text.contains("/technical-writing"),
+            "the default prompt names no skill: {text}"
+        );
+    }
+
+    #[test]
+    fn a_configured_style_is_prepended_and_an_empty_style_leaves_the_prompt_alone() {
+        let path = std::path::Path::new("/tmp/out.md");
+        let plain = prompt("", "The title", "the diff", path);
+        assert!(!plain.starts_with("Write in"));
+        let styled = prompt("Write in the house voice.", "The title", "the diff", path);
+        assert!(styled.starts_with("Write in the house voice.\n\n"));
+        assert!(styled.contains("The title"));
+        let blank = prompt("   \n", "The title", "the diff", path);
+        assert_eq!(blank, plain);
     }
 
     #[test]
@@ -379,6 +405,7 @@ mod tests {
         super::DescribeInput {
             title: "The title".to_owned(),
             diff: "the diff".to_owned(),
+            style: String::new(),
             directory: PathBuf::from("."),
             output_path,
         }

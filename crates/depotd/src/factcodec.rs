@@ -144,6 +144,7 @@ pub fn encode_payload(kind: &FactKind) -> String {
             task,
             command,
             commit,
+            base_commit,
             exit_code,
             duration,
             output_tail,
@@ -151,9 +152,26 @@ pub fn encode_payload(kind: &FactKind) -> String {
             ("task", quoted(task.as_str())),
             ("command", quoted(command)),
             ("commit", quoted(commit.as_str())),
+            (
+                "base_commit",
+                optional(
+                    base_commit
+                        .as_ref()
+                        .map(|commit| commit.as_str().to_owned()),
+                ),
+            ),
             ("exit_code", numeric(exit_code)),
             ("duration_millis", numeric(duration.as_millis())),
             ("output_tail", quoted(output_tail)),
+        ]),
+        FactKind::ValidationFailed {
+            task,
+            commit,
+            reason,
+        } => object(vec![
+            ("task", quoted(task.as_str())),
+            ("commit", quoted(commit.as_str())),
+            ("reason", quoted(reason)),
         ]),
         FactKind::WorktreeAcquired {
             task,
@@ -196,6 +214,10 @@ pub fn encode_payload(kind: &FactKind) -> String {
             ("number", numeric(number)),
             ("url", quoted(url)),
         ]),
+        FactKind::TaskLandedOnBase { task, commit } => object(vec![
+            ("task", quoted(task.as_str())),
+            ("commit", quoted(commit.as_str())),
+        ]),
         FactKind::PullRequestChecksChanged { task, checks } => object(vec![
             ("task", quoted(task.as_str())),
             ("checks", quoted(checks_name(*checks))),
@@ -218,6 +240,15 @@ pub fn encode_payload(kind: &FactKind) -> String {
             ("checks", quoted(checks_name(*checks))),
             ("reason", quoted(reason)),
         ]),
+        FactKind::PullRequestMergeabilityChanged {
+            task,
+            mergeable,
+            base,
+        } => object(vec![
+            ("task", quoted(task.as_str())),
+            ("mergeable", boolean(*mergeable)),
+            ("base", quoted(base.as_str())),
+        ]),
         FactKind::EvidencePosted {
             task,
             commit,
@@ -239,6 +270,15 @@ pub fn encode_payload(kind: &FactKind) -> String {
             ("required", boolean(*required)),
         ]),
         FactKind::PushFailed {
+            task,
+            commit,
+            reason,
+        } => object(vec![
+            ("task", quoted(task.as_str())),
+            ("commit", quoted(commit.as_str())),
+            ("reason", quoted(reason)),
+        ]),
+        FactKind::DeliveryFailed {
             task,
             commit,
             reason,

@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use depot_core::{ProjectId, Timestamp};
+use depot_core::{ProjectId, TaskId, Timestamp};
 
 use crate::checklist::{render_checklist, render_checklist_observed};
 use crate::clock::now;
@@ -90,6 +90,53 @@ pub fn select_project(store: &Store, name: Option<&str>) -> Result<Project> {
                     &store.projects()?,
                 ))),
             }
+        }
+    }
+}
+
+pub fn resolve_task(
+    store: &Store,
+    selection: Option<&str>,
+    raw: &str,
+) -> Result<(Project, TaskId)> {
+    if let Some((slug, id)) = raw.split_once('/') {
+        let project = match_project(store, slug)?.ok_or_else(|| {
+            Error::NotFound(format!(
+                "no project matches `{slug}`: list them with `depot status --all`"
+            ))
+        })?;
+        return Ok((project, TaskId::new(id)));
+    }
+    let id = TaskId::new(raw);
+    if let Some(name) = selection {
+        let project = match_project(store, name)?.ok_or_else(|| {
+            Error::NotFound(format!(
+                "no project matches `{name}`: list them with `depot status --all`"
+            ))
+        })?;
+        return Ok((project, id));
+    }
+    let mut owners = Vec::new();
+    for project in store.projects()? {
+        if store.task(&project.id, &id)?.is_some() {
+            owners.push(project);
+        }
+    }
+    match owners.len() {
+        0 => {
+            let project = select_project(store, None)?;
+            Ok((project, id))
+        }
+        1 => Ok((owners.remove(0), id)),
+        _ => {
+            let slugs = owners
+                .iter()
+                .map(|project| project.slug.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(Error::Project(format!(
+                "`{raw}` exists in several projects ({slugs}); qualify it as `<slug>/{raw}`"
+            )))
         }
     }
 }

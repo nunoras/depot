@@ -34,6 +34,7 @@ pub struct InboxEntry {
 }
 
 pub fn inbox_entries(
+    slug: &str,
     tasks: &BTreeMap<TaskId, Task>,
     events: &[RecordedEvent],
 ) -> Result<Vec<InboxEntry>> {
@@ -50,7 +51,7 @@ pub fn inbox_entries(
         entries.push(InboxEntry {
             at: event.at,
             task: event.task.clone(),
-            line: line_for(tag, event, task)?,
+            line: line_for(tag, event, task, slug)?,
             need: need_for(tag, task),
         });
     }
@@ -172,10 +173,15 @@ fn need_for(tag: FactTag, task: Option<&Task>) -> Need {
     }
 }
 
-fn line_for(tag: FactTag, event: &RecordedEvent, task: Option<&Task>) -> Result<String> {
+fn line_for(
+    tag: FactTag,
+    event: &RecordedEvent,
+    task: Option<&Task>,
+    slug: &str,
+) -> Result<String> {
     let subject = match (event.task.as_ref(), task) {
         (Some(id), Some(task)) => format!(
-            "`{id}` **{}** ({}): ",
+            "`{slug}/{id}` **{}** ({}): ",
             one_line(&task.title),
             state_name(task.state)
         ),

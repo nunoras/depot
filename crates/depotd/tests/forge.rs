@@ -79,6 +79,18 @@ fn distinguishes_a_merged_pull_request_from_an_unmerged_one() {
         200,
         &check_runs(1, "{\"status\":\"in_progress\",\"conclusion\":null}"),
     );
+    forge_endpoint.route(
+        "GET",
+        "/repos/acme/widget/pulls/10",
+        200,
+        &pull_request(10, "ddd444", "open", None),
+    );
+    forge_endpoint.route(
+        "GET",
+        "/repos/acme/widget/commits/ddd444/check-runs",
+        200,
+        &check_runs(0, ""),
+    );
 
     let github = GitHub::new(forge_endpoint.base_url(), "token-1");
     let merged = github.pull_request(&repo(), 7).expect("the PR is read");
@@ -97,6 +109,14 @@ fn distinguishes_a_merged_pull_request_from_an_unmerged_one() {
     assert_eq!(open.checks, Checks::Pending);
     assert_eq!(open.mergeable, Some(true));
     assert_eq!(open.head_ref, "fm/task-7");
+
+    let no_ci = github.pull_request(&repo(), 10).expect("the PR is read");
+    assert_eq!(no_ci.state, PrState::Open);
+    assert_eq!(
+        no_ci.checks,
+        Checks::None,
+        "an empty check-run list means the repo has no checks, not that they are unknown"
+    );
 
     let recorded = forge_endpoint.request_to("/repos/acme/widget/pulls/7");
     assert_eq!(recorded.method, "GET");
@@ -200,7 +220,7 @@ fn refuses_a_truncated_check_run_list() {
 }
 
 #[test]
-fn reads_a_pull_request_with_no_checks_as_unknown() {
+fn reads_a_pull_request_with_no_checks_as_none() {
     let forge_endpoint = FakeForge::start();
     forge_endpoint.route(
         "GET",
@@ -217,7 +237,7 @@ fn reads_a_pull_request_with_no_checks_as_unknown() {
 
     let github = GitHub::new(forge_endpoint.base_url(), "token-1");
     let pull_request = github.pull_request(&repo(), 7).expect("the PR is read");
-    assert_eq!(pull_request.checks, Checks::Unknown);
+    assert_eq!(pull_request.checks, Checks::None);
 }
 
 #[test]

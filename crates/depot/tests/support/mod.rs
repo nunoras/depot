@@ -303,7 +303,11 @@ impl Golden {
         let text = fs::read_to_string(&path).expect("the project config is readable");
         let mut config =
             depotd::ProjectConfig::from_toml(&text).expect("the project config parses");
-        config.pull_request.auto_merge = enabled;
+        config.pull_request.merge = Some(if enabled {
+            depotd::MergePolicyConfig::AfterChecks
+        } else {
+            depotd::MergePolicyConfig::Manual
+        });
         config
             .write(&self.repo)
             .expect("the project config is written");
@@ -737,7 +741,7 @@ pub fn write_project(repo: &Path, validation: Validation) {
     fs::write(
         repo.join(".depot.toml"),
         format!(
-            "base_branch = \"main\"\n\n[profiles]\nbuild = \"{PROFILE}\"\nfix = \"{PROFILE}\"\n\n[validation]\ncommand = \"{validation_command}\"\n\n[pull_request]\nbase = \"main\"\nauto_merge = false\n"
+            "base_branch = \"main\"\n\n[profiles]\nbuild = \"{PROFILE}\"\nfix = \"{PROFILE}\"\n\n[validation]\ncommand = \"{validation_command}\"\n\n[pull_request]\nbase = \"main\"\nmerge = \"manual\"\n"
         ),
     )
     .expect("the committed project config is written");

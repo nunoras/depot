@@ -168,6 +168,7 @@ fn need_for(tag: FactTag, task: Option<&Task>) -> Need {
         | FactTag::PullRequestOpened
         | FactTag::TaskLandedOnBase
         | FactTag::PullRequestChecksChanged
+        | FactTag::PullRequestMergeabilityChanged
         | FactTag::EvidencePosted
         | FactTag::CoordinatorSessionStarted
         | FactTag::CoordinatorContextMeasured
@@ -280,6 +281,12 @@ fn headline(tag: FactTag, event: &RecordedEvent, task: Option<&Task>) -> Result<
                     one_line(&reason)
                 ),
                 None => format!("the forge refused to merge: {}", one_line(&reason)),
+            }
+        }
+        FactTag::PullRequestMergeabilityChanged => {
+            match task.and_then(|task| task.conflict_base.as_ref()) {
+                Some(base) => format!("the pull request conflicts with base `{base}`"),
+                None => "the pull request no longer conflicts with its base".to_string(),
             }
         }
         FactTag::EvidencePosted => match task.and_then(|task| task.pull_request()) {

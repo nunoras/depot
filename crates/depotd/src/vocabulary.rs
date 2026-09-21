@@ -138,6 +138,7 @@ pub enum FactTag {
     PullRequestMerged,
     PullRequestClosedUnmerged,
     PullRequestMergeRefused,
+    PullRequestMergeabilityChanged,
     DescribeFailed,
     EvidencePosted,
     EvidenceFailed,
@@ -190,6 +191,7 @@ pub fn fact_tag(kind: &FactKind) -> FactTag {
         FactKind::PullRequestMerged { .. } => FactTag::PullRequestMerged,
         FactKind::PullRequestClosedUnmerged { .. } => FactTag::PullRequestClosedUnmerged,
         FactKind::PullRequestMergeRefused { .. } => FactTag::PullRequestMergeRefused,
+        FactKind::PullRequestMergeabilityChanged { .. } => FactTag::PullRequestMergeabilityChanged,
         FactKind::DescribeFailed { .. } => FactTag::DescribeFailed,
         FactKind::EvidencePosted { .. } => FactTag::EvidencePosted,
         FactKind::EvidenceFailed { .. } => FactTag::EvidenceFailed,
@@ -243,6 +245,7 @@ pub fn fact_tag_name(tag: FactTag) -> &'static str {
         FactTag::PullRequestMerged => "pull_request_merged",
         FactTag::PullRequestClosedUnmerged => "pull_request_closed_unmerged",
         FactTag::PullRequestMergeRefused => "pull_request_merge_refused",
+        FactTag::PullRequestMergeabilityChanged => "pull_request_mergeability_changed",
         FactTag::DescribeFailed => "describe_failed",
         FactTag::EvidencePosted => "evidence_posted",
         FactTag::EvidenceFailed => "evidence_failed",
@@ -296,6 +299,7 @@ pub fn fact_tag_from_name(name: &str) -> Result<FactTag> {
         "pull_request_merged" => FactTag::PullRequestMerged,
         "pull_request_closed_unmerged" => FactTag::PullRequestClosedUnmerged,
         "pull_request_merge_refused" => FactTag::PullRequestMergeRefused,
+        "pull_request_mergeability_changed" => FactTag::PullRequestMergeabilityChanged,
         "describe_failed" => FactTag::DescribeFailed,
         "evidence_posted" => FactTag::EvidencePosted,
         "evidence_failed" => FactTag::EvidenceFailed,
@@ -352,6 +356,7 @@ pub fn fact_task(kind: &FactKind) -> Option<TaskId> {
         | FactKind::PullRequestChecksChanged { task, .. }
         | FactKind::PullRequestMerged { task, .. }
         | FactKind::PullRequestMergeRefused { task, .. }
+        | FactKind::PullRequestMergeabilityChanged { task, .. }
         | FactKind::PullRequestClosedUnmerged { task }
         | FactKind::DescribeFailed { task, .. }
         | FactKind::EvidencePosted { task, .. }

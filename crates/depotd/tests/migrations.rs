@@ -94,6 +94,64 @@ fn a_store_written_by_an_older_schema_migrates_forward_on_open() {
     ));
 }
 
+fn column_names(connection: &Connection, table: &str) -> Vec<String> {
+    let mut statement = connection
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .expect("table info");
+    statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .expect("column rows")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("column names")
+}
+
+#[test]
+fn a_store_migrated_to_the_previous_schema_gains_the_conflict_base_column() {
+    let fixture = support::fixture();
+    let path = fixture.home.database_path();
+    std::fs::create_dir_all(fixture.home.root()).expect("home directory");
+
+    let previous = Connection::open(&path).expect("previous database");
+    previous
+        .execute_batch(include_str!("fixtures/schema-v16.sql"))
+        .expect("previous schema");
+    let previous_version: i64 = previous
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .expect("previous schema version");
+    assert!(
+        previous_version < SCHEMA_VERSION,
+        "the frozen fixture must be an older schema than {SCHEMA_VERSION}"
+    );
+    previous
+        .execute_batch(
+            "INSERT INTO projects (id, kind, slug, created_at) VALUES ('/work/example', 'path', 'example', 1700000000000);
+             INSERT INTO tasks (project_id, id, title, intent, role, state, created_at, updated_at)
+                 VALUES ('/work/example', 't-1', 'Wire the store', 'persist the records', 'build', 'validated', 1700000000000, 1700000000000);
+             INSERT INTO task_counters (project_id, next_number) VALUES ('/work/example', 7);",
+        )
+        .expect("previous rows");
+    drop(previous);
+
+    let store = Store::open(&fixture.home).expect("migrated store");
+
+    assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
+    drop(store);
+
+    let connection = Connection::open(&path).expect("migrated database");
+    assert!(
+        column_names(&connection, "tasks").contains(&"conflict_base".to_string()),
+        "the migration must add the conflict_base column"
+    );
+    let counter: i64 = connection
+        .query_row(
+            "SELECT next_number FROM task_counters WHERE project_id = '/work/example'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("task_counters is intact");
+    assert_eq!(counter, 7);
+}
+
 #[test]
 fn a_store_written_by_a_newer_schema_is_refused_rather_than_downgraded() {
     let fixture = support::fixture();

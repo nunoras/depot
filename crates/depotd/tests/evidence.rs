@@ -7,7 +7,8 @@ use std::time::Duration;
 
 use depot_core::{Fact, FactKind, ProjectId, TaskId, Timestamp, WorktreeLease};
 use depotd::adapters::sessions::{
-    Capabilities, LaunchRequest, SessionError, SessionState, SessionSummary, Sessions, TurnOutcome,
+    Capabilities, LaunchRequest, SessionError, SessionState, SessionStatus, SessionSummary,
+    Sessions, TurnOutcome,
 };
 use depotd::adapters::worktrees::{AcquireRequest, Lease, PoolEntry, WorktreeError, Worktrees};
 use depotd::{
@@ -65,12 +66,24 @@ impl Sessions for FakeSessions {
         Ok(depot_core::SessionId::new("s-1"))
     }
 
-    fn resume(&self, _session: &depot_core::SessionId, _prompt: &str) -> Result<(), SessionError> {
-        Ok(())
+    fn resume(
+        &self,
+        _session: &depot_core::SessionId,
+        _prompt: &str,
+    ) -> Result<depot_core::SessionId, SessionError> {
+        Ok(depot_core::SessionId::new("s-2"))
     }
 
-    fn status(&self, _session: &depot_core::SessionId) -> Result<SessionState, SessionError> {
-        Ok(SessionState::Running)
+    fn status(&self, _session: &depot_core::SessionId) -> Result<SessionStatus, SessionError> {
+        Ok(SessionStatus {
+            state: SessionState::Running,
+            error: None,
+            capture_error: None,
+            limit_hit: false,
+            started: None,
+            last_activity: None,
+            current_tool: None,
+        })
     }
 
     fn wait(

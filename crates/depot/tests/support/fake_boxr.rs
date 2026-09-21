@@ -108,6 +108,11 @@ impl FakeBoxr {
         );
     }
 
+    pub fn child_session(&self, child: &str) {
+        fs::write(self.root.join("resume.child"), child)
+            .expect("the fake resumed child id is written");
+    }
+
     pub fn calls(&self) -> Vec<Vec<String>> {
         let Ok(recorded) = fs::read_to_string(self.root.join("calls.txt")) else {
             return Vec::new();

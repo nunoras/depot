@@ -604,10 +604,21 @@ fn a_worker_resumes_only_once_every_open_question_is_answered() {
         resumed[0],
         vec![
             "resume",
+            "--detach",
             SESSION,
             "Your question \"Which store?\" was answered: sqlite in the depot home. Your question \"Which port?\" was answered: 8080. Continue the task.",
         ],
         "both answers reach the worker in one resume turn"
+    );
+    let resumed_session = golden
+        .task()
+        .attempts
+        .last()
+        .and_then(|attempt| attempt.session.clone());
+    assert_eq!(
+        resumed_session,
+        Some(SessionId::new(format!("{SESSION}-child"))),
+        "the daemon records the detached child boxr printed, not the parent"
     );
 
     daemon
@@ -2705,5 +2716,328 @@ fn a_refused_pull_request_holds_only_its_task_and_the_tick_survives() {
     assert!(
         inbox.contains("422"),
         "the reason names the forge answer: {inbox}"
+    );
+}
+
+fn zero_run_duration(golden: &Golden) {
+    golden
+        .home
+        .write_settings(&depotd::Settings {
+            run_duration_minutes: 0,
+            ..support::settings()
+        })
+        .expect("the run duration is set to zero");
+}
+
+#[test]
+fn a_run_past_its_duration_stops_the_session_once_and_holds_the_task() {
+    let golden = Golden::new(Validation::Passing);
+    zero_run_duration(&golden);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon
+        .tick()
+        .expect("the launch meets the deadline in the same tick");
+
+    let task = golden.task();
+    assert_eq!(task.state, TaskState::Failed);
+    assert_eq!(
+        task.attempts.last().map(|attempt| attempt.outcome),
+        Some(AttemptOutcome::Stopped)
+    );
+    let exceeded = |golden: &Golden| {
+        golden
+            .history(TASK)
+            .into_iter()
+            .filter(|kind| kind == "run_duration_exceeded")
+            .count()
+    };
+    assert_eq!(exceeded(&golden), 1);
+    assert_eq!(
+        golden.boxr.calls_to("stop").len(),
+        1,
+        "the exact deadline stops the session exactly once"
+    );
+
+    daemon.tick().expect("a later tick stays alive");
+    assert_eq!(exceeded(&golden), 1, "the overrun is recorded once");
+    assert_eq!(golden.boxr.calls_to("stop").len(), 1);
+}
+
+#[test]
+fn a_run_duration_stop_that_fails_surfaces_rather_than_pretending_success() {
+    let golden = Golden::new(Validation::Passing);
+    zero_run_duration(&golden);
+    let daemon = golden.daemon();
+    golden.propose();
+    golden
+        .boxr
+        .respond("stop", "", "boxr could not stop the session", 1);
+
+    let error = daemon
+        .tick()
+        .expect_err("the failed stop is surfaced, not swallowed");
+    assert!(
+        error.to_string().contains("could not stop"),
+        "the stop failure is named: {error}"
+    );
+}
+
+#[test]
+fn a_terminal_session_failure_records_its_reason_for_the_checklist_and_inbox() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+
+    golden.boxr.respond(
+        "status",
+        &format!("session: {SESSION}\nstate: failed\nerror: \"the harness crashed\"\n"),
+        "",
+        0,
+    );
+    daemon.tick().expect("the failure is recorded");
+
+    let task = golden.task();
+    assert_eq!(task.state, TaskState::Failed);
+    assert_eq!(task.failure.as_deref(), Some("the harness crashed"));
+    let history = golden.status_history();
+    assert!(
+        history.contains("failure: the harness crashed"),
+        "{history}"
+    );
+
+    let inbox = golden.depot_ok(&["inbox", "--project", SLUG]);
+    assert!(
+        inbox.contains("the worker session failed: the harness crashed"),
+        "{inbox}"
+    );
+
+    daemon.tick().expect("later ticks stay alive");
+    assert_eq!(
+        golden
+            .history(TASK)
+            .into_iter()
+            .filter(|kind| kind == "worker_session_failed")
+            .count(),
+        1,
+        "the failure is recorded once rather than every tick"
+    );
+}
+
+#[test]
+fn a_rate_limited_session_queues_a_bounded_retry_without_a_bare_gone() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+
+    golden.boxr.respond(
+        "status",
+        &format!(
+            "session: {SESSION}\nstate: failed\nlimitHit: true\nerror: \"weekly usage limit reached\"\n"
+        ),
+        "",
+        0,
+    );
+    daemon.tick().expect("the rate limit is recorded");
+
+    let task = golden.task();
+    assert_eq!(task.state, TaskState::Approved);
+    assert!(task.retry.is_some(), "the bounded retry is queued");
+    let history = golden.history(TASK);
+    assert_eq!(
+        history
+            .iter()
+            .filter(|kind| kind.as_str() == "provider_rate_limited")
+            .count(),
+        1
+    );
+    assert_eq!(
+        history
+            .iter()
+            .filter(|kind| kind.as_str() == LIVENESS)
+            .count(),
+        1,
+        "the launch observation is the only liveness fact; no bare gone overwrites the limit"
+    );
+
+    daemon.tick().expect("a later tick stays alive");
+    assert_eq!(
+        golden
+            .history(TASK)
+            .into_iter()
+            .filter(|kind| kind == "provider_rate_limited")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn a_resume_that_reports_the_parent_id_is_retried_instead_of_recorded() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_asks("Which store?");
+    assert_eq!(
+        golden.depot_ok(&[
+            "task",
+            "answer",
+            TASK,
+            "--text",
+            "sqlite.",
+            "--by",
+            "user",
+            "--project",
+            SLUG,
+        ]),
+        format!("answered {TASK}\n")
+    );
+    golden.boxr.child_session(SESSION);
+
+    daemon
+        .tick()
+        .expect("a parent reported as the child is refused without failing the tick");
+    assert_eq!(
+        golden
+            .task()
+            .attempts
+            .last()
+            .and_then(|attempt| attempt.session.clone()),
+        Some(SessionId::new(SESSION)),
+        "the parent session is never recorded as the resumed child"
+    );
+    assert_eq!(golden.boxr.calls_to("resume").len(), 1);
+    assert_eq!(
+        golden
+            .history(TASK)
+            .into_iter()
+            .filter(|kind| kind == "worker_turn_started")
+            .count(),
+        1,
+        "no second turn start is recorded for the refused child"
+    );
+
+    daemon.tick().expect("the refused resume is retried");
+    assert_eq!(
+        golden.boxr.calls_to("resume").len(),
+        2,
+        "the answer stays owed until a real child is recorded"
+    );
+}
+
+#[test]
+fn repeated_identical_questions_are_delivered_as_two_occurrences() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.boxr.report_finished();
+
+    golden.worker_asks_twice("Which store?", "Which store?");
+    for answer in ["first answer.", "second answer."] {
+        assert_eq!(
+            golden.depot_ok(&[
+                "task",
+                "answer",
+                TASK,
+                "--text",
+                answer,
+                "--by",
+                "user",
+                "--project",
+                SLUG,
+            ]),
+            format!("answered {TASK}\n")
+        );
+    }
+
+    golden.boxr.report_running();
+    daemon
+        .tick()
+        .expect("the daemon resumes with both occurrences");
+    let resumed = golden.boxr.calls_to("resume");
+    assert_eq!(resumed.len(), 1, "one resume carries both answers");
+    let prompt = resumed[0].last().expect("the resume prompt");
+    assert_eq!(
+        prompt.matches("Which store?").count(),
+        2,
+        "the identical question is delivered as two occurrences: {prompt}"
+    );
+    assert!(
+        prompt.contains("first answer.") && prompt.contains("second answer."),
+        "both answers reach the worker: {prompt}"
+    );
+}
+
+#[test]
+fn an_answer_delivered_to_a_previous_session_survives_a_later_fresh_launch() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+
+    golden.depot_ok(&[
+        "ask",
+        "--task",
+        TASK,
+        "--relay",
+        "Which store?",
+        "--project",
+        SLUG,
+    ]);
+    golden.depot_ok(&[
+        "task",
+        "answer",
+        TASK,
+        "--text",
+        "sqlite.",
+        "--by",
+        "user",
+        "--project",
+        SLUG,
+    ]);
+    daemon
+        .tick()
+        .expect("the daemon resumes and delivers the first answer");
+    assert_eq!(golden.boxr.calls_to("resume").len(), 1);
+
+    golden.depot_ok(&[
+        "ask",
+        "--task",
+        TASK,
+        "--relay",
+        "Which port?",
+        "--project",
+        SLUG,
+    ]);
+    golden.depot_ok(&[
+        "task",
+        "answer",
+        TASK,
+        "--text",
+        "8080.",
+        "--by",
+        "user",
+        "--project",
+        SLUG,
+    ]);
+
+    golden.boxr.report_finished();
+    daemon
+        .tick()
+        .expect("the dead session is answered with a fresh worker");
+
+    let launches = golden.boxr.calls_to("--harness");
+    assert_eq!(launches.len(), 2, "a fresh worker is launched");
+    let prompt = launches[1].last().expect("the relaunch prompt");
+    assert!(
+        prompt.contains("Which store?") && prompt.contains("sqlite."),
+        "an answer already delivered to the previous session is carried again: {prompt}"
+    );
+    assert!(
+        prompt.contains("Which port?") && prompt.contains("8080."),
+        "the newer answer reaches the same fresh turn: {prompt}"
     );
 }

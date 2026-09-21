@@ -4,7 +4,8 @@ use std::sync::{Arc, Mutex};
 
 use depot_core::{Fact, FactKind, ProjectId, Role, SessionId, TaskId, Timestamp, WorktreeLease};
 use depotd::adapters::sessions::{
-    Capabilities, LaunchRequest, SessionError, SessionState, SessionSummary, Sessions, TurnOutcome,
+    Capabilities, LaunchRequest, SessionError, SessionState, SessionStatus, SessionSummary,
+    Sessions, TurnOutcome,
 };
 use depotd::adapters::worktrees::{AcquireRequest, Lease, PoolEntry, WorktreeError, Worktrees};
 use depotd::{
@@ -98,12 +99,20 @@ impl Sessions for FakeSessions {
         Ok(SessionId::new("s-1"))
     }
 
-    fn resume(&self, _session: &SessionId, _prompt: &str) -> Result<(), SessionError> {
-        Ok(())
+    fn resume(&self, _session: &SessionId, _prompt: &str) -> Result<SessionId, SessionError> {
+        Ok(SessionId::new("s-2"))
     }
 
-    fn status(&self, _session: &SessionId) -> Result<SessionState, SessionError> {
-        Ok(SessionState::Running)
+    fn status(&self, _session: &SessionId) -> Result<SessionStatus, SessionError> {
+        Ok(SessionStatus {
+            state: SessionState::Running,
+            error: None,
+            capture_error: None,
+            limit_hit: false,
+            started: None,
+            last_activity: None,
+            current_tool: None,
+        })
     }
 
     fn wait(
@@ -149,6 +158,12 @@ fn register_project(store: &Store, home: &DepotHome, name: &str, config: &str) -
 }
 
 fn propose_and_approve(store: &Store, project: &Project, task: &str) {
+    let at = Timestamp::from_millis(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("the clock is after the epoch")
+            .as_millis() as u64,
+    );
     for (key, kind) in [
         (
             format!("proposed:{task}"),
@@ -171,14 +186,7 @@ fn propose_and_approve(store: &Store, project: &Project, task: &str) {
         ),
     ] {
         store
-            .apply_fact(
-                project,
-                &key,
-                &Fact {
-                    at: Timestamp::from_millis(0),
-                    kind,
-                },
-            )
+            .apply_fact(project, &key, &Fact { at, kind })
             .expect("the fact applies");
     }
 }

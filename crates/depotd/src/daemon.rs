@@ -31,6 +31,7 @@ use crate::vocabulary::{FactTag, checks_name, fact_tag, fact_tag_name};
 
 pub const DAEMON_LOCK_FILE_NAME: &str = "depotd.lock";
 const MAX_RESUME_ATTEMPTS: u32 = 3;
+const LIVENESS_REFRESH_MILLIS: u64 = 60_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DaemonScope {
@@ -794,6 +795,7 @@ where
         )?;
         self.reconcile_start()?;
         self.reconcile_resume()?;
+        self.reconcile_budget()?;
         self.reconcile_sessions()?;
         self.reconcile_notify()
     }
@@ -814,6 +816,7 @@ where
         )?;
         self.reconcile_start()?;
         self.reconcile_resume()?;
+        self.reconcile_budget()?;
         self.reconcile_sessions()?;
         self.reconcile_validation()?;
         self.reconcile_delivery()?;
@@ -834,15 +837,20 @@ where
     }
 
     pub fn worker_liveness(&self, task: TaskId, liveness: depot_core::Liveness) -> Result<()> {
-        if self.store.last_liveness(&self.project.id, &task)? == Some(liveness) {
-            let resolves_unknown = self
-                .store
-                .task(&self.project.id, &task)?
-                .and_then(|task| task.attempts.last().map(|attempt| attempt.outcome))
-                .is_some_and(|outcome| outcome == depot_core::AttemptOutcome::Unknown);
-            if !resolves_unknown {
-                return Ok(());
-            }
+        let previous = self.store.last_liveness(&self.project.id, &task)?;
+        let resolves_unknown = self
+            .store
+            .task(&self.project.id, &task)?
+            .and_then(|task| task.attempts.last().map(|attempt| attempt.outcome))
+            .is_some_and(|outcome| outcome == depot_core::AttemptOutcome::Unknown);
+        let stale = previous.as_ref().is_none_or(|(_, at)| {
+            now().millis().saturating_sub(at.millis()) >= LIVENESS_REFRESH_MILLIS
+        });
+        if previous.as_ref().map(|(value, _)| *value) == Some(liveness)
+            && !resolves_unknown
+            && !stale
+        {
+            return Ok(());
         }
         let at = now();
         self.record(
@@ -1025,7 +1033,7 @@ where
             context.brief(&task_record)?
         };
         let mut prompt = brief;
-        let answers = self.answers_since_turn_start(&task)?;
+        let answers = self.answers_all(&task)?;
         let redirect = self.pending_redirect(&task)?;
         let redirect_event = self.pending_redirect_event(&task)?;
         if !answers.is_empty() || redirect.is_some() {
@@ -1126,7 +1134,7 @@ where
     fn resume(&self, task: TaskId) -> Result<()> {
         let record = self.task(&task)?;
         let session = self.session_for(&record)?;
-        let answers = self.answers_since_turn_start(&task)?;
+        let answers = self.answers_owed(&task)?;
         let redirect = self.pending_redirect(&task)?;
         if answers.is_empty() && redirect.is_none() {
             return Err(Error::Project(format!(
@@ -1134,11 +1142,11 @@ where
             )));
         }
         match self.sessions.status(&session) {
-            Ok(crate::adapters::sessions::SessionState::Running) => {}
-            Ok(state) => {
+            Ok(status) if status.state == crate::adapters::sessions::SessionState::Running => {}
+            Ok(status) => {
                 log(
                     "resume_dead_session",
-                    &format!("{} is {state:?}", task.as_str()),
+                    &format!("{} is {:?}", task.as_str(), status.state),
                 );
                 return self.relaunch(&task);
             }
@@ -1162,11 +1170,21 @@ where
                 kind: FactKind::WorkerTurnResumeRequested { task: task.clone() },
             },
         )?;
-        if let Err(error) = self.sessions.resume(&session, &prompt) {
-            log("resume_failed", &error.to_string());
+        let child = match self.sessions.resume(&session, &prompt) {
+            Ok(child) => child,
+            Err(error) => {
+                log("resume_failed", &error.to_string());
+                return Ok(());
+            }
+        };
+        if child == session {
+            log(
+                "resume_failed",
+                "boxr reported the resumed turn under the parent session id",
+            );
             return Ok(());
         }
-        self.record_resumed(&task, &session)?;
+        self.record_resumed(&task, &child)?;
         if let Some(redirect) = redirect_event {
             self.record(
                 &event_key(&[
@@ -1619,12 +1637,12 @@ where
 
     fn session_turn_is_running(&self, task: &Task) -> Result<bool> {
         let session = self.session_for(task)?;
-        Ok(matches!(
-            self.sessions
-                .status(&session)
-                .map_err(|error| Error::Project(error.to_string()))?,
-            crate::adapters::sessions::SessionState::Running
-        ))
+        Ok(self
+            .sessions
+            .status(&session)
+            .map_err(|error| Error::Project(error.to_string()))?
+            .state
+            == crate::adapters::sessions::SessionState::Running)
     }
 
     fn leased_worktree(&self, task: &TaskId) -> Result<Option<WorktreeLease>> {
@@ -1699,27 +1717,18 @@ where
         )
     }
 
-    fn answers_since_turn_start(&self, task: &TaskId) -> Result<Vec<(String, String)>> {
+    fn answered_questions(&self, task: &TaskId) -> Result<Vec<Answered>> {
         let events = self.store.events(&self.project.id)?;
-        let start = events
-            .iter()
-            .rev()
-            .find(|event| {
-                event.task.as_ref() == Some(task)
-                    && event.kind == fact_tag_name(FactTag::WorkerTurnStarted)
-            })
-            .map(|event| event.id)
-            .unwrap_or(0);
         let mut open: Vec<(u32, String, bool)> = Vec::new();
-        let mut owed: Vec<(u32, String, String)> = Vec::new();
+        let mut answered: Vec<Answered> = Vec::new();
         for event in events
             .iter()
             .filter(|event| event.task.as_ref() == Some(task))
         {
             match event.kind.as_str() {
                 kind if kind == fact_tag_name(FactTag::QuestionAsked) => {
-                    let asked = open.len() as u32;
-                    open.push((asked, payload_field(&event.payload, "text")?, false));
+                    let occurrence = open.len() as u32;
+                    open.push((occurrence, payload_field(&event.payload, "text")?, false));
                 }
                 kind if kind == fact_tag_name(FactTag::QuestionAnswered) => {
                     let answer = payload_field(&event.payload, "answer")?;
@@ -1727,18 +1736,40 @@ where
                         open.iter_mut().rev().find(|(_, _, answered)| !*answered)
                     {
                         question.2 = true;
-                        if event.id > start {
-                            owed.push((question.0, question.1.clone(), answer));
-                        }
+                        answered.push(Answered {
+                            occurrence: question.0,
+                            question: question.1.clone(),
+                            answer,
+                            event: event.id,
+                        });
                     }
                 }
                 _ => {}
             }
         }
-        owed.sort_by_key(|(asked, _, _)| *asked);
-        Ok(owed
+        answered.sort_by_key(|answered| answered.occurrence);
+        Ok(answered)
+    }
+
+    fn answers_all(&self, task: &TaskId) -> Result<Vec<(String, String)>> {
+        Ok(self
+            .answered_questions(task)?
             .into_iter()
-            .map(|(_, question, answer)| (question, answer))
+            .map(|answered| (answered.question, answered.answer))
+            .collect())
+    }
+
+    fn answers_owed(&self, task: &TaskId) -> Result<Vec<(String, String)>> {
+        let delivered = self.store.last_event_id(
+            &self.project.id,
+            task,
+            fact_tag_name(FactTag::WorkerTurnStarted),
+        )?;
+        Ok(self
+            .answered_questions(task)?
+            .into_iter()
+            .filter(|answered| delivered.is_none_or(|delivered| answered.event > delivered))
+            .map(|answered| (answered.question, answered.answer))
             .collect())
     }
 
@@ -1816,6 +1847,41 @@ where
             .transpose()
     }
 
+    fn reconcile_budget(&self) -> Result<()> {
+        let run_duration = self.store.home().load_settings()?.run_duration();
+        let at = now();
+        for task in self.store.tasks(&self.project.id)?.into_values() {
+            if !task.state.in_flight() {
+                continue;
+            }
+            let Some(attempt) = task.attempts.last() else {
+                continue;
+            };
+            if !attempt.outcome.is_open() {
+                continue;
+            }
+            if at.millis().saturating_sub(attempt.started_at.millis())
+                < run_duration.as_millis() as u64
+            {
+                continue;
+            }
+            self.record(
+                &event_key(&[
+                    "run_duration_exceeded",
+                    task.id.as_str(),
+                    &attempt.started_at.millis().to_string(),
+                ]),
+                Fact {
+                    at,
+                    kind: FactKind::RunDurationExceeded {
+                        task: task.id.clone(),
+                    },
+                },
+            )?;
+        }
+        Ok(())
+    }
+
     fn reconcile_sessions(&self) -> Result<()> {
         for task in self.store.tasks(&self.project.id)?.into_values() {
             if !task.state.in_flight()
@@ -1831,12 +1897,50 @@ where
             else {
                 continue;
             };
-            let liveness = match self.sessions.status(&session) {
-                Ok(crate::adapters::sessions::SessionState::Running) => Liveness::Live,
-                Ok(_) => Liveness::Gone,
-                Err(error) => return Err(Error::Project(error.to_string())),
-            };
-            self.worker_liveness(task.id, liveness)?;
+            let status = self
+                .sessions
+                .status(&session)
+                .map_err(|error| Error::Project(error.to_string()))?;
+            match status.state {
+                crate::adapters::sessions::SessionState::Running => {
+                    self.worker_liveness(task.id, Liveness::Live)?;
+                }
+                crate::adapters::sessions::SessionState::Failed if status.limit_hit => {
+                    let profile = task
+                        .attempts
+                        .last()
+                        .map(|attempt| attempt.profile.clone())
+                        .ok_or_else(|| {
+                            Error::Project(format!("task `{}` has no attempt", task.id))
+                        })?;
+                    self.record(
+                        &event_key(&["provider_rate_limited", task.id.as_str(), session.as_str()]),
+                        Fact {
+                            at: now(),
+                            kind: FactKind::ProviderRateLimited {
+                                task: task.id.clone(),
+                                profile,
+                            },
+                        },
+                    )?;
+                }
+                crate::adapters::sessions::SessionState::Failed => {
+                    let reason = status.error.or(status.capture_error).unwrap_or_else(|| {
+                        "the worker session failed without reporting an error".to_owned()
+                    });
+                    self.record(
+                        &event_key(&["worker_session_failed", task.id.as_str(), session.as_str()]),
+                        Fact {
+                            at: now(),
+                            kind: FactKind::WorkerSessionFailed {
+                                task: task.id.clone(),
+                                reason,
+                            },
+                        },
+                    )?;
+                }
+                _ => self.worker_liveness(task.id, Liveness::Gone)?,
+            }
         }
         Ok(())
     }
@@ -2377,6 +2481,13 @@ where
     }
 }
 
+struct Answered {
+    occurrence: u32,
+    question: String,
+    answer: String,
+    event: u64,
+}
+
 pub fn resume_prompt(answers: &[(String, String)]) -> String {
     match answers {
         [] => "An answer was recorded. Continue the task.".to_string(),
@@ -2521,6 +2632,7 @@ mod tests {
             links: Vec::new(),
             branch_head: None,
             merge_refused: None,
+            failure: None,
             redirect_text: None,
             redirect_delivered: false,
             acknowledged_at: None,

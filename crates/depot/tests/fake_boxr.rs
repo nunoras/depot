@@ -39,6 +39,9 @@ fn respond(root: &Path, arguments: &[String]) -> ExitCode {
         .map(String::as_str)
         .unwrap_or("default")
         .to_owned();
+    if key == "resume" {
+        return respond_resume(root, arguments);
+    }
     let mut suffix = match sequence_index(root, &key) {
         Some(index) => format!(".{index}"),
         None => String::new(),
@@ -64,6 +67,38 @@ fn respond(root: &Path, arguments: &[String]) -> ExitCode {
         let _ = fs::write(root.join("status.stdout"), state);
     }
     ExitCode::from(code)
+}
+
+fn respond_resume(root: &Path, arguments: &[String]) -> ExitCode {
+    let stderr = fs::read_to_string(root.join("resume.stderr")).unwrap_or_default();
+    eprint!("{stderr}");
+    let code = fs::read_to_string(root.join("resume.exit"))
+        .ok()
+        .and_then(|text| text.trim().parse::<u8>().ok())
+        .unwrap_or(0);
+    if code != 0 {
+        if let Ok(text) = fs::read_to_string(root.join("resume.stdout")) {
+            print!("{text}");
+        }
+        return ExitCode::from(code);
+    }
+    let parent = arguments
+        .iter()
+        .skip_while(|argument| *argument != "--detach")
+        .nth(1)
+        .cloned()
+        .unwrap_or_default();
+    let child = fs::read_to_string(root.join("resume.child"))
+        .ok()
+        .map(|text| text.trim().to_owned())
+        .filter(|text| !text.is_empty())
+        .unwrap_or_else(|| format!("{parent}-child"));
+    print!("session: {child}\nresumedFrom: {parent}\n");
+    let _ = io::stdout().flush();
+    if let Ok(state) = fs::read_to_string(root.join("resume.state.stdout")) {
+        let _ = fs::write(root.join("status.stdout"), state);
+    }
+    ExitCode::SUCCESS
 }
 
 fn write_describe_output(arguments: &[String]) {

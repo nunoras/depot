@@ -107,7 +107,9 @@ fn drives_a_headless_session_from_launch_to_turn_end() {
     assert_eq!(session, SessionId::new("4f2a91"));
 
     assert_eq!(
-        boxr.status(&session).expect("the session state is read"),
+        boxr.status(&session)
+            .expect("the session state is read")
+            .state,
         SessionState::Finished
     );
 
@@ -122,8 +124,11 @@ fn drives_a_headless_session_from_launch_to_turn_end() {
         TurnOutcome::StillRunning
     );
 
-    boxr.resume(&session, "add a test for the redirect")
+    fake.respond("resume", "session: 5a1b2c\nresumedFrom: 4f2a91\n", "", 0);
+    let child = boxr
+        .resume(&session, "add a test for the redirect")
         .expect("the session resumes");
+    assert_eq!(child, SessionId::new("5a1b2c"));
     boxr.stop(&session).expect("the session stops");
 
     let sessions = boxr.list().expect("the sessions are listed");
@@ -144,7 +149,7 @@ fn drives_a_headless_session_from_launch_to_turn_end() {
             "status 4f2a91",
             "wait 4f2a91",
             "wait 4f2a91 --timeout 30",
-            "resume 4f2a91 add a test for the redirect",
+            "resume --detach 4f2a91 add a test for the redirect",
             "stop 4f2a91",
             "ps",
         ]
@@ -289,7 +294,9 @@ fn reads_nested_boxr_status_wait_and_launch_fields() {
         .expect("nested launch id is read");
     assert_eq!(session, SessionId::new("s-4f2a91"));
     assert_eq!(
-        boxr.status(&session).expect("nested status state is read"),
+        boxr.status(&session)
+            .expect("nested status state is read")
+            .state,
         SessionState::Finished
     );
     assert_eq!(
@@ -328,4 +335,80 @@ fn refuses_a_session_list_that_does_not_match_its_own_header() {
         .list()
         .expect_err("a truncated table is refused");
     assert!(error.to_string().contains("2 rows"), "{error}");
+}
+
+#[test]
+fn reads_a_terminal_failure_with_its_error_limit_and_activity() {
+    let dir = TempDir::new("sessions-failure-fields");
+    let fake = FakeProgram::new(dir.path(), "boxr");
+    fake.respond(
+        "status",
+        "session:\n  id: s-1\n  state: failed\n  status: failed\n  error: \"the harness crashed\"\n  limitHit: true\n  lastActivity: 2026-09-21T10:00:00.000Z\n  currentTool: bash\n",
+        "",
+        0,
+    );
+
+    let status = adapter(&fake)
+        .status(&SessionId::new("s-1"))
+        .expect("the structured status is read");
+    assert_eq!(status.state, SessionState::Failed);
+    assert_eq!(status.error.as_deref(), Some("the harness crashed"));
+    assert!(status.limit_hit);
+    assert_eq!(
+        status.last_activity.as_deref(),
+        Some("2026-09-21T10:00:00.000Z")
+    );
+    assert_eq!(status.current_tool.as_deref(), Some("bash"));
+    assert_eq!(status.capture_error, None);
+}
+
+#[test]
+fn a_status_without_optional_fields_reads_as_absent() {
+    let dir = TempDir::new("sessions-absent-fields");
+    let fake = FakeProgram::new(dir.path(), "boxr");
+    fake.respond("status", "session: s-1\nstate: finished\n", "", 0);
+
+    let status = adapter(&fake)
+        .status(&SessionId::new("s-1"))
+        .expect("an older report is accepted");
+    assert_eq!(status.state, SessionState::Finished);
+    assert_eq!(status.error, None);
+    assert_eq!(status.capture_error, None);
+    assert!(!status.limit_hit);
+    assert_eq!(status.started, None);
+    assert_eq!(status.last_activity, None);
+    assert_eq!(status.current_tool, None);
+}
+
+#[test]
+fn reads_the_ledger_capture_error_as_the_failure_reason() {
+    let dir = TempDir::new("sessions-capture-error");
+    let fake = FakeProgram::new(dir.path(), "boxr");
+    fake.respond(
+        "status",
+        "session:\n  id: s-1\n  state: failed\nledger:\n  captureError: \"the ledger was not written\"\n",
+        "",
+        0,
+    );
+
+    let status = adapter(&fake)
+        .status(&SessionId::new("s-1"))
+        .expect("the capture error is read");
+    assert_eq!(status.error, None);
+    assert_eq!(
+        status.capture_error.as_deref(),
+        Some("the ledger was not written")
+    );
+}
+
+#[test]
+fn refuses_a_resume_that_prints_no_child_id() {
+    let dir = TempDir::new("sessions-resume-no-child");
+    let fake = FakeProgram::new(dir.path(), "boxr");
+    fake.respond("resume", "status: running\n", "", 0);
+
+    let error = adapter(&fake)
+        .resume(&SessionId::new("s-1"), "continue")
+        .expect_err("a resume without a child id is refused");
+    assert!(error.to_string().contains("never guesses one"), "{error}");
 }

@@ -124,6 +124,7 @@ fn need_for(tag: FactTag, task: Option<&Task>) -> Need {
         FactTag::ValidationFinished
         | FactTag::ValidationFailed
         | FactTag::WorkerLivenessChanged
+        | FactTag::WorkerSessionFailed
         | FactTag::WorkerTurnUnresolved
         | FactTag::PushFailed
         | FactTag::DeliveryFailed
@@ -236,6 +237,10 @@ fn headline(tag: FactTag, event: &RecordedEvent, task: Option<&Task>) -> Result<
             "the queued direction was delivered to the worker".to_string()
         }
         FactTag::WorkerLivenessChanged => liveness_line(&event.payload)?,
+        FactTag::WorkerSessionFailed => {
+            let reason = payload_field(&event.payload, "reason")?;
+            format!("the worker session failed: {}", one_line(&reason))
+        }
         FactTag::WorkerSubmissionRecorded => "recorded a submission".to_string(),
         FactTag::WorkerSubmitted => "submitted a change".to_string(),
         FactTag::ValidationStarted => "validation started".to_string(),

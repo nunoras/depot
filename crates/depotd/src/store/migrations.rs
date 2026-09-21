@@ -174,6 +174,7 @@ const MIGRATIONS: &[&str] = &[
     next_number  INTEGER NOT NULL
 );",
     "ALTER TABLE task_validations ADD COLUMN base_commit TEXT;",
+    "ALTER TABLE tasks ADD COLUMN failure TEXT;",
 ];
 
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;

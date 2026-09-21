@@ -2,7 +2,9 @@ mod support;
 
 use std::collections::BTreeMap;
 
-use depot_core::{Limits, ProfileId, ProjectState, Role, TaskId};
+use depot_core::{
+    Fact, FactKind, Limits, ProfileId, ProjectState, Role, TaskId, TaskState, Timestamp,
+};
 use depotd::{
     PROJECT_CONFIG_FILE_NAME, ProfileSettings, ProjectConfig, Settings, Store, add_project,
     event_key,
@@ -315,4 +317,43 @@ fn event_keys_are_isolated_per_project() {
     assert_eq!(second_lookup.project, second.project.id);
     assert_eq!(first_lookup.at.millis(), 1_700_000_000_000);
     assert_eq!(second_lookup.at.millis(), 1_700_000_000_100);
+}
+
+#[test]
+fn a_worker_session_failure_round_trips_through_the_journal_and_the_task() {
+    let fixture = support::fixture();
+    let added = support::register(&fixture, "example");
+    let store = Store::open(&fixture.home).expect("store");
+    let task = support::simple_task(&added.project.id, "t-1", TaskState::Running, 1);
+    store.put_task(&task).expect("stored");
+
+    let fact = Fact {
+        at: Timestamp::from_millis(2),
+        kind: FactKind::WorkerSessionFailed {
+            task: TaskId::new("t-1"),
+            reason: "the harness crashed".to_string(),
+        },
+    };
+    store
+        .apply_fact(&added.project, "worker-session-failed", &fact)
+        .expect("the failure fact is recorded");
+
+    let event = store
+        .events(&added.project.id)
+        .expect("events")
+        .into_iter()
+        .find(|event| event.kind == "worker_session_failed")
+        .expect("the fact is in the journal");
+    assert!(
+        event.payload.contains("the harness crashed"),
+        "{}",
+        event.payload
+    );
+
+    let loaded = store
+        .task(&added.project.id, &TaskId::new("t-1"))
+        .expect("read")
+        .expect("present");
+    assert_eq!(loaded.state, TaskState::Failed);
+    assert_eq!(loaded.failure.as_deref(), Some("the harness crashed"));
 }

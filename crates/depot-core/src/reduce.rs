@@ -51,6 +51,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                         links: Vec::new(),
                         branch_head: None,
                         merge_refused: None,
+                        failure: None,
                         redirect_text: None,
                         redirect_delivered: false,
                         acknowledged_at: None,
@@ -143,6 +144,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                 task.state = TaskState::Approved;
                 task.retry = None;
                 task.merge_refused = None;
+                task.failure = None;
                 task.acknowledged_at = None;
                 task.updated_at = fact.at;
                 changed = true;
@@ -195,6 +197,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                         links,
                         branch_head: None,
                         merge_refused: None,
+                        failure: None,
                         redirect_text: None,
                         redirect_delivered: false,
                         acknowledged_at: None,
@@ -409,6 +412,24 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                     changed = true;
                 }
                 task.updated_at = fact.at;
+            }
+        }
+
+        FactKind::WorkerSessionFailed { task, reason } => {
+            let accepting = next
+                .tasks
+                .get(task)
+                .is_some_and(|task| task.state.in_flight());
+            if accepting && let Some(task) = next.tasks.get_mut(task) {
+                close_attempt(task, AttemptOutcome::Failed, fact.at);
+                task.state = TaskState::Failed;
+                task.retry = None;
+                task.failure = Some(reason.clone());
+                task.updated_at = fact.at;
+                changed = true;
+                actions.push(Action::HoldForUser {
+                    task: task.id.clone(),
+                });
             }
         }
 
@@ -962,6 +983,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                         }
                         let not_before = fact.at.plus(backoff_for(&limits, attempts));
                         task.state = TaskState::Approved;
+                        task.failure = None;
                         task.retry = Some(Retry {
                             profile: fallback,
                             not_before,
@@ -1059,6 +1081,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                     .is_some_and(|task| rebase_allowed(&next, task));
             if scheduled && let Some(task) = next.tasks.get_mut(task) {
                 let lease = take_last_worktree(task);
+                task.failure = None;
                 task.attempts.push(Attempt {
                     last_seen_at: None,
                     session: None,
@@ -1112,6 +1135,7 @@ fn relaunch(task: &mut Task, at: Timestamp, actions: &mut Vec<Action>) -> bool {
         return false;
     };
     let lease = take_last_worktree(task);
+    task.failure = None;
     task.attempts.push(Attempt {
         session: None,
         profile: profile.clone(),

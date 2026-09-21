@@ -3,7 +3,7 @@
 Depot never launches a harness itself.
 boxr is the launcher and the ledger: it starts a headless session, and depot reads the session's state from boxr's own commands.
 This file records the exact commands and output keys depot reads, and the minimum boxr version it accepts.
-Detached sessions ([nunoras/boxr#6](https://github.com/nunoras/boxr/issues/6)), resume ([nunoras/boxr#7](https://github.com/nunoras/boxr/issues/7)), and the pi exit-fact / resume surface from [nunoras/boxr#40](https://github.com/nunoras/boxr/pull/40) are part of boxr **0.2.0**.
+Detached sessions ([nunoras/boxr#6](https://github.com/nunoras/boxr/issues/6)), resume ([nunoras/boxr#7](https://github.com/nunoras/boxr/issues/7)), the detached continuation shape from [nunoras/boxr#52](https://github.com/nunoras/boxr/pull/52), the activity fields from [nunoras/boxr#53](https://github.com/nunoras/boxr/pull/53), the failure fields from [nunoras/boxr#47](https://github.com/nunoras/boxr/pull/47), and the pi exit-fact / resume surface from [nunoras/boxr#40](https://github.com/nunoras/boxr/pull/40) are part of boxr **0.2.0**.
 The reader is `crates/depotd/src/adapters/sessions.rs`; the contract test that drives it is `crates/depotd/tests/sessions.rs`.
 
 ## Minimum version
@@ -26,7 +26,7 @@ Every command below is run as recorded, with the lease's worktree as the working
 | the version | `boxr --version` | 0 |
 | the capability surface | `boxr --help` | 0 |
 | launch a session | `boxr --harness <harness> --model <model> --effort <effort> [--account <profile>] --kind <kind> --detach "<prompt>"` | 0 |
-| resume a session | `boxr resume <id> "<prompt>"` | 0 |
+| resume a session | `boxr resume --detach <id> "<prompt>"` | 0 |
 | one session's state | `boxr status <id>` | 0 |
 | turn end | `boxr wait <id>` or `boxr wait <id> --timeout <seconds>` | 0 |
 | stop a session | `boxr stop <id>` | 0 |
@@ -37,6 +37,10 @@ The describe step (PR body generation) launches with `--kind describe`.
 `--account` is omitted when the machine-local profile leaves account empty; pi has no isolated account directory, so a pi profile launches without `--account` and uses the harness default credentials.
 The prompt is always the last argument.
 `boxr tail` is not part of this surface: depot observes turn end through `boxr wait`, never by reading the harness's own output or boxr's ledger files.
+
+`boxr resume` is always called with `--detach`.
+It starts the continuation in the background and prints the new child session id, so depot never resumes into a blocking call and never assumes the parent kept running.
+A resume that exits non-zero, or that prints no id, or that prints the parent id, is a resume depot did not make, and the answer stays owed until a real child is recorded.
 
 ## The output depot reads
 
@@ -49,6 +53,7 @@ Depot never reads boxr's ledger on disk; the CLI is the interface.
 | command | what depot requires on stdout |
 |---|---|
 | launch | `session: <id>`, or an `id: <id>` field (including under a `session:` section), or a bare session id on stdout |
+| `resume` | the same shapes as launch, naming the **new child** session id |
 | `status` | `state: running\|finished\|stopped\|interrupted\|failed` |
 | `wait` | `status: ok\|failed\|interrupted\|running` |
 | `ps` | `sessions[N]{id,state,harness,model}:` with one row per session |
@@ -56,6 +61,24 @@ Depot never reads boxr's ledger on disk; the CLI is the interface.
 `status: ok` means the turn ended and the harness exited zero, `failed` means the turn ended with a harness failure, `interrupted` means the session was stopped from outside, and `running` means the wait returned before the turn ended.
 
 A state or status value outside those sets is a loud failure naming the value, because depot will not translate a session state it does not know into a task state.
+
+## The optional fields depot reads
+
+Every field below is additive, so an older boxr that omits all of them is accepted and reads as absent.
+Depot reads a field by its leaf name, so a nested `ledger: captureError:` is the same as a flat `captureError:`.
+
+| field | on | meaning |
+|---|---|---|
+| `error` | `status` and `wait` | the harness error boxr recorded, preferred over `captureError` when both are present |
+| `captureError` | `status` and `wait` | the ledger capture failure, used as the failure reason only when `error` is absent |
+| `limitHit` | `status` and `wait` | `true` when boxr classified the terminal turn as a provider limit |
+| `started` | `status` and `wait` | the session start time boxr printed |
+| `lastActivity` | `status` and `wait` | the newest normalized step timestamp, so a long tool call does not read as a hang |
+| `currentTool` | `status` and `wait` | the tool call the harness started and has not answered, or `null` |
+
+The `ps` table keeps its four columns.
+The activity fields never replace a column and never move the existing `state`, `status` or `session` fields.
+A terminal `limitHit: true` is the only signal depot treats as a provider rate limit; a terminal `failed` without it is a session failure whose reason is `error`, else `captureError`, else a generic sentence.
 
 ## Wait exit contract
 

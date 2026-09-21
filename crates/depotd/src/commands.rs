@@ -467,10 +467,9 @@ fn turn_is_running(task: &Task) -> bool {
     else {
         return false;
     };
-    matches!(
-        Boxr::new(Program::new("boxr")).status(&session),
-        Ok(crate::adapters::sessions::SessionState::Running)
-    )
+    Boxr::new(Program::new("boxr"))
+        .status(&session)
+        .is_ok_and(|status| status.state == crate::adapters::sessions::SessionState::Running)
 }
 
 fn apply(store: &Store, project: &Project, parts: &[&str], fact: &Fact) -> Result<()> {

@@ -261,8 +261,7 @@ pub fn rework_task(
     text: &str,
 ) -> Result<Task> {
     let store = Store::open(home)?;
-    let project = select_project(&store, selection)?;
-    let id = TaskId::new(id);
+    let (project, id) = resolve_task(&store, selection, id)?;
     let current = task(&store, &project, &id)?;
     if current.state != TaskState::PrOpen {
         return Err(transition_refused(&current, "reworked"));

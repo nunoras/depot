@@ -309,6 +309,7 @@ impl Default for Limits {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectState {
     pub project: ProjectId,
+    pub slug: String,
     pub tasks: BTreeMap<TaskId, Task>,
     pub coordinator: Option<CoordinatorSession>,
     pub profiles: BTreeMap<Role, ProfileId>,

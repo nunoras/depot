@@ -129,6 +129,7 @@ impl Store {
         let config = self.project_config(project)?;
         Ok(ProjectState {
             project: project.id.clone(),
+            slug: project.slug.clone(),
             tasks: self.tasks(&project.id)?,
             coordinator: self.coordinator_session(&project.id)?,
             profiles: config.profiles()?,

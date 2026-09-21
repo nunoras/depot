@@ -31,6 +31,8 @@ USAGE
   depot doc write <name> --content <text|-> [--project <name>]
 
 SELECTION
+  A task id may be qualified as `<slug>/<task-id>`, which works from any directory.
+  Without a slug or `--project`, a bare id must resolve to exactly one project.
   No --project reads the project this directory belongs to: a project repository or its store.
   --all lists every registered project.
 

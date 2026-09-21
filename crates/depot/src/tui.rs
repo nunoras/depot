@@ -240,7 +240,7 @@ fn frame(
         if !waiting.is_empty() {
             lines.push(pinned(vec![Segment::Text(project.slug.clone())]));
             for task in waiting {
-                push_waiting_block(&mut lines, task, now, width);
+                push_waiting_block(&mut lines, &project.slug, task, now, width);
             }
             lines.push(pinned(vec![Segment::Text(String::new())]));
         }
@@ -255,7 +255,7 @@ fn frame(
             if !history && is_terminal(task.state) {
                 continue;
             }
-            for line in task_lines(task, tick, now, width) {
+            for line in task_lines(&project.slug, task, tick, now, width) {
                 lines.push(body(line));
             }
         }
@@ -265,8 +265,14 @@ fn frame(
     lines
 }
 
-fn task_lines(task: &TaskView, tick: usize, now: u64, width: usize) -> Vec<Vec<Segment>> {
-    let id = format!("  {}", task.id.as_str());
+fn task_lines(
+    slug: &str,
+    task: &TaskView,
+    tick: usize,
+    now: u64,
+    width: usize,
+) -> Vec<Vec<Segment>> {
+    let id = format!("  {slug}/{}", task.id.as_str());
     let status = if task.running() {
         SPINNER[tick % SPINNER.len()].to_string()
     } else {
@@ -294,8 +300,8 @@ fn task_lines(task: &TaskView, tick: usize, now: u64, width: usize) -> Vec<Vec<S
     lines
 }
 
-fn push_waiting_block(lines: &mut Vec<Line>, task: &TaskView, now: u64, width: usize) {
-    let rendered = task_lines(task, 0, now, width);
+fn push_waiting_block(lines: &mut Vec<Line>, slug: &str, task: &TaskView, now: u64, width: usize) {
+    let rendered = task_lines(slug, task, 0, now, width);
     let mut head = vec![Segment::State("  needs you".to_string(), task.state)];
     head.extend(rendered[0].clone());
     lines.push(pinned(head));

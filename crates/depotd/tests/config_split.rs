@@ -4,21 +4,23 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use depotd::{PROJECT_CONFIG_FILE_NAME, ProfileSettings, ProjectConfig, Settings, add_project};
 
-const PROJECT_KEYS: [&str; 6] = [
+const PROJECT_KEYS: [&str; 7] = [
     "base_branch",
     "max_concurrent_tasks",
     "profiles",
     "validation",
     "pull_request",
     "questions",
+    "evidence",
 ];
 
-const PROJECT_ONLY_KEYS: [&str; 6] = [
+const PROJECT_ONLY_KEYS: [&str; 7] = [
     "base_branch",
     "max_concurrent_tasks",
     "validation",
     "pull_request",
     "questions",
+    "evidence",
     "dispatch",
 ];
 

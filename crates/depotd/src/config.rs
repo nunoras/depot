@@ -20,6 +20,7 @@ pub struct ProjectConfig {
     pub validation: ValidationConfig,
     pub pull_request: PullRequestConfig,
     pub questions: QuestionsConfig,
+    pub evidence: EvidenceConfig,
     pub dispatch: Option<toml::Value>,
 }
 
@@ -96,6 +97,28 @@ fn default_max_concurrent_tasks() -> usize {
     1
 }
 
+pub fn default_evidence_timeout_seconds() -> u64 {
+    600
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct EvidenceConfig {
+    pub command: Option<String>,
+    pub timeout_seconds: u64,
+    pub required: bool,
+}
+
+impl Default for EvidenceConfig {
+    fn default() -> Self {
+        Self {
+            command: None,
+            timeout_seconds: default_evidence_timeout_seconds(),
+            required: false,
+        }
+    }
+}
+
 impl Default for ProjectConfig {
     fn default() -> Self {
         Self {
@@ -105,6 +128,7 @@ impl Default for ProjectConfig {
             validation: ValidationConfig::default(),
             pull_request: PullRequestConfig::default(),
             questions: QuestionsConfig::default(),
+            evidence: EvidenceConfig::default(),
             dispatch: None,
         }
     }

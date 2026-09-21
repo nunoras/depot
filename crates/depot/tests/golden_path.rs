@@ -7,6 +7,7 @@ use depot_core::{
     ValidationRecord, WorktreeLease,
 };
 use depotd::InstanceLock;
+use depotd::evidence::MANAGED_MARKER;
 use support::git;
 use support::{
     ACCOUNT, BASE, BRANCH, BRANCH_TWO, Golden, HARNESS, LEASE, LEASE_TWO, MODEL, PROFILE,
@@ -1598,9 +1599,59 @@ fn an_open_pull_request_depot_did_not_open_is_adopted_rather_than_duplicated() {
         0,
         "an already open pull request is never opened again"
     );
+    let refreshed = golden
+        .forge
+        .requests()
+        .into_iter()
+        .find(|request| request.method == "PATCH");
+    assert!(
+        refreshed.is_none(),
+        "a body depot does not own is never overwritten: {:?}",
+        refreshed.map(|request| request.body)
+    );
     let checklist = golden.status();
     assert!(checklist.contains("Pull request open (1)"), "{checklist}");
     assert_eq!(checklist, golden.checklist());
+}
+
+#[test]
+fn a_pull_request_depot_already_owns_is_refreshed_with_the_new_title_and_body() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_submits();
+    let commit = golden.head();
+    golden.script_existing_pull_request_with_body(
+        &commit,
+        Some(&format!("{MANAGED_MARKER}\n\n## Why\n\nstale\n")),
+    );
+    daemon
+        .tick()
+        .expect("the daemon validates, pushes and refreshes the pull request it owns");
+
+    assert_eq!(golden.task().state, TaskState::PrOpen);
+    let refreshed = golden
+        .forge
+        .requests()
+        .into_iter()
+        .find(|request| request.method == "PATCH")
+        .expect("a depot-managed pull request is refreshed");
+    assert!(
+        refreshed.body.contains(MANAGED_MARKER),
+        "the refreshed body stays depot-managed: {}",
+        refreshed.body
+    );
+    assert!(
+        refreshed.body.contains("## Validation"),
+        "the reused pull request carries the rendered body: {}",
+        refreshed.body
+    );
+    assert!(
+        !refreshed.body.contains("stale"),
+        "the stale body is replaced: {}",
+        refreshed.body
+    );
 }
 
 #[test]

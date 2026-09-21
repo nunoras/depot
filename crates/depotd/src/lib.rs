@@ -45,7 +45,7 @@ pub use daemon::{
 pub use depot_core::{ProjectState, Role, SessionId, Task, TaskId, TaskState, Timestamp};
 pub use documents::{document_path, write_document};
 pub use error::{Error, Result};
-pub use evidence::{EVIDENCE_MARKER, EvidenceArtifact, EvidenceRunner, ShellEvidence};
+pub use evidence::{EvidenceArtifact, EvidenceRunner, ResolvedArtifact, ShellEvidence};
 pub use home::{
     ARCHIVE_DIR_NAME, CHECKLIST_FILE_NAME, CONTEXT_DOCUMENT_FILE_NAME, DATABASE_FILE_NAME,
     DOCUMENTS_DIR_NAME, DepotHome, HOME_ENV, MEDIA_DIR_NAME, PROJECTS_DIR_NAME, ProjectHome,

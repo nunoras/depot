@@ -47,6 +47,8 @@ pub enum PrState {
 pub struct PullRequest {
     pub number: u64,
     pub url: String,
+    pub title: String,
+    pub body: Option<String>,
     pub state: PrState,
     pub checks: Checks,
     pub head: CommitId,
@@ -72,30 +74,29 @@ pub struct OpenedPullRequest {
 
 pub trait Forge {
     fn pull_request(&self, repo: &RepoSlug, number: u64) -> Result<PullRequest, ForgeError>;
+    fn pull_request_text(
+        &self,
+        repo: &RepoSlug,
+        number: u64,
+    ) -> Result<(String, Option<String>), ForgeError>;
     fn find_open_pull_request(
         &self,
         repo: &RepoSlug,
         head: &str,
     ) -> Result<Option<OpenedPullRequest>, ForgeError>;
     fn open_pull_request(&self, request: &NewPullRequest) -> Result<OpenedPullRequest, ForgeError>;
+    fn update_pull_request(
+        &self,
+        repo: &RepoSlug,
+        number: u64,
+        title: &str,
+        body: &str,
+    ) -> Result<(), ForgeError>;
     fn merge_pull_request(
         &self,
         repo: &RepoSlug,
         number: u64,
         head: &CommitId,
-    ) -> Result<(), ForgeError>;
-    fn find_comment(
-        &self,
-        repo: &RepoSlug,
-        number: u64,
-        marker: &str,
-    ) -> Result<Option<u64>, ForgeError>;
-    fn create_comment(&self, repo: &RepoSlug, number: u64, body: &str) -> Result<u64, ForgeError>;
-    fn update_comment(
-        &self,
-        repo: &RepoSlug,
-        comment_id: u64,
-        body: &str,
     ) -> Result<(), ForgeError>;
     fn delete_branch(&self, repo: &RepoSlug, branch: &str) -> Result<(), ForgeError>;
 }
@@ -335,6 +336,8 @@ impl Forge for GitHub {
                 })?;
         let html_url = string(&url, &value, "html_url", &body)?;
         let state = string(&url, &value, "state", &body)?;
+        let title = string(&url, &value, "title", &body)?;
+        let body_text = value.get("body").and_then(Value::as_str).map(str::to_owned);
         let head = value
             .get("head")
             .and_then(|head| head.get("sha"))
@@ -392,6 +395,8 @@ impl Forge for GitHub {
         Ok(PullRequest {
             number,
             url: html_url,
+            title,
+            body: body_text,
             state,
             checks,
             head: CommitId::new(head),
@@ -399,6 +404,22 @@ impl Forge for GitHub {
             base: CommitId::new(base),
             mergeable,
         })
+    }
+
+    fn pull_request_text(
+        &self,
+        repo: &RepoSlug,
+        number: u64,
+    ) -> Result<(String, Option<String>), ForgeError> {
+        let url = self.url(&format!("/repos/{}/pulls/{number}", repo.path()));
+        let body = self.read(&url)?;
+        let value: Value = serde_json::from_str(&body).map_err(|error| ForgeError::Malformed {
+            url: url.clone(),
+            detail: error.to_string(),
+        })?;
+        let title = string(&url, &value, "title", &body)?;
+        let text = value.get("body").and_then(Value::as_str).map(str::to_owned);
+        Ok((title, text))
     }
 
     fn find_open_pull_request(
@@ -475,6 +496,28 @@ impl Forge for GitHub {
         })
     }
 
+    fn update_pull_request(
+        &self,
+        repo: &RepoSlug,
+        number: u64,
+        title: &str,
+        body: &str,
+    ) -> Result<(), ForgeError> {
+        let url = self.url(&format!("/repos/{}/pulls/{number}", repo.path()));
+        let payload = json!({ "title": title, "body": body }).to_string();
+        let (status, response) = self.call("PATCH", &url, Some(payload))?;
+        match status {
+            200 => Ok(()),
+            401 | 403 => Err(ForgeError::Unauthorized { url }),
+            404 => Err(ForgeError::NotFound { url }),
+            status => Err(ForgeError::Status {
+                url,
+                status,
+                body: response.trim().to_owned(),
+            }),
+        }
+    }
+
     fn merge_pull_request(
         &self,
         repo: &RepoSlug,
@@ -508,84 +551,6 @@ impl Forge for GitHub {
             401 | 403 => Err(ForgeError::Unauthorized { url }),
             404 => Err(ForgeError::NotFound { url }),
             status => Err(ForgeError::Refused {
-                url,
-                status,
-                body: response.trim().to_owned(),
-            }),
-        }
-    }
-
-    fn find_comment(
-        &self,
-        repo: &RepoSlug,
-        number: u64,
-        marker: &str,
-    ) -> Result<Option<u64>, ForgeError> {
-        let url = self.url(&format!(
-            "/repos/{}/issues/{number}/comments?per_page=100",
-            repo.path()
-        ));
-        let body = self.read(&url)?;
-        let value: Value = serde_json::from_str(&body).map_err(|error| ForgeError::Malformed {
-            url: url.clone(),
-            detail: error.to_string(),
-        })?;
-        if value.as_array().is_none() {
-            return Err(ForgeError::Malformed {
-                url,
-                detail: "the comment list is not an array".to_owned(),
-            });
-        }
-        Ok(crate::evidence::comment_id_with_marker(&body, marker))
-    }
-
-    fn create_comment(&self, repo: &RepoSlug, number: u64, body: &str) -> Result<u64, ForgeError> {
-        let url = self.url(&format!("/repos/{}/issues/{number}/comments", repo.path()));
-        let payload = json!({ "body": body }).to_string();
-        let (status, response) = self.call("POST", &url, Some(payload))?;
-        match status {
-            201 => {}
-            401 | 403 => return Err(ForgeError::Unauthorized { url }),
-            404 => return Err(ForgeError::NotFound { url }),
-            status => {
-                return Err(ForgeError::Status {
-                    url,
-                    status,
-                    body: response.trim().to_owned(),
-                });
-            }
-        }
-        let value: Value =
-            serde_json::from_str(&response).map_err(|error| ForgeError::Malformed {
-                url: url.clone(),
-                detail: error.to_string(),
-            })?;
-        value
-            .get("id")
-            .and_then(Value::as_u64)
-            .ok_or_else(|| ForgeError::Malformed {
-                url,
-                detail: format!("no comment id in {}", truncated(&response)),
-            })
-    }
-
-    fn update_comment(
-        &self,
-        repo: &RepoSlug,
-        comment_id: u64,
-        body: &str,
-    ) -> Result<(), ForgeError> {
-        let url = self.url(&format!(
-            "/repos/{}/issues/comments/{comment_id}",
-            repo.path()
-        ));
-        let payload = json!({ "body": body }).to_string();
-        let (status, response) = self.call("PATCH", &url, Some(payload))?;
-        match status {
-            200 => Ok(()),
-            401 | 403 => Err(ForgeError::Unauthorized { url }),
-            404 => Err(ForgeError::NotFound { url }),
-            status => Err(ForgeError::Status {
                 url,
                 status,
                 body: response.trim().to_owned(),

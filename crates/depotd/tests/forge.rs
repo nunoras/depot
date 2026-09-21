@@ -647,81 +647,61 @@ fn surfaces_a_refused_branch_delete() {
 }
 
 #[test]
-fn finds_only_the_comment_carrying_the_marker() {
-    let forge_endpoint = FakeForge::start();
-    forge_endpoint.route_query(
-        "GET",
-        "/repos/acme/widget/issues/7/comments",
-        Some("per_page=100"),
-        200,
-        r#"[{"id":3,"body":"looks good to me"},{"id":9,"body":"title\n<!-- depot-evidence -->\nevidence"}]"#,
-    );
-
-    let found = GitHub::new(forge_endpoint.base_url(), "token-1")
-        .find_comment(&repo(), 7, "<!-- depot-evidence -->")
-        .expect("the comment is found");
-    assert_eq!(found, Some(9));
-
-    let recorded = forge_endpoint.request_to("/repos/acme/widget/issues/7/comments");
-    assert_eq!(recorded.query.as_deref(), Some("per_page=100"));
-}
-
-#[test]
-fn finds_no_comment_when_the_marker_is_absent() {
-    let forge_endpoint = FakeForge::start();
-    forge_endpoint.route_query(
-        "GET",
-        "/repos/acme/widget/issues/7/comments",
-        Some("per_page=100"),
-        200,
-        r#"[{"id":3,"body":"looks good to me"}]"#,
-    );
-
-    let found = GitHub::new(forge_endpoint.base_url(), "token-1")
-        .find_comment(&repo(), 7, "<!-- depot-evidence -->")
-        .expect("the comment list is read");
-    assert_eq!(found, None);
-}
-
-#[test]
-fn creates_a_comment_and_reads_its_id() {
+fn reads_a_pull_requests_title_and_body_without_asking_for_checks() {
     let forge_endpoint = FakeForge::start();
     forge_endpoint.route(
-        "POST",
-        "/repos/acme/widget/issues/7/comments",
-        201,
-        r#"{"id":55,"body":"evidence"}"#,
+        "GET",
+        "/repos/acme/widget/pulls/7",
+        200,
+        "{\"number\":7,\"title\":\"the work\",\"body\":\"## Why\\n\\nreasons\"}",
     );
 
-    let id = GitHub::new(forge_endpoint.base_url(), "token-1")
-        .create_comment(&repo(), 7, "evidence")
-        .expect("the comment is created");
-    assert_eq!(id, 55);
-
-    let recorded = forge_endpoint.request_to("/repos/acme/widget/issues/7/comments");
-    assert_eq!(recorded.method, "POST");
-    assert!(recorded.body.contains("\"body\""), "{}", recorded.body);
+    let (title, body) = GitHub::new(forge_endpoint.base_url(), "token-1")
+        .pull_request_text(&repo(), 7)
+        .expect("the text is read");
+    assert_eq!(title, "the work");
+    assert_eq!(body.as_deref(), Some("## Why\n\nreasons"));
+    assert!(
+        !forge_endpoint
+            .requests()
+            .iter()
+            .any(|request| request.path.contains("check-runs")),
+        "reading the text never asks for checks"
+    );
 }
 
 #[test]
-fn edits_the_marked_comment_in_place() {
+fn edits_a_pull_requests_title_and_body() {
     let forge_endpoint = FakeForge::start();
     forge_endpoint.route(
         "PATCH",
-        "/repos/acme/widget/issues/comments/9",
+        "/repos/acme/widget/pulls/7",
         200,
-        r#"{"id":9,"body":"evidence"}"#,
+        r#"{"number":7}"#,
     );
 
     GitHub::new(forge_endpoint.base_url(), "token-1")
-        .update_comment(&repo(), 9, "updated evidence")
-        .expect("the comment is edited");
+        .update_pull_request(&repo(), 7, "a new title", "a new body")
+        .expect("the pull request is edited");
 
-    let recorded = forge_endpoint.request_to("/repos/acme/widget/issues/comments/9");
+    let recorded = forge_endpoint.request_to("/repos/acme/widget/pulls/7");
     assert_eq!(recorded.method, "PATCH");
-    assert!(
-        recorded.body.contains("updated evidence"),
-        "{}",
-        recorded.body
+    assert!(recorded.body.contains("a new title"), "{}", recorded.body);
+    assert!(recorded.body.contains("a new body"), "{}", recorded.body);
+}
+
+#[test]
+fn surfaces_a_refused_pull_request_update() {
+    let forge_endpoint = FakeForge::start();
+    forge_endpoint.route(
+        "PATCH",
+        "/repos/acme/widget/pulls/7",
+        422,
+        r#"{"message":"Validation Failed"}"#,
     );
+
+    let error = GitHub::new(forge_endpoint.base_url(), "token-1")
+        .update_pull_request(&repo(), 7, "title", "body")
+        .expect_err("a refused update is an error");
+    assert!(error.to_string().contains("422"), "{error}");
 }

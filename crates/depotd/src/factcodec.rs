@@ -249,14 +249,9 @@ pub fn encode_payload(kind: &FactKind) -> String {
             ("mergeable", boolean(*mergeable)),
             ("base", quoted(base.as_str())),
         ]),
-        FactKind::EvidencePosted {
-            task,
-            commit,
-            comment_id,
-        } => object(vec![
+        FactKind::EvidencePosted { task, commit } => object(vec![
             ("task", quoted(task.as_str())),
             ("commit", quoted(commit.as_str())),
-            ("comment_id", numeric(comment_id)),
         ]),
         FactKind::EvidenceFailed {
             task,

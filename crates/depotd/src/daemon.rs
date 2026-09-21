@@ -20,7 +20,7 @@ use crate::adapters::worktrees::{AcquireRequest, Lease, Worktrees};
 use crate::clock::now;
 use crate::describe::{self, Describer};
 use crate::error::{Error, Result};
-use crate::evidence::{self, EVIDENCE_MARKER, EvidenceArtifact, EvidenceRunner, ShellEvidence};
+use crate::evidence::{self, EvidenceArtifact, EvidenceRunner, ResolvedArtifact, ShellEvidence};
 use crate::factcodec::payload_field;
 use crate::home::DepotHome;
 use crate::project::{LocationKind, Project};
@@ -164,6 +164,20 @@ pub trait Delivery {
         title: &str,
         body: &str,
     ) -> Result<(u64, String)>;
+    fn update_pull_request(
+        &self,
+        task: &Task,
+        repo: &RepoSlug,
+        number: u64,
+        title: &str,
+        body: &str,
+    ) -> Result<()>;
+    fn pull_request_content(
+        &self,
+        task: &Task,
+        repo: &RepoSlug,
+        number: u64,
+    ) -> Result<(String, String)>;
     fn observe_pull_request(
         &self,
         task: &Task,
@@ -177,21 +191,6 @@ pub trait Delivery {
         head: &CommitId,
     ) -> Result<()>;
     fn delete_branch(&self, repo: &RepoSlug, branch: &str) -> Result<()>;
-    fn find_marked_comment(
-        &self,
-        task: &Task,
-        repo: &RepoSlug,
-        number: u64,
-        marker: &str,
-    ) -> Result<Option<u64>>;
-    fn create_comment(&self, task: &Task, repo: &RepoSlug, number: u64, body: &str) -> Result<u64>;
-    fn update_comment(
-        &self,
-        task: &Task,
-        repo: &RepoSlug,
-        comment_id: u64,
-        body: &str,
-    ) -> Result<()>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -314,19 +313,58 @@ impl<F: Forge> Delivery for ForgeDelivery<F> {
             .find_open_pull_request(&repo, &head)
             .map_err(|error| Error::Project(error.to_string()))?
         {
-            Some(opened) => opened,
+            Some(opened) => {
+                let (_, existing) = self
+                    .forge
+                    .pull_request_text(&repo, opened.number)
+                    .map_err(|error| Error::Project(error.to_string()))?;
+                let existing = existing.unwrap_or_default();
+                if evidence::is_managed(&existing) {
+                    let body = evidence::preserve_proof(&existing, &evidence::mark_managed(body));
+                    self.forge
+                        .update_pull_request(&repo, opened.number, title, &body)
+                        .map_err(|error| Error::Project(error.to_string()))?;
+                }
+                opened
+            }
             None => self
                 .forge
                 .open_pull_request(&NewPullRequest {
                     repo,
                     title: title.to_owned(),
-                    body: body.to_owned(),
+                    body: evidence::mark_managed(body),
                     head,
                     base: base.to_owned(),
                 })
                 .map_err(|error| Error::Project(error.to_string()))?,
         };
         Ok((opened.number, opened.url))
+    }
+
+    fn update_pull_request(
+        &self,
+        _task: &Task,
+        repo: &RepoSlug,
+        number: u64,
+        title: &str,
+        body: &str,
+    ) -> Result<()> {
+        self.forge
+            .update_pull_request(repo, number, title, body)
+            .map_err(|error| Error::Project(error.to_string()))
+    }
+
+    fn pull_request_content(
+        &self,
+        _task: &Task,
+        repo: &RepoSlug,
+        number: u64,
+    ) -> Result<(String, String)> {
+        let (title, body) = self
+            .forge
+            .pull_request_text(repo, number)
+            .map_err(|error| Error::Project(error.to_string()))?;
+        Ok((title, body.unwrap_or_default()))
     }
 
     fn observe_pull_request(
@@ -366,42 +404,6 @@ impl<F: Forge> Delivery for ForgeDelivery<F> {
     fn delete_branch(&self, repo: &RepoSlug, branch: &str) -> Result<()> {
         self.forge
             .delete_branch(repo, branch)
-            .map_err(|error| Error::Project(error.to_string()))
-    }
-
-    fn find_marked_comment(
-        &self,
-        _task: &Task,
-        repo: &RepoSlug,
-        number: u64,
-        marker: &str,
-    ) -> Result<Option<u64>> {
-        self.forge
-            .find_comment(repo, number, marker)
-            .map_err(|error| Error::Project(error.to_string()))
-    }
-
-    fn create_comment(
-        &self,
-        _task: &Task,
-        repo: &RepoSlug,
-        number: u64,
-        body: &str,
-    ) -> Result<u64> {
-        self.forge
-            .create_comment(repo, number, body)
-            .map_err(|error| Error::Project(error.to_string()))
-    }
-
-    fn update_comment(
-        &self,
-        _task: &Task,
-        repo: &RepoSlug,
-        comment_id: u64,
-        body: &str,
-    ) -> Result<()> {
-        self.forge
-            .update_comment(repo, comment_id, body)
             .map_err(|error| Error::Project(error.to_string()))
     }
 }
@@ -1909,37 +1911,38 @@ where
     ) -> Result<()> {
         let key = event_key(&["evidence", task.id.as_str(), commit.as_str()]);
         let required = config.evidence.required;
-        let outcome = self.lease_for(task).and_then(|lease| {
-            self.evidence.run(
-                command,
-                &lease.path,
-                &config.pull_request.base,
-                Duration::from_secs(config.evidence.timeout_seconds),
-            )
-        });
-        let result: std::result::Result<u64, String> = match outcome {
-            Err(error) => Err(error.to_string()),
-            Ok(output) if output.exit_code != 0 => {
-                Err(format!("the evidence command exited {}", output.exit_code))
-            }
-            Ok(output) => self
-                .publish_evidence(
-                    task,
-                    number,
-                    repo,
-                    &evidence::parse_manifest(&output.stdout),
+        let result: std::result::Result<(), String> = (|| {
+            let lease = self.lease_for(task).map_err(|error| error.to_string())?;
+            let output = self
+                .evidence
+                .run(
+                    command,
+                    &lease.path,
+                    &config.pull_request.base,
+                    Duration::from_secs(config.evidence.timeout_seconds),
                 )
-                .map_err(|error| error.to_string()),
-        };
+                .map_err(|error| error.to_string())?;
+            if output.exit_code != 0 {
+                return Err(format!("the evidence command exited {}", output.exit_code));
+            }
+            self.publish_evidence(
+                task,
+                number,
+                repo,
+                &lease.path,
+                &evidence::parse_manifest(&output.stdout),
+                required,
+            )
+            .map_err(|error| error.to_string())
+        })();
         match result {
-            Ok(comment_id) => self.record(
+            Ok(()) => self.record(
                 &key,
                 Fact {
                     at: now(),
                     kind: FactKind::EvidencePosted {
                         task: task.id.clone(),
                         commit: commit.clone(),
-                        comment_id,
                     },
                 },
             ),
@@ -1966,20 +1969,22 @@ where
         task: &Task,
         number: u64,
         repo: &RepoSlug,
+        worktree: &Path,
         artifacts: &[EvidenceArtifact],
-    ) -> Result<u64> {
-        let body = evidence::comment_body(artifacts);
-        match self
-            .delivery
-            .find_marked_comment(task, repo, number, EVIDENCE_MARKER)?
-        {
-            Some(comment_id) => {
-                self.delivery
-                    .update_comment(task, repo, comment_id, &body)?;
-                Ok(comment_id)
-            }
-            None => self.delivery.create_comment(task, repo, number, &body),
+        required: bool,
+    ) -> Result<()> {
+        let resolved = evidence::resolve_artifacts(worktree, artifacts);
+        if required && !resolved.iter().any(ResolvedArtifact::is_url) {
+            return Err(Error::Project(
+                "the evidence command produced nothing attachable: a local file cannot be attached to a pull request, so publish each artifact at a URL"
+                    .to_owned(),
+            ));
         }
+        let proof = evidence::render_proof(&resolved);
+        let (title, existing) = self.delivery.pull_request_content(task, repo, number)?;
+        let body = evidence::upsert_proof(&existing, &proof);
+        self.delivery
+            .update_pull_request(task, repo, number, &title, &body)
     }
 
     fn reconcile_forge(&self) -> Result<()> {

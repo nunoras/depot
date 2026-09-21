@@ -18,6 +18,10 @@ use fake_forge::FakeForge;
 use tempfile::TempDir;
 
 const REPO_PATH: &str = "/repos/acme/widget";
+const PR_PATH: &str = "/repos/acme/widget/pulls/7";
+
+const PR_BODY: &str =
+    "## Why\\n\\nwhat the change is for\\n\\n## Validation\\n\\n`cargo test` exited 0";
 
 #[derive(Clone, Default)]
 struct FakeWorktrees;
@@ -123,7 +127,7 @@ impl EvidenceRunner for FakeEvidence {
 }
 
 struct Fixture {
-    _temp: TempDir,
+    temp: TempDir,
     store: Store,
     project: Project,
     forge: FakeForge,
@@ -168,7 +172,7 @@ fn register(config: &str) -> Fixture {
     };
     store.put_project(&project).expect("the project is stored");
     Fixture {
-        _temp: temp,
+        temp,
         store,
         project,
         forge: FakeForge::start(),
@@ -192,10 +196,10 @@ fn git(directory: &std::path::Path, args: &[&str]) {
 fn open_pull_request_routes(forge: &FakeForge, commit: &str) {
     forge.route(
         "GET",
-        &format!("{REPO_PATH}/pulls/7"),
+        PR_PATH,
         200,
         &format!(
-            "{{\"number\":7,\"html_url\":\"https://github.com/acme/widget/pull/7\",\"state\":\"open\",\"mergeable\":true,\"head\":{{\"sha\":\"{commit}\",\"ref\":\"depot-t-1\"}},\"base\":{{\"sha\":\"ba5eba11\"}}}}"
+            "{{\"number\":7,\"html_url\":\"https://github.com/acme/widget/pull/7\",\"title\":\"the work\",\"body\":\"{PR_BODY}\",\"state\":\"open\",\"mergeable\":true,\"head\":{{\"sha\":\"{commit}\",\"ref\":\"depot-t-1\"}},\"base\":{{\"sha\":\"ba5eba11\"}}}}"
         ),
     );
     forge.route(
@@ -204,6 +208,7 @@ fn open_pull_request_routes(forge: &FakeForge, commit: &str) {
         200,
         "{\"total_count\":0,\"check_runs\":[]}",
     );
+    forge.route("PATCH", PR_PATH, 200, "{\"number\":7}");
 }
 
 fn drive_to_pr_open(fixture: &Fixture, commit: &str) {
@@ -287,12 +292,21 @@ fn drive_to_pr_open(fixture: &Fixture, commit: &str) {
     open_pull_request_routes(&fixture.forge, commit);
 }
 
-fn request_to(forge: &FakeForge, method: &str, path: &str) -> fake_forge::Recorded {
+fn patched_bodies(forge: &FakeForge) -> Vec<String> {
     forge
         .requests()
         .into_iter()
-        .find(|request| request.method == method && request.path == path)
-        .unwrap_or_else(|| panic!("no {method} request was made to {path}"))
+        .filter(|request| request.method == "PATCH" && request.path == PR_PATH)
+        .map(|request| request.body)
+        .collect()
+}
+
+fn pull_request_body(request: &str) -> String {
+    let request: serde_json::Value = serde_json::from_str(request).expect("a JSON request");
+    request["body"]
+        .as_str()
+        .expect("the request carries a body")
+        .to_string()
 }
 
 fn daemon(
@@ -323,47 +337,44 @@ fn daemon(
 
 const EVIDENCE_CONFIG: &str = "base_branch = \"main\"\n\n[profiles]\nbuild = \"evidence-model\"\n\n[evidence]\ncommand = \"./capture\"\ntimeout_seconds = 60\n";
 
+fn evidence_with(stdout: &str) -> FakeEvidence {
+    FakeEvidence {
+        stdout: Arc::new(Mutex::new(stdout.to_owned())),
+        ..FakeEvidence::default()
+    }
+}
+
 #[test]
-fn an_open_pull_request_gets_one_evidence_comment_and_a_rerun_does_not_duplicate_it() {
+fn an_open_pull_request_gets_one_proof_section_and_a_rerun_does_not_duplicate_it() {
     let fixture = register(EVIDENCE_CONFIG);
     drive_to_pr_open(&fixture, "aaa111");
-    fixture.forge.route_query(
-        "GET",
-        &format!("{REPO_PATH}/issues/7/comments"),
-        Some("per_page=100"),
-        200,
-        "[]",
-    );
-    fixture.forge.route(
-        "POST",
-        &format!("{REPO_PATH}/issues/7/comments"),
-        201,
-        "{\"id\":55,\"body\":\"x\"}",
-    );
 
-    let evidence = FakeEvidence {
-        stdout: Arc::new(Mutex::new(
-            "https://img.example/shot.png\tlogin screen\n".to_owned(),
-        )),
-        ..FakeEvidence::default()
-    };
-    let _calls = evidence.calls();
-    let daemon = daemon(&fixture, evidence);
+    let daemon = daemon(
+        &fixture,
+        evidence_with("https://img.example/shot.png\tlogin screen\n"),
+    );
     daemon.tick().expect("the first tick runs");
 
-    let posted = request_to(
-        &fixture.forge,
-        "POST",
-        &format!("{REPO_PATH}/issues/7/comments"),
-    );
-    assert!(posted.body.contains("depot-evidence"), "{}", posted.body);
+    let bodies = patched_bodies(&fixture.forge);
+    assert_eq!(bodies.len(), 1, "one body write: {bodies:?}");
+    let body = &bodies[0];
+    assert!(body.contains("## Why"), "unrelated text survives: {body}");
+    assert!(body.contains("## Proof"), "{body}");
+    assert!(body.contains("## Validation"), "{body}");
     assert!(
-        posted
-            .body
-            .contains("![login screen](https://img.example/shot.png)"),
-        "{}",
-        posted.body
+        body.contains("![login screen](https://img.example/shot.png)"),
+        "{body}"
     );
+    assert_eq!(body.matches("## Proof").count(), 1, "{body}");
+    assert!(
+        !fixture
+            .forge
+            .requests()
+            .iter()
+            .any(|request| request.path.contains("/issues/")),
+        "evidence never becomes a comment"
+    );
+
     let task = fixture
         .store
         .task(&fixture.project.id, &TaskId::new("t-1"))
@@ -373,64 +384,140 @@ fn an_open_pull_request_gets_one_evidence_comment_and_a_rerun_does_not_duplicate
 
     daemon.tick().expect("the second tick runs");
     assert_eq!(
-        fixture
-            .forge
-            .requests()
-            .into_iter()
-            .filter(|request| request.method == "POST"
-                && request.path == format!("{REPO_PATH}/issues/7/comments"))
-            .count(),
+        patched_bodies(&fixture.forge).len(),
         1,
-        "the rerun edits nothing and posts nothing"
+        "the rerun writes no second body"
     );
 }
 
 #[test]
-fn a_second_commit_edits_the_marked_comment_instead_of_posting_another() {
+fn a_new_commit_refreshes_the_single_owned_proof_section() {
     let fixture = register(EVIDENCE_CONFIG);
     drive_to_pr_open(&fixture, "aaa111");
-    fixture.forge.route_query(
+
+    let stale = "## Why\n\nwhat the change is for\n\n<!-- depot-proof:start -->\n## Proof\n\nhttps://vid.example/old.mp4\n<!-- depot-proof:end -->\n\n## Validation\n\n`cargo test` exited 0".to_string();
+    fixture.forge.replace_route(
         "GET",
-        &format!("{REPO_PATH}/issues/7/comments"),
-        Some("per_page=100"),
+        PR_PATH,
         200,
-        "[{\"id\":9,\"body\":\"older\\n<!-- depot-evidence -->\"}]",
-    );
-    fixture.forge.route(
-        "PATCH",
-        &format!("{REPO_PATH}/issues/comments/9"),
-        200,
-        "{\"id\":9,\"body\":\"x\"}",
+        &format!(
+            "{{\"number\":7,\"html_url\":\"https://github.com/acme/widget/pull/7\",\"title\":\"the work\",\"body\":\"{}\",\"state\":\"open\",\"mergeable\":true,\"head\":{{\"sha\":\"aaa111\",\"ref\":\"depot-t-1\"}},\"base\":{{\"sha\":\"ba5eba11\"}}}}",
+            stale.replace('\n', "\\n")
+        ),
     );
 
-    let evidence = FakeEvidence {
-        stdout: Arc::new(Mutex::new(
-            "https://vid.example/clip.mp4\tthe flow\n".to_owned(),
-        )),
-        ..FakeEvidence::default()
-    };
-    daemon(&fixture, evidence).tick().expect("the tick runs");
+    daemon(
+        &fixture,
+        evidence_with("https://vid.example/new.mp4\tthe flow\n"),
+    )
+    .tick()
+    .expect("the tick runs");
 
-    let edited = request_to(
-        &fixture.forge,
-        "PATCH",
-        &format!("{REPO_PATH}/issues/comments/9"),
-    );
-    assert_eq!(edited.method, "PATCH");
+    let bodies = patched_bodies(&fixture.forge);
+    assert_eq!(bodies.len(), 1, "{bodies:?}");
+    let body = &bodies[0];
+    assert_eq!(body.matches("## Proof").count(), 1, "{body}");
+    assert!(body.contains("https://vid.example/new.mp4"), "{body}");
+    assert!(!body.contains("https://vid.example/old.mp4"), "{body}");
+    assert!(body.contains("what the change is for"), "{body}");
+}
+
+#[test]
+fn a_relative_local_file_is_noted_as_unattachable_and_resolved_against_the_worktree() {
+    let fixture = register(EVIDENCE_CONFIG);
+    drive_to_pr_open(&fixture, "aaa111");
+
+    daemon(&fixture, evidence_with("out/clip.mp4\tthe flow\n"))
+        .tick()
+        .expect("the tick runs");
+
+    let bodies = patched_bodies(&fixture.forge);
+    assert_eq!(bodies.len(), 1, "{bodies:?}");
+    let body = &pull_request_body(&bodies[0]);
+    let resolved = fixture
+        .temp
+        .path()
+        .join("acme-widget")
+        .join("worktree")
+        .join("out/clip.mp4");
     assert!(
-        edited
-            .body
-            .contains("[the flow](https://vid.example/clip.mp4)"),
-        "{}",
-        edited.body
+        body.contains(&resolved.display().to_string()),
+        "the note names the path resolved against the worktree: {body}"
     );
     assert!(
-        !fixture
+        body.contains("cannot be attached to a pull request"),
+        "{body}"
+    );
+    assert!(
+        fixture
             .forge
             .requests()
             .iter()
-            .any(|request| request.method == "POST"),
-        "no second comment is posted"
+            .all(|request| !request.path.contains("/upload/")),
+        "a local file is never uploaded"
+    );
+
+    let task = fixture
+        .store
+        .task(&fixture.project.id, &TaskId::new("t-1"))
+        .expect("the task is read")
+        .expect("the task exists");
+    assert_eq!(task.state, depot_core::TaskState::PrOpen);
+}
+
+#[test]
+fn a_required_evidence_run_with_one_url_and_one_local_file_publishes_both_notes() {
+    let fixture = register(
+        "base_branch = \"main\"\n\n[profiles]\nbuild = \"evidence-model\"\n\n[evidence]\ncommand = \"./capture\"\nrequired = true\n",
+    );
+    drive_to_pr_open(&fixture, "aaa111");
+
+    daemon(
+        &fixture,
+        evidence_with("https://img.example/shot.png\tlogin screen\nout/clip.mp4\tthe flow\n"),
+    )
+    .tick()
+    .expect("the tick runs");
+
+    let bodies = patched_bodies(&fixture.forge);
+    assert_eq!(bodies.len(), 1, "{bodies:?}");
+    let body = &bodies[0];
+    assert!(
+        body.contains("![login screen](https://img.example/shot.png)"),
+        "{body}"
+    );
+    assert!(
+        body.contains("cannot be attached to a pull request"),
+        "{body}"
+    );
+    let task = fixture
+        .store
+        .task(&fixture.project.id, &TaskId::new("t-1"))
+        .expect("the task is read")
+        .expect("the task exists");
+    assert_eq!(task.state, depot_core::TaskState::PrOpen);
+}
+
+#[test]
+fn a_required_evidence_run_that_captured_nothing_holds_the_task_for_the_user() {
+    let fixture = register(
+        "base_branch = \"main\"\n\n[profiles]\nbuild = \"evidence-model\"\n\n[evidence]\ncommand = \"./capture\"\nrequired = true\n",
+    );
+    drive_to_pr_open(&fixture, "aaa111");
+
+    daemon(&fixture, FakeEvidence::default())
+        .tick()
+        .expect("the tick runs");
+
+    let task = fixture
+        .store
+        .task(&fixture.project.id, &TaskId::new("t-1"))
+        .expect("the task is read")
+        .expect("the task exists");
+    assert_eq!(task.state, depot_core::TaskState::Failed);
+    assert!(
+        patched_bodies(&fixture.forge).is_empty(),
+        "nothing attachable writes no proof section"
     );
 }
 
@@ -499,33 +586,50 @@ fn a_required_evidence_failure_holds_the_task_for_the_user() {
 }
 
 #[test]
-fn an_empty_manifest_is_a_comment_saying_nothing_was_captured() {
+fn a_required_evidence_run_with_nothing_attachable_holds_the_task_for_the_user() {
+    let fixture = register(
+        "base_branch = \"main\"\n\n[profiles]\nbuild = \"evidence-model\"\n\n[evidence]\ncommand = \"./capture\"\nrequired = true\n",
+    );
+    drive_to_pr_open(&fixture, "aaa111");
+
+    daemon(&fixture, evidence_with("out/clip.mp4\tthe flow\n"))
+        .tick()
+        .expect("the tick runs");
+
+    let task = fixture
+        .store
+        .task(&fixture.project.id, &TaskId::new("t-1"))
+        .expect("the task is read")
+        .expect("the task exists");
+    assert_eq!(task.state, depot_core::TaskState::Failed);
+    let events = fixture
+        .store
+        .events(&fixture.project.id)
+        .expect("the events");
+    assert!(
+        events.iter().any(|event| event.kind == "evidence_failed"
+            && event.payload.contains("nothing attachable")
+            && event.payload.contains("\"required\":true")),
+        "{events:?}"
+    );
+    assert!(
+        patched_bodies(&fixture.forge).is_empty(),
+        "nothing attachable writes no proof section"
+    );
+}
+
+#[test]
+fn an_empty_manifest_is_a_proof_section_saying_nothing_was_captured() {
     let fixture = register(EVIDENCE_CONFIG);
     drive_to_pr_open(&fixture, "aaa111");
-    fixture.forge.route_query(
-        "GET",
-        &format!("{REPO_PATH}/issues/7/comments"),
-        Some("per_page=100"),
-        200,
-        "[]",
-    );
-    fixture.forge.route(
-        "POST",
-        &format!("{REPO_PATH}/issues/7/comments"),
-        201,
-        "{\"id\":55,\"body\":\"x\"}",
-    );
 
     daemon(&fixture, FakeEvidence::default())
         .tick()
         .expect("the tick runs");
 
-    let posted = request_to(
-        &fixture.forge,
-        "POST",
-        &format!("{REPO_PATH}/issues/7/comments"),
-    );
-    assert!(posted.body.contains("captured nothing"), "{}", posted.body);
+    let bodies = patched_bodies(&fixture.forge);
+    assert_eq!(bodies.len(), 1, "{bodies:?}");
+    assert!(bodies[0].contains("captured nothing"), "{}", bodies[0]);
     let task = fixture
         .store
         .task(&fixture.project.id, &TaskId::new("t-1"))
@@ -535,7 +639,7 @@ fn an_empty_manifest_is_a_comment_saying_nothing_was_captured() {
 }
 
 #[test]
-fn a_project_without_evidence_config_never_touches_the_forge_comments() {
+fn a_project_without_evidence_config_never_touches_the_forge_body() {
     let fixture = register("base_branch = \"main\"\n\n[profiles]\nbuild = \"evidence-model\"\n");
     drive_to_pr_open(&fixture, "aaa111");
 
@@ -544,11 +648,7 @@ fn a_project_without_evidence_config_never_touches_the_forge_comments() {
         .expect("the tick runs");
 
     assert!(
-        !fixture
-            .forge
-            .requests()
-            .iter()
-            .any(|request| request.path.contains("/issues/")),
-        "no comment endpoint is called"
+        patched_bodies(&fixture.forge).is_empty(),
+        "no pull request body is written without evidence configured"
     );
 }

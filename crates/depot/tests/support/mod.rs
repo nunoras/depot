@@ -645,6 +645,10 @@ impl Golden {
     }
 
     pub fn script_existing_pull_request(&self, commit: &str) {
+        self.script_existing_pull_request_with_body(commit, None);
+    }
+
+    pub fn script_existing_pull_request_with_body(&self, commit: &str, body: Option<&str>) {
         self.forge.route(
             "GET",
             &format!("/repos/{REPOSITORY}/commits/{commit}/check-runs"),
@@ -655,7 +659,13 @@ impl Golden {
             "GET",
             &format!("/repos/{REPOSITORY}/pulls/1"),
             200,
-            &pull_request(commit, BASE, "open", false, true),
+            &pull_request_with_body(commit, BASE, "open", false, true, body),
+        );
+        self.forge.route(
+            "PATCH",
+            &format!("/repos/{REPOSITORY}/pulls/1"),
+            200,
+            &format!("{{\"number\":1,\"html_url\":\"https://forge.test/{REPOSITORY}/pull/1\",\"state\":\"open\"}}"),
         );
         self.forge.replace_route_query(
             "GET",
@@ -1001,12 +1011,27 @@ fn check_runs() -> String {
 }
 
 fn pull_request(commit: &str, base: &str, state: &str, merged: bool, mergeable: bool) -> String {
+    pull_request_with_body(commit, base, state, merged, mergeable, None)
+}
+
+fn pull_request_with_body(
+    commit: &str,
+    base: &str,
+    state: &str,
+    merged: bool,
+    mergeable: bool,
+    body: Option<&str>,
+) -> String {
     let merged = if state == "closed" {
         format!("\"merged\":{merged},")
     } else {
         String::new()
     };
+    let body = match body {
+        Some(body) => format!("\"body\":{},", serde_json::Value::String(body.to_owned())),
+        None => String::new(),
+    };
     format!(
-        "{{\"number\":1,\"html_url\":\"https://forge.test/{REPOSITORY}/pull/1\",\"title\":\"Wire the store\",\"state\":\"{state}\",{merged}\"mergeable\":{mergeable},\"head\":{{\"sha\":\"{commit}\",\"ref\":\"{BRANCH}\"}},\"base\":{{\"sha\":\"{base}\"}}}}"
+        "{{\"number\":1,\"html_url\":\"https://forge.test/{REPOSITORY}/pull/1\",\"title\":\"Wire the store\",{body}\"state\":\"{state}\",{merged}\"mergeable\":{mergeable},\"head\":{{\"sha\":\"{commit}\",\"ref\":\"{BRANCH}\"}},\"base\":{{\"sha\":\"{base}\"}}}}"
     )
 }

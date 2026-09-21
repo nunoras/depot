@@ -168,6 +168,7 @@ const MIGRATIONS: &[&str] = &[
     "ALTER TABLE task_attempts ADD COLUMN last_seen_at INTEGER;",
     "ALTER TABLE tasks ADD COLUMN redirect_text TEXT;",
     "ALTER TABLE tasks ADD COLUMN redirect_delivered INTEGER NOT NULL DEFAULT 0;",
+    "ALTER TABLE tasks ADD COLUMN rework_of TEXT;",
 ];
 
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;

@@ -75,6 +75,11 @@ pub fn encode_payload(kind: &FactKind) -> String {
         FactKind::TaskApproved { task } => task_field(task.as_str()),
         FactKind::TaskCancelled { task } => task_field(task.as_str()),
         FactKind::TaskRetried { task } => task_field(task.as_str()),
+        FactKind::TaskReworked { task, fix, text } => object(vec![
+            ("task", quoted(task.as_str())),
+            ("fix", quoted(fix.as_str())),
+            ("text", quoted(text)),
+        ]),
         FactKind::TaskAcknowledged { task } => task_field(task.as_str()),
         FactKind::QuestionAsked { task, text, relay } => object(vec![
             ("task", quoted(task.as_str())),

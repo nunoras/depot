@@ -24,6 +24,7 @@ fn task(state: TaskState) -> Task {
         redirect_text: None,
         redirect_delivered: false,
         hold_pr: false,
+        rework_of: None,
         retry: None,
         acknowledged_at: None,
         created_at: Timestamp::from_millis(0),

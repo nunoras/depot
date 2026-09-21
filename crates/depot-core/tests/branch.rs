@@ -23,6 +23,7 @@ fn task(title: &str, intent: &str, role: Role) -> Task {
         redirect_delivered: false,
         acknowledged_at: None,
         hold_pr: false,
+        rework_of: None,
         retry: None,
         created_at: Timestamp::from_millis(0),
         updated_at: Timestamp::from_millis(0),

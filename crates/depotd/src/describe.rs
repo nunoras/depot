@@ -207,6 +207,7 @@ mod tests {
             redirect_delivered: false,
             acknowledged_at: None,
             hold_pr: false,
+            rework_of: None,
             retry: None,
             created_at: Timestamp::from_millis(0),
             updated_at: Timestamp::from_millis(0),

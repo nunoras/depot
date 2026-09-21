@@ -80,7 +80,7 @@ impl Store {
 }
 
 const TASK_COLUMNS: &str = "project_id, id, title, intent, role, state, base_dependency, \
-     branch_head, retry_profile, retry_not_before, submission_summary, merge_refused, redirect_text, redirect_delivered, created_at, updated_at, dispatch_profile, acknowledged_at, hold_pr";
+     branch_head, retry_profile, retry_not_before, submission_summary, merge_refused, redirect_text, redirect_delivered, created_at, updated_at, dispatch_profile, acknowledged_at, hold_pr, rework_of";
 
 struct RawTask {
     project_id: String,
@@ -100,6 +100,7 @@ struct RawTask {
     redirect_delivered: bool,
     acknowledged_at: Option<i64>,
     hold_pr: bool,
+    rework_of: Option<String>,
     created_at: i64,
     updated_at: i64,
 }
@@ -124,6 +125,7 @@ impl RawTask {
             redirect_delivered: row.get::<_, i64>("redirect_delivered")? != 0,
             acknowledged_at: row.get("acknowledged_at")?,
             hold_pr: row.get("hold_pr")?,
+            rework_of: row.get("rework_of")?,
             created_at: row.get("created_at")?,
             updated_at: row.get("updated_at")?,
         })
@@ -182,6 +184,7 @@ impl RawTask {
                 .acknowledged_at
                 .map(|value| value as u64)
                 .map(Timestamp::from_millis),
+            rework_of: self.rework_of.map(TaskId::new),
             hold_pr: self.hold_pr,
             retry,
             created_at: millis(self.created_at)?,
@@ -434,8 +437,8 @@ pub(super) fn write_task(transaction: &Transaction<'_>, task: &Task) -> Result<(
     transaction.execute(
         "INSERT INTO tasks (
                 project_id, id, title, intent, role, state, base_dependency, branch_head,
-                retry_profile, retry_not_before, submission_summary, merge_refused, redirect_text, redirect_delivered, created_at, updated_at, dispatch_profile, acknowledged_at, hold_pr
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+                retry_profile, retry_not_before, submission_summary, merge_refused, redirect_text, redirect_delivered, created_at, updated_at, dispatch_profile, acknowledged_at, hold_pr, rework_of
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
         params![
             task.project.as_str(),
             task.id.as_str(),
@@ -460,6 +463,7 @@ pub(super) fn write_task(transaction: &Transaction<'_>, task: &Task) -> Result<(
             task.dispatch_profile.as_ref().map(ProfileId::as_str),
             task.acknowledged_at.map(|value| value.millis() as i64),
             task.hold_pr,
+            task.rework_of.as_ref().map(TaskId::as_str),
         ],
     )?;
 

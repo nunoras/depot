@@ -182,11 +182,30 @@ const MIGRATIONS: &[&str] = &[
 
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
 
-pub fn migrate(conn: &Connection) -> Result<()> {
-    let current: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+pub fn current(conn: &Connection) -> Result<i64> {
+    Ok(conn.query_row("PRAGMA user_version", [], |row| row.get(0))?)
+}
+
+pub fn check(conn: &Connection) -> Result<()> {
+    let current = current(conn)?;
+    if current == SCHEMA_VERSION {
+        return Ok(());
+    }
     if current > SCHEMA_VERSION {
         return Err(Error::Schema(format!(
-            "the store is at schema {current} but this build understands schema {SCHEMA_VERSION}"
+            "the store is at schema {current} but this build understands schema {SCHEMA_VERSION}; reinstall depot to match it, then start the daemon"
+        )));
+    }
+    Err(Error::Schema(format!(
+        "the store is at schema {current} but this build understands schema {SCHEMA_VERSION}; start the daemon or run `depot store migrate` to move it forward"
+    )))
+}
+
+pub fn migrate(conn: &Connection) -> Result<()> {
+    let current = current(conn)?;
+    if current > SCHEMA_VERSION {
+        return Err(Error::Schema(format!(
+            "the store is at schema {current} but this build understands schema {SCHEMA_VERSION}; reinstall depot to match it, then start the daemon"
         )));
     }
     for (index, migration) in MIGRATIONS.iter().enumerate() {

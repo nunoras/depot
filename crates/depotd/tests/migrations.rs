@@ -1,7 +1,7 @@
 mod support;
 
 use depot_core::{ProjectId, TaskId};
-use depotd::{SCHEMA_VERSION, Store};
+use depotd::{SCHEMA_VERSION, Store, migrate_store};
 use rusqlite::Connection;
 
 #[test]
@@ -14,7 +14,7 @@ fn a_fresh_store_lands_at_the_current_schema() {
 }
 
 #[test]
-fn a_store_written_by_an_older_schema_migrates_forward_on_open() {
+fn a_store_written_by_an_older_schema_migrates_when_the_daemon_opens() {
     let fixture = support::fixture();
     let path = fixture.home.database_path();
     std::fs::create_dir_all(fixture.home.root()).expect("home directory");
@@ -48,7 +48,7 @@ fn a_store_written_by_an_older_schema_migrates_forward_on_open() {
         .expect("legacy rows");
     drop(legacy);
 
-    let store = Store::open(&fixture.home).expect("migrated store");
+    let store = Store::open_migrating(&fixture.home).expect("migrated store");
 
     assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
     let project = store
@@ -136,7 +136,7 @@ fn a_store_migrated_from_main_gains_every_new_column() {
         .expect("previous rows");
     drop(previous);
 
-    let store = Store::open(&fixture.home).expect("migrated store");
+    let store = Store::open_migrating(&fixture.home).expect("migrated store");
 
     assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
     drop(store);
@@ -186,4 +186,78 @@ fn a_store_written_by_a_newer_schema_is_refused_rather_than_downgraded() {
         message.contains(&(SCHEMA_VERSION + 7).to_string()),
         "the refusal should name the schema it found, got {message}"
     );
+    assert!(
+        message.contains(&SCHEMA_VERSION.to_string()),
+        "the refusal should name the schema this build understands, got {message}"
+    );
+    assert!(
+        message.contains("reinstall depot"),
+        "the refusal should name the fix, got {message}"
+    );
+}
+
+fn an_older_store(fixture: &support::Fixture) -> i64 {
+    let path = fixture.home.database_path();
+    std::fs::create_dir_all(fixture.home.root()).expect("home directory");
+    let legacy = Connection::open(&path).expect("legacy database");
+    legacy
+        .execute_batch(include_str!("fixtures/schema-v18.sql"))
+        .expect("v18 schema");
+    drop(legacy);
+    SCHEMA_VERSION - 2
+}
+
+#[test]
+fn a_client_open_of_an_older_store_is_refused_without_migrating() {
+    let fixture = support::fixture();
+    let version = an_older_store(&fixture);
+
+    let error = match Store::open(&fixture.home) {
+        Ok(_) => panic!("a client must not open an older store"),
+        Err(error) => error,
+    };
+    let message = error.to_string();
+
+    assert!(
+        message.contains(&version.to_string()),
+        "the refusal should name the schema it found, got {message}"
+    );
+    assert!(
+        message.contains(&SCHEMA_VERSION.to_string()),
+        "the refusal should name the schema this build understands, got {message}"
+    );
+    assert!(
+        message.contains("depot store migrate"),
+        "the refusal should name the fix, got {message}"
+    );
+
+    let connection = Connection::open(fixture.home.database_path()).expect("database");
+    let stored: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .expect("schema version");
+    assert_eq!(stored, version, "the client left the schema untouched");
+}
+
+#[test]
+fn an_explicit_migrate_moves_the_store_to_the_current_schema() {
+    let fixture = support::fixture();
+    let version = an_older_store(&fixture);
+
+    let migration = migrate_store(&fixture.home).expect("the store migrates");
+
+    assert_eq!(migration.from, version);
+    assert_eq!(migration.to, SCHEMA_VERSION);
+    let store = Store::open(&fixture.home).expect("the store opens after migrating");
+    assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
+}
+
+#[test]
+fn an_explicit_migrate_of_a_current_store_is_a_no_op() {
+    let fixture = support::fixture();
+    Store::open(&fixture.home).expect("fresh store");
+
+    let migration = migrate_store(&fixture.home).expect("the store is current");
+
+    assert_eq!(migration.from, SCHEMA_VERSION);
+    assert_eq!(migration.to, SCHEMA_VERSION);
 }

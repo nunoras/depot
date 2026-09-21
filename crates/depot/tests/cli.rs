@@ -1294,3 +1294,59 @@ fn releasing_a_validated_held_task_is_a_no_op_after_the_fact() {
         "a validated held task needs the daemon, so a proposed one is refused"
     );
 }
+
+#[test]
+fn a_client_command_refuses_an_older_store_and_an_explicit_migrate_moves_it() {
+    let cli = Cli::new();
+    let home = cli.depot_home();
+    let path = home.database_path();
+    std::fs::create_dir_all(home.root()).expect("home directory");
+    let legacy = rusqlite::Connection::open(&path).expect("legacy database");
+    legacy
+        .execute_batch(include_str!("../../depotd/tests/fixtures/schema-v1.sql"))
+        .expect("v1 schema");
+    let fixture_version: i64 = legacy
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .expect("fixture version");
+    assert!(depotd::SCHEMA_VERSION > fixture_version);
+
+    let refused = cli.run(&["status", "--all"]);
+
+    assert_eq!(refused.status.code(), Some(1));
+    assert!(
+        stderr(&refused).contains(&fixture_version.to_string()),
+        "stderr: {}",
+        stderr(&refused)
+    );
+    assert!(
+        stderr(&refused).contains(&depotd::SCHEMA_VERSION.to_string()),
+        "stderr: {}",
+        stderr(&refused)
+    );
+    assert!(
+        stderr(&refused).contains("depot store migrate"),
+        "stderr: {}",
+        stderr(&refused)
+    );
+    let stored: i64 = legacy
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .expect("schema version");
+    assert_eq!(stored, fixture_version, "the client left the schema alone");
+    drop(legacy);
+
+    let migrated = cli.run(&["store", "migrate"]);
+
+    assert_eq!(
+        migrated.status.code(),
+        Some(0),
+        "stderr: {}",
+        stderr(&migrated)
+    );
+    assert!(
+        stdout(&migrated).contains(&format!("to schema {}", depotd::SCHEMA_VERSION)),
+        "stdout: {}",
+        stdout(&migrated)
+    );
+    let store = Store::open(&home).expect("the store opens after an explicit migrate");
+    assert_eq!(store.schema_version().unwrap(), depotd::SCHEMA_VERSION);
+}

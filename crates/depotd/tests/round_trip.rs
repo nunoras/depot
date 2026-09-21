@@ -110,7 +110,7 @@ fn a_project_state_round_trips_through_the_configuration_split() {
          command = \"cargo test\"\n\n\
          [pull_request]\n\
          base = \"main\"\n\
-         auto_merge = false\n\
+         merge = \"manual\"\n\
          [questions]\n\
          always_relay = true\n",
     )
@@ -166,7 +166,7 @@ fn a_project_state_round_trips_through_the_configuration_split() {
             ..Limits::default()
         },
         always_relay_questions: true,
-        auto_merge: false,
+        merge_policy: depot_core::MergePolicy::Manual,
     };
 
     assert_eq!(

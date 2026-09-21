@@ -7,8 +7,8 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use depot_core::{
-    Action, Baseline, Checks, CommitId, Fact, FactKind, Liveness, Role, SessionId, Task, TaskId,
-    TaskState, WorktreeLease,
+    Action, Baseline, Checks, CommitId, Dependency, Fact, FactKind, Liveness, MergePolicy, Role,
+    SessionId, Task, TaskId, TaskState, WorktreeLease,
 };
 
 use crate::adapters::forge::{Forge, NewPullRequest, PrState, RepoSlug};
@@ -1628,8 +1628,82 @@ where
                 }
             }
         }
+        self.file_review_tasks()?;
         self.schedule_rebases(&observed_open)?;
         self.auto_merge(observed_open)
+    }
+
+    fn file_review_tasks(&self) -> Result<()> {
+        let state = self.store.project_state(&self.project)?;
+        if state.merge_policy != MergePolicy::AfterReview
+            || !state.profiles.contains_key(&Role::Review)
+        {
+            return Ok(());
+        }
+        for task in state.tasks.values() {
+            if task.state != TaskState::PrOpen {
+                continue;
+            }
+            let Some(commit) = task.validated_commit() else {
+                continue;
+            };
+            let already_filed = state.tasks.values().any(|other| {
+                other.role == Role::Review
+                    && other
+                        .dependencies
+                        .iter()
+                        .any(|dependency| dependency.task == task.id)
+            });
+            if already_filed {
+                continue;
+            }
+            let review = self.store.next_task_id(&self.project.id)?;
+            let intent = format!(
+                "Review the change of task `{}` on its delivery branch. Read the diff against the base branch and report findings on correctness, tests and risks.",
+                task.id
+            );
+            let at = now();
+            let applied = self.store.apply_facts(
+                &self.project,
+                &[
+                    (
+                        event_key(&["review_proposed", review.as_str(), commit.as_str()]),
+                        Fact {
+                            at,
+                            kind: FactKind::TaskProposed {
+                                task: review.clone(),
+                                title: format!("Review {}", task.title),
+                                intent,
+                                role: Role::Review,
+                                dispatch_profile: None,
+                                dependencies: vec![Dependency {
+                                    task: task.id.clone(),
+                                    commit: commit.clone(),
+                                }],
+                                base_dependency: Some(task.id.clone()),
+                                hold_pr: true,
+                            },
+                        },
+                    ),
+                    (
+                        event_key(&["review_approved", review.as_str(), commit.as_str()]),
+                        Fact {
+                            at,
+                            kind: FactKind::TaskApproved {
+                                task: review.clone(),
+                            },
+                        },
+                    ),
+                ],
+            )?;
+            if applied.outcome == crate::store::EventOutcome::Recorded {
+                log("review_filed", review.as_str());
+                for action in applied.actions {
+                    self.execute(action)?;
+                }
+            }
+        }
+        Ok(())
     }
 
     fn schedule_rebases(&self, observed_open: &[(TaskId, u64, ObservedPullRequest)]) -> Result<()> {

@@ -16,7 +16,7 @@ Workers are headless sessions with a narrow contract: change code, ask a questio
 
 ## depot validates before it ships
 
-When a worker submits, depot runs the project's validation command against the exact commit on that worktree. A pass is bound to that commit. A moved branch invalidates it. Only after validation passes does depot push the branch and open a pull request. With `auto_merge` enabled, the daemon merges the PR itself once forge checks pass and no dependency pin is stale.
+When a worker submits, depot runs the project's validation command against the exact commit on that worktree. A pass is bound to that commit. A moved branch invalidates it. Only after validation passes does depot push the branch and open a pull request. With `merge = "after_checks"`, the daemon merges the PR itself once forge checks pass and no dependency pin is stale. `merge = "after_review"` additionally files a review-role task against the PR head and holds the merge until that review validates.
 
 ## depot manages dependencies
 
@@ -80,7 +80,7 @@ command = "cargo test"
 
 [pull_request]
 base = "main"
-auto_merge = false
+merge = "manual"
 ```
 
 5. Start the daemon:
@@ -194,7 +194,7 @@ depotd --project my-project
 - The SQLite store does not replicate. depot is a single-machine tool.
 - Rebase on conflict is limited to one attempt per task and requires a fix profile.
 - There is no web dashboard. The checklist is a rendered Markdown file in the project home.
-- `auto_merge` is opt-in and off by default.
+- Automatic merge is opt-in: `merge = "manual"` (default), `"after_checks"` or `"after_review"`. `pull_request.auto_merge` is deprecated and maps to `"after_checks"` when true.
 - depot is in active development. The store schema migrates forward but the CLI surface may change.
 
 ## References

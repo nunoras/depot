@@ -141,7 +141,7 @@ fn the_checklist_states_what_each_task_waits_on() {
             fallback_profiles: Vec::new(),
             limits: Limits::default(),
             always_relay_questions: false,
-            auto_merge: false,
+            merge_policy: depot_core::MergePolicy::Manual,
         },
         true,
     );
@@ -188,7 +188,7 @@ fn an_empty_project_renders_a_checklist_with_no_tasks() {
             fallback_profiles: Vec::new(),
             limits: Limits::default(),
             always_relay_questions: false,
-            auto_merge: false,
+            merge_policy: depot_core::MergePolicy::Manual,
         },
         true,
     );
@@ -378,5 +378,37 @@ fn a_timestamp_renders_as_utc_and_never_reads_the_clock() {
     assert_eq!(
         format_timestamp(Timestamp::from_millis(1_700_000_000_999)),
         "2023-11-14T22:13:20Z"
+    );
+}
+
+#[test]
+fn a_pull_request_with_no_checks_renders_the_merge_decision_line() {
+    let project = ProjectId::new("example/project");
+    let mut tasks = BTreeMap::new();
+    let mut opened = support::simple_task(&project, "t-opened", TaskState::PrOpen, 1);
+    opened.links = vec![Link::PullRequest {
+        number: 42,
+        url: "https://example.test/pull/42".to_string(),
+        checks: Checks::None,
+    }];
+    tasks.insert(opened.id.clone(), opened);
+
+    let rendered = render_checklist(
+        &ProjectState {
+            project,
+            tasks,
+            coordinator: None,
+            profiles: BTreeMap::new(),
+            fallback_profiles: Vec::new(),
+            limits: Limits::default(),
+            always_relay_questions: false,
+            merge_policy: depot_core::MergePolicy::Manual,
+        },
+        true,
+    );
+
+    assert!(
+        rendered.contains("no checks configured; awaiting merge decision on pull request #42"),
+        "a no-CI repository must not wait on checks that can never run, in\n{rendered}"
     );
 }

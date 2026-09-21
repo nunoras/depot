@@ -138,7 +138,7 @@ impl Store {
                 ..settings.limits()
             },
             always_relay_questions: config.questions.always_relay,
-            auto_merge: config.pull_request.auto_merge,
+            merge_policy: config.pull_request.merge_policy(),
         })
     }
 

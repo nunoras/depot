@@ -119,10 +119,19 @@ pub enum AnsweredBy {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Checks {
+    None,
     Unknown,
     Pending,
     Passing,
     Failing,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum MergePolicy {
+    #[default]
+    Manual,
+    AfterChecks,
+    AfterReview,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -302,7 +311,7 @@ pub struct ProjectState {
     pub fallback_profiles: Vec<ProfileId>,
     pub limits: Limits,
     pub always_relay_questions: bool,
-    pub auto_merge: bool,
+    pub merge_policy: MergePolicy,
 }
 
 impl ProjectState {

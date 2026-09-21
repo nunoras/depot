@@ -835,6 +835,7 @@ fn a_redirect_queued_mid_turn_reaches_the_worker_at_the_next_turn() {
     );
 
     golden.boxr.report_running();
+    eprintln!("PHASE midturn");
     daemon
         .tick()
         .expect("a running worker is not interrupted mid-turn");
@@ -845,8 +846,13 @@ fn a_redirect_queued_mid_turn_reaches_the_worker_at_the_next_turn() {
     golden.boxr.respond_launches(&[SESSION, REDIRECT_SESSION]);
     golden
         .boxr
-        .respond_status_sequence(&["running", "running", "finished", "finished"]);
-    golden.boxr.report_running();
+        .respond_status_sequence(&["running", "running", "finished", "finished", "finished"]);
+    golden.boxr.respond(
+        "status",
+        &format!("session: {REDIRECT_SESSION}\nstate: running\n"),
+        "",
+        0,
+    );
     daemon
         .tick()
         .expect("the daemon delivers the redirect when the turn ends");
@@ -903,6 +909,80 @@ fn a_redirect_is_refused_for_a_task_that_is_not_running() {
         "{}",
         support::stderr(&refused)
     );
+}
+
+#[test]
+fn a_redirect_at_a_finished_turn_needs_queue_and_reports_the_receipt() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+
+    golden.boxr.report_finished();
+    let refused = golden.depot(&[
+        "task",
+        "redirect",
+        TASK,
+        "--text",
+        "Skip the migration.",
+        "--project",
+        SLUG,
+    ]);
+    assert_eq!(refused.status.code(), Some(1));
+    assert!(
+        support::stderr(&refused).contains("--queue"),
+        "{}",
+        support::stderr(&refused)
+    );
+
+    assert_eq!(
+        golden.depot_ok(&[
+            "task",
+            "redirect",
+            TASK,
+            "--text",
+            "Skip the migration.",
+            "--queue",
+            "--project",
+            SLUG,
+        ]),
+        "queued, not yet delivered\n"
+    );
+    assert!(golden.checklist().contains("queued, not yet delivered"));
+
+    const REDIRECT_SESSION: &str = "d94b02";
+    golden.boxr.respond_launches(&[SESSION, REDIRECT_SESSION]);
+    golden
+        .boxr
+        .respond_status_sequence(&["finished", "finished", "finished", "finished", "finished"]);
+    golden.boxr.respond(
+        "status",
+        &format!("session: {REDIRECT_SESSION}\nstate: running\n"),
+        "",
+        0,
+    );
+    daemon
+        .tick()
+        .expect("the daemon delivers the redirect when the turn ends");
+    assert!(
+        golden.boxr.calls_to("resume").is_empty(),
+        "a finished session is never resumed"
+    );
+    let launches = golden.boxr.calls_to("--harness");
+    assert_eq!(launches.len(), 2, "a fresh worker is launched");
+    let prompt = launches[1].last().expect("the launch prompt");
+    assert!(
+        prompt.contains("Skip the migration."),
+        "the relaunch brief carries the redirect: {prompt}"
+    );
+    assert!(
+        golden
+            .history(TASK)
+            .contains(&"worker_redirect_delivered".to_string()),
+        "the delivery receipt is journalled"
+    );
+    let checklist = golden.checklist();
+    assert!(checklist.contains("redirect (delivered)"), "{checklist}");
 }
 
 #[test]

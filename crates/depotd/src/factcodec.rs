@@ -100,6 +100,10 @@ pub fn encode_payload(kind: &FactKind) -> String {
             ("task", quoted(task.as_str())),
             ("text", quoted(text)),
         ]),
+        FactKind::WorkerRedirectDelivered { task, redirect } => object(vec![
+            ("task", quoted(task.as_str())),
+            ("redirect", quoted(redirect)),
+        ]),
         FactKind::WorkerLivenessChanged { task, liveness } => object(vec![
             ("task", quoted(task.as_str())),
             ("liveness", quoted(liveness_name(*liveness))),

@@ -154,6 +154,7 @@ fn need_for(tag: FactTag, task: Option<&Task>) -> Need {
         | FactTag::WorkerTurnStarted
         | FactTag::WorkerTurnEnded
         | FactTag::WorkerRedirected
+        | FactTag::WorkerRedirectDelivered
         | FactTag::WorkerSubmissionRecorded
         | FactTag::WorkerSubmitted
         | FactTag::ValidationStarted
@@ -215,6 +216,9 @@ fn headline(tag: FactTag, event: &RecordedEvent, task: Option<&Task>) -> Result<
             ),
             Err(_) => "a new direction was queued for the worker".to_string(),
         },
+        FactTag::WorkerRedirectDelivered => {
+            "the queued direction was delivered to the worker".to_string()
+        }
         FactTag::WorkerLivenessChanged => liveness_line(&event.payload)?,
         FactTag::WorkerSubmissionRecorded => "recorded a submission".to_string(),
         FactTag::WorkerSubmitted => "submitted a change".to_string(),

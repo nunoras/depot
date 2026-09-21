@@ -32,6 +32,10 @@ impl FakeBoxr {
         }
     }
 
+    pub fn directory_env(&self) -> (String, PathBuf) {
+        (DIRECTORY.to_string(), self.root.clone())
+    }
+
     pub fn program(&self) -> Program {
         Program::new(executable_name())
             .with_env(DIRECTORY, &self.root)

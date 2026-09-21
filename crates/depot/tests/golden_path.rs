@@ -530,6 +530,30 @@ fn a_settled_question_reaches_a_dead_session_through_a_fresh_turn() {
 }
 
 #[test]
+fn the_checklist_names_no_missing_daemon_however_long_the_test_runs() {
+    let golden = Golden::new(Validation::Passing);
+    golden.propose();
+    golden
+        .daemon()
+        .tick()
+        .expect("the daemon launches the worker");
+
+    let later = depot_core::Timestamp::from_millis(4_102_444_800_000);
+    let rendered = depotd::render_status_at(
+        &golden.home,
+        &depotd::StatusSelection::Project(SLUG.to_string()),
+        false,
+        later,
+    )
+    .expect("the status renders");
+
+    assert!(
+        !rendered.contains("no daemon is driving this project"),
+        "a live daemon covers the project at any later instant: {rendered}"
+    );
+}
+
+#[test]
 fn a_worker_resumes_only_once_every_open_question_is_answered() {
     let golden = Golden::new(Validation::Passing);
     let daemon = golden.daemon();

@@ -79,6 +79,7 @@ fn task(id: &str, state: TaskState) -> Task {
 
 fn attempt(profile: &str) -> Attempt {
     Attempt {
+        last_seen_at: None,
         session: None,
         profile: ProfileId::from(profile),
         worktree: None,
@@ -91,6 +92,7 @@ fn attempt(profile: &str) -> Attempt {
 
 fn spent(profile: &str) -> Attempt {
     Attempt {
+        last_seen_at: None,
         outcome: AttemptOutcome::Failed,
         finished_at: Some(at(0)),
         ..attempt(profile)
@@ -110,6 +112,7 @@ fn running_with_session(id: &str, session_id: &str, lease_id: &str) -> Task {
     with_attempt(
         task(id, TaskState::Running),
         Attempt {
+            last_seen_at: None,
             session: Some(session(session_id)),
             worktree: Some(lease(lease_id)),
             ..attempt(BUILD)
@@ -121,6 +124,7 @@ fn running_with_lease(id: &str, lease_id: &str) -> Task {
     with_attempt(
         task(id, TaskState::Running),
         Attempt {
+            last_seen_at: None,
             worktree: Some(lease(lease_id)),
             ..attempt(BUILD)
         },
@@ -495,6 +499,7 @@ fn rule_04_a_stale_dependency_blocks_publication_until_revalidated() {
                     with_attempt(
                         task("t1", TaskState::Running),
                         Attempt {
+                            last_seen_at: None,
                             session: Some(session("s1")),
                             worktree: Some(lease("w1")),
                             ..attempt(BUILD)
@@ -534,6 +539,7 @@ fn rule_04_a_stale_dependency_blocks_publication_until_revalidated() {
                     with_attempt(
                         validated("t1", "cb"),
                         Attempt {
+                            last_seen_at: None,
                             outcome: AttemptOutcome::Submitted,
                             worktree: Some(lease("w1")),
                             ..attempt(BUILD)
@@ -592,6 +598,7 @@ fn rule_04_a_stale_dependency_blocks_publication_until_revalidated() {
                     with_attempt(
                         validated("t1", "cb"),
                         Attempt {
+                            last_seen_at: None,
                             outcome: AttemptOutcome::Submitted,
                             worktree: Some(lease("w1")),
                             ..attempt(BUILD)
@@ -1040,6 +1047,7 @@ fn rule_09_a_failed_validation_opens_no_pull_request() {
             state(vec![with_attempt(
                 validating("t1"),
                 Attempt {
+                    last_seen_at: None,
                     outcome: AttemptOutcome::Submitted,
                     worktree: Some(lease("w1")),
                     ..attempt(BUILD)
@@ -1137,7 +1145,13 @@ fn rule_10_restart_reconciliation_prefers_unknown_over_a_guess() {
             ],
         )
         .when("t1", TaskState::Running, vec![Action::RenderChecklist])
-        .checking(|state| holds(state, "t1", AttemptOutcome::InFlight)),
+        .checking(|state| {
+            holds(state, "t1", AttemptOutcome::InFlight)
+                && subject(state, "t1")
+                    .attempts
+                    .last()
+                    .is_some_and(|attempt| attempt.last_seen_at == Some(at(6_000)))
+        }),
         case(
             "a session gone while the task waits on a question stays paused",
             state(vec![with_question(
@@ -1199,6 +1213,7 @@ fn rule_11_a_landed_task_releases_its_worktree_and_renders() {
             state(vec![with_attempt(
                 pr_open("t1", "merge-commit", 42),
                 Attempt {
+                    last_seen_at: None,
                     outcome: AttemptOutcome::Submitted,
                     worktree: Some(lease("w1")),
                     ..attempt(BUILD)
@@ -1441,6 +1456,7 @@ fn late_validation_cannot_revive_a_duration_failed_task() {
             state(vec![with_attempt(
                 validating("t1"),
                 Attempt {
+                    last_seen_at: None,
                     outcome: AttemptOutcome::Submitted,
                     worktree: Some(lease("w1")),
                     ..attempt(BUILD)
@@ -1467,6 +1483,7 @@ fn worktree_acquired_rework_respects_state_and_cap() {
         with_attempt(
             validated("t1", "cb"),
             Attempt {
+                last_seen_at: None,
                 outcome: AttemptOutcome::Submitted,
                 worktree: Some(lease("w1")),
                 profile: profile(BUILD),
@@ -1506,6 +1523,7 @@ fn worktree_acquired_rework_respects_state_and_cap() {
             state(vec![with_attempt(
                 task("t1", TaskState::Failed),
                 Attempt {
+                    last_seen_at: None,
                     outcome: AttemptOutcome::Failed,
                     finished_at: Some(at(0)),
                     ..attempt(BUILD)
@@ -1528,6 +1546,7 @@ fn worktree_acquired_rework_respects_state_and_cap() {
             state(vec![with_attempt(
                 task("t1", TaskState::Cancelled),
                 Attempt {
+                    last_seen_at: None,
                     outcome: AttemptOutcome::Stopped,
                     finished_at: Some(at(0)),
                     ..attempt(BUILD)
@@ -1594,6 +1613,7 @@ fn merge_is_blocked_while_dependency_pins_are_stale() {
                     with_attempt(
                         pr_open("t1", "merge-commit", 7),
                         Attempt {
+                            last_seen_at: None,
                             outcome: AttemptOutcome::Submitted,
                             worktree: Some(lease("w1")),
                             ..attempt(BUILD)
@@ -1637,6 +1657,7 @@ fn rejected_rework_does_not_repin_a_validated_task() {
                         with_attempt(
                             validated("t1", "cb"),
                             Attempt {
+                                last_seen_at: None,
                                 outcome: AttemptOutcome::Submitted,
                                 worktree: Some(lease("w1")),
                                 finished_at: Some(at(0)),
@@ -1681,6 +1702,7 @@ fn rejected_rework_does_not_repin_a_validated_task() {
                             with_attempt(
                                 validated("t1", "cb"),
                                 Attempt {
+                                    last_seen_at: None,
                                     outcome: AttemptOutcome::Submitted,
                                     worktree: Some(lease("w1")),
                                     finished_at: Some(at(0)),
@@ -1731,6 +1753,7 @@ fn rejected_rework_does_not_repin_a_validated_task() {
                             with_attempt(
                                 validated("t1", "cb"),
                                 Attempt {
+                                    last_seen_at: None,
                                     outcome: AttemptOutcome::Submitted,
                                     worktree: Some(lease("w1")),
                                     finished_at: Some(at(0)),
@@ -1801,6 +1824,7 @@ fn unaccepted_worktree_acquired_releases_the_fact_lease() {
                             with_attempt(
                                 validated("t1", "cb"),
                                 Attempt {
+                                    last_seen_at: None,
                                     outcome: AttemptOutcome::Submitted,
                                     worktree: Some(lease("w1")),
                                     finished_at: Some(at(0)),
@@ -1848,6 +1872,7 @@ fn unaccepted_worktree_acquired_releases_the_fact_lease() {
                             with_attempt(
                                 validated("t1", "cb"),
                                 Attempt {
+                                    last_seen_at: None,
                                     outcome: AttemptOutcome::Submitted,
                                     worktree: Some(lease("w1")),
                                     finished_at: Some(at(0)),
@@ -1893,6 +1918,7 @@ fn unaccepted_worktree_acquired_releases_the_fact_lease() {
                     with_attempt(
                         validated("t1", "cb"),
                         Attempt {
+                            last_seen_at: None,
                             outcome: AttemptOutcome::Submitted,
                             worktree: Some(lease("w1")),
                             finished_at: Some(at(0)),
@@ -1982,6 +2008,7 @@ fn rate_limit_retry_releases_the_worktree_but_exhaustion_keeps_it() {
             state(vec![{
                 let mut task = with_attempts(task("t1", TaskState::Running), 2);
                 task.attempts.push(Attempt {
+                    last_seen_at: None,
                     session: Some(session("s1")),
                     worktree: Some(lease("w1")),
                     ..attempt(BUILD)
@@ -2037,6 +2064,7 @@ fn stale_pr_open_can_rework_revalidate_and_land() {
                     with_attempt(
                         pr_open("t1", "merge-commit", 7),
                         Attempt {
+                            last_seen_at: None,
                             outcome: AttemptOutcome::Submitted,
                             worktree: Some(lease("w1")),
                             finished_at: Some(at(0)),
@@ -2111,6 +2139,7 @@ fn rate_limit_ignores_tasks_that_are_not_in_flight() {
             state(vec![with_attempt(
                 validated("t1", "c1"),
                 Attempt {
+                    last_seen_at: None,
                     outcome: AttemptOutcome::Submitted,
                     worktree: Some(lease("w1")),
                     finished_at: Some(at(0)),
@@ -2139,6 +2168,7 @@ fn rate_limit_ignores_tasks_that_are_not_in_flight() {
             state(vec![with_attempt(
                 task("t1", TaskState::Failed),
                 Attempt {
+                    last_seen_at: None,
                     outcome: AttemptOutcome::Failed,
                     worktree: Some(lease("w1")),
                     finished_at: Some(at(0)),
@@ -2168,6 +2198,7 @@ fn rework_releases_the_prior_attempt_lease() {
                     with_attempt(
                         validated("t1", "cb"),
                         Attempt {
+                            last_seen_at: None,
                             outcome: AttemptOutcome::Submitted,
                             worktree: Some(lease("w1")),
                             finished_at: Some(at(0)),
@@ -2221,6 +2252,7 @@ fn landing_clears_the_attempt_lease_and_is_idempotent() {
             state(vec![with_attempt(
                 pr_open("t1", "merge-commit", 42),
                 Attempt {
+                    last_seen_at: None,
                     outcome: AttemptOutcome::Submitted,
                     worktree: Some(lease("w1")),
                     finished_at: Some(at(0)),
@@ -2249,6 +2281,7 @@ fn rework_reuses_the_same_lease_without_releasing_it() {
                     with_attempt(
                         validated("t1", "cb"),
                         Attempt {
+                            last_seen_at: None,
                             outcome: AttemptOutcome::Submitted,
                             worktree: Some(lease("w1")),
                             finished_at: Some(at(0)),
@@ -2330,6 +2363,7 @@ fn relayed_questions_do_not_leave_validating_or_terminal_states() {
             state(vec![with_attempt(
                 task("t1", TaskState::Validating),
                 Attempt {
+                    last_seen_at: None,
                     outcome: AttemptOutcome::Submitted,
                     worktree: Some(lease("w1")),
                     finished_at: Some(at(0)),
@@ -2560,6 +2594,7 @@ fn a_merge_with_no_validated_revision_to_match_is_held_rather_than_landed() {
             state(vec![with_attempt(
                 with_pull_request(task("t1", TaskState::PrOpen), 42, Checks::Passing),
                 Attempt {
+                    last_seen_at: None,
                     outcome: AttemptOutcome::Submitted,
                     worktree: Some(lease("w1")),
                     finished_at: Some(at(0)),
@@ -2601,6 +2636,7 @@ fn a_merge_of_an_unvalidated_revision_is_held_rather_than_landed() {
             state(vec![with_attempt(
                 task,
                 Attempt {
+                    last_seen_at: None,
                     outcome: AttemptOutcome::Submitted,
                     worktree: Some(lease("w1")),
                     finished_at: Some(at(0)),
@@ -2638,6 +2674,7 @@ fn merge_only_lands_from_pr_open() {
             state(vec![with_attempt(
                 validated("t1", "c1"),
                 Attempt {
+                    last_seen_at: None,
                     outcome: AttemptOutcome::Submitted,
                     worktree: Some(lease("w1")),
                     finished_at: Some(at(0)),
@@ -2666,6 +2703,7 @@ fn revalidation_with_an_existing_pr_only_pushes() {
                 with_attempt(
                     task("t1", TaskState::Validating),
                     Attempt {
+                        last_seen_at: None,
                         outcome: AttemptOutcome::Submitted,
                         worktree: Some(lease("w2")),
                         finished_at: Some(at(0)),
@@ -2778,6 +2816,7 @@ fn liveness_gone_does_not_demote_landed_tasks() {
             state(vec![with_attempt(
                 task("t1", TaskState::Landed),
                 Attempt {
+                    last_seen_at: None,
                     outcome: AttemptOutcome::InFlight,
                     session: Some(session("s1")),
                     finished_at: None,
@@ -2805,6 +2844,7 @@ fn pull_request_opened_from_validated_closes_a_live_attempt() {
             state(vec![with_attempt(
                 validated("t1", "c1"),
                 Attempt {
+                    last_seen_at: None,
                     outcome: AttemptOutcome::InFlight,
                     session: Some(session("s1")),
                     worktree: Some(lease("w1")),
@@ -2846,6 +2886,7 @@ fn pull_request_closed_unmerged_stops_a_live_session() {
                 with_attempt(
                     task("t1", TaskState::PrOpen),
                     Attempt {
+                        last_seen_at: None,
                         outcome: AttemptOutcome::InFlight,
                         session: Some(session("s1")),
                         worktree: Some(lease("w1")),
@@ -3054,6 +3095,7 @@ fn merge_closes_an_open_attempt_before_landing() {
             state(vec![with_attempt(
                 pr_open("t1", "merge-commit", 42),
                 Attempt {
+                    last_seen_at: None,
                     outcome: AttemptOutcome::InFlight,
                     session: Some(session("s1")),
                     worktree: Some(lease("w1")),
@@ -3091,6 +3133,7 @@ fn pull_request_opened_during_validation_only_attaches_the_link() {
             state(vec![with_attempt(
                 task("t1", TaskState::Validating),
                 Attempt {
+                    last_seen_at: None,
                     outcome: AttemptOutcome::Submitted,
                     worktree: Some(lease("w1")),
                     finished_at: Some(at(0)),
@@ -3577,6 +3620,7 @@ fn rule_17_a_conflicting_pull_request_is_rebased_serially_when_auto_merge_is_on(
         with_attempt(
             pr_open("t1", "c1", 42),
             Attempt {
+                last_seen_at: None,
                 outcome: AttemptOutcome::Submitted,
                 worktree: Some(lease("w1")),
                 ..attempt(BUILD)
@@ -3623,6 +3667,7 @@ fn rule_17_a_conflicting_pull_request_is_rebased_serially_when_auto_merge_is_on(
 
     let mut sibling = pr_open("t2", "c9", 43);
     sibling.attempts.push(Attempt {
+        last_seen_at: None,
         session: None,
         profile: profile(FIX),
         worktree: Some(lease("w2")),
@@ -3691,6 +3736,7 @@ fn open_with_submitted_attempt() -> Task {
     with_attempt(
         pr_open("t1", "c1", 42),
         Attempt {
+            last_seen_at: None,
             outcome: AttemptOutcome::Submitted,
             worktree: Some(lease("w1")),
             ..attempt(BUILD)
@@ -3713,6 +3759,7 @@ fn rule_18_a_retry_sends_a_failed_or_cancelled_task_back_through_the_queue() {
                     task
                 },
                 Attempt {
+                    last_seen_at: None,
                     outcome: AttemptOutcome::Failed,
                     worktree: Some(lease("w1")),
                     ..spent(BUILD)

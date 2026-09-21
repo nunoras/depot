@@ -144,6 +144,7 @@ pub fn full_task(project: &ProjectId, id: &str) -> Task {
         base_dependency: Some(TaskId::new("root")),
         attempts: vec![
             Attempt {
+                last_seen_at: None,
                 session: Some(SessionId::new("session-1")),
                 profile: ProfileId::new("glm-5.3"),
                 worktree: Some(WorktreeLease::new("lease-1")),
@@ -153,6 +154,7 @@ pub fn full_task(project: &ProjectId, id: &str) -> Task {
                 rebase: false,
             },
             Attempt {
+                last_seen_at: None,
                 session: None,
                 profile: ProfileId::new("gpt-5.5"),
                 worktree: Some(WorktreeLease::new("lease-2")),

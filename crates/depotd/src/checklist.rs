@@ -1,11 +1,12 @@
 use std::collections::BTreeMap;
 
 use depot_core::{
-    AttemptOutcome, Checks, ProjectState, Question, Task, TaskState, Timestamp,
-    dependency_satisfied,
+    Checks, ProjectState, Question, Task, TaskState, Timestamp, dependency_satisfied,
 };
 
 use crate::vocabulary::{checks_name, role_name};
+
+const UNOBSERVED_AFTER_MILLIS: u64 = 5 * 60 * 1000;
 
 const SECTIONS: [(TaskState, &str, bool); 10] = [
     (
@@ -40,6 +41,24 @@ fn render_project(state: &ProjectState, history: bool, observed_at: Option<Times
         one_line(state.project.as_str())
     ));
     out.push_str("Rendered from depot records. Hand edits are overwritten.\n");
+
+    if let Some(now) = observed_at {
+        let unobserved = unobserved_tasks(state, now);
+        if !unobserved.is_empty() {
+            out.push_str(&format!(
+                "\n## Needs you - unobserved sessions ({})\n\n",
+                unobserved.len()
+            ));
+            for (task, session, age) in &unobserved {
+                out.push_str(&format!(
+                    "- `{}` **{}** - session `{}` unobserved for {age}; check whether the worker is stuck\n",
+                    task.id,
+                    one_line(&task.title),
+                    session
+                ));
+            }
+        }
+    }
 
     if state.tasks.is_empty() {
         out.push_str("\nNo tasks yet.\n");
@@ -196,19 +215,47 @@ fn attempt_line(task: &Task, now: Timestamp) -> Option<String> {
         return None;
     }
     let age = format_age(now.millis().saturating_sub(attempt.started_at.millis()));
-    let liveness = match (&attempt.session, attempt.outcome) {
-        (Some(session), AttemptOutcome::InFlight) => format!("session `{session}` alive"),
-        (Some(session), AttemptOutcome::Unknown) => {
-            format!("session `{session}` not yet seen alive")
+    let Some(session) = attempt.session.as_ref() else {
+        return Some(format!(
+            "  - attempt: stalled - in_flight {age}, no worker session\n"
+        ));
+    };
+    let liveness = match attempt.last_seen_at {
+        Some(seen) => {
+            let seen_age = now.millis().saturating_sub(seen.millis());
+            if seen_age > UNOBSERVED_AFTER_MILLIS {
+                format!(
+                    "session `{session}` unobserved for {}",
+                    format_age(seen_age)
+                )
+            } else {
+                format!("session `{session}` last seen {}", format_age(seen_age))
+            }
         }
-        (None, _) => {
-            return Some(format!(
-                "  - attempt: stalled - in_flight {age}, no worker session\n"
-            ));
-        }
-        (Some(_), _) => return None,
+        None => format!("session `{session}` not yet seen alive"),
     };
     Some(format!("  - attempt: in_flight {age}, {liveness}\n"))
+}
+
+fn unobserved_tasks(state: &ProjectState, now: Timestamp) -> Vec<(&Task, String, String)> {
+    state
+        .tasks
+        .values()
+        .filter(|task| task.state == TaskState::Running)
+        .filter_map(|task| {
+            let attempt = task.attempts.last()?;
+            if !attempt.outcome.is_open() {
+                return None;
+            }
+            let session = attempt.session.as_ref()?;
+            let seen = attempt.last_seen_at?;
+            let seen_age = now.millis().saturating_sub(seen.millis());
+            if seen_age <= UNOBSERVED_AFTER_MILLIS {
+                return None;
+            }
+            Some((task, session.to_string(), format_age(seen_age)))
+        })
+        .collect()
 }
 
 fn format_age(millis: u64) -> String {

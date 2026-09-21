@@ -257,6 +257,8 @@ pub struct Task {
     pub acknowledged_at: Option<Timestamp>,
     pub rework_of: Option<TaskId>,
     pub hold_pr: bool,
+    pub release_pending: Option<WorktreeLease>,
+    pub release_held: Option<String>,
     pub retry: Option<Retry>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,

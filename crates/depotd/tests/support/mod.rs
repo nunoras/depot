@@ -119,6 +119,8 @@ pub fn simple_task(project: &ProjectId, id: &str, state: TaskState, created_at: 
         redirect_delivered: false,
         acknowledged_at: None,
         hold_pr: false,
+        release_pending: None,
+        release_held: None,
         rework_of: None,
         retry: None,
         created_at: Timestamp::from_millis(created_at),
@@ -224,6 +226,8 @@ pub fn full_task(project: &ProjectId, id: &str) -> Task {
         redirect_delivered: false,
         acknowledged_at: None,
         hold_pr: false,
+        release_pending: None,
+        release_held: None,
         rework_of: None,
         retry: Some(Retry {
             profile: ProfileId::new("sonnet"),

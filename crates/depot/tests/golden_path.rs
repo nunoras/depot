@@ -29,6 +29,8 @@ const OPENED: &str = "pull_request_opened";
 const CHECKS: &str = "pull_request_checks_changed";
 const MERGED: &str = "pull_request_merged";
 const CLOSED_UNMERGED: &str = "pull_request_closed_unmerged";
+const RELEASED: &str = "worktree_released";
+const RELEASE_HELD: &str = "worktree_release_held";
 const MERGE_REFUSED: &str = "pull_request_merge_refused";
 const PUSH_FAILED: &str = "push_failed";
 const REBASE_SCHEDULED: &str = "rebase_scheduled";
@@ -251,6 +253,7 @@ fn the_whole_journey_runs_from_proposal_to_a_released_worktree() {
             OPENED,
             CHECKS,
             MERGED,
+            RELEASED,
         ]
     );
     assert!(golden.history(TASK).contains(&LIVENESS.to_string()));
@@ -1498,7 +1501,7 @@ fn a_project_that_opts_in_merges_the_validated_pull_request_itself() {
 }
 
 #[test]
-fn a_pull_request_closed_unmerged_is_left_for_review() {
+fn a_pull_request_closed_unmerged_holds_the_task_and_returns_the_worktree() {
     let golden = Golden::new(Validation::Passing);
     let daemon = golden.daemon();
     golden.propose();
@@ -1527,9 +1530,10 @@ fn a_pull_request_closed_unmerged_is_left_for_review() {
         golden.history(TASK).contains(&CLOSED_UNMERGED.to_string()),
         "the close is recorded"
     );
-    assert!(
-        calls_to(&golden.treehouse.calls(), "return").is_empty(),
-        "review keeps the worktree"
+    assert_eq!(
+        calls_to(&golden.treehouse.calls(), "return").len(),
+        1,
+        "a closed pull request returns the worktree the branch no longer needs"
     );
 
     let history = golden.status_history();
@@ -1538,6 +1542,168 @@ fn a_pull_request_closed_unmerged_is_left_for_review() {
     assert!(!default.contains("## Cancelled"), "{default}");
     assert!(default.contains("1 cancelled"), "{default}");
     assert_eq!(default, golden.checklist());
+}
+
+#[test]
+fn stopping_a_running_task_returns_its_worktree_once() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    assert_eq!(golden.task().state, TaskState::Running);
+
+    golden.depot_ok(&["task", "stop", TASK, "--project", SLUG]);
+    let stopped = golden.task();
+    assert_eq!(stopped.state, TaskState::Cancelled);
+    assert_eq!(stopped.release_pending, Some(WorktreeLease::new(LEASE)));
+    assert!(
+        calls_to(&golden.treehouse.calls(), "return").is_empty(),
+        "the CLI writes the fact and executes no action"
+    );
+
+    daemon
+        .tick()
+        .expect("the daemon reconciles the owed release");
+
+    assert_eq!(
+        calls_to(&golden.treehouse.calls(), "return").len(),
+        1,
+        "stopping the task returns its worktree once"
+    );
+    assert_eq!(golden.task().release_pending, None);
+
+    daemon.tick().expect("a second tick returns nothing more");
+    assert_eq!(
+        calls_to(&golden.treehouse.calls(), "return").len(),
+        1,
+        "the lease is never returned twice"
+    );
+}
+
+#[test]
+fn acknowledging_a_failed_task_returns_its_worktree_once() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+
+    golden.boxr.respond(
+        "status",
+        &format!("session: {SESSION}\nstate: failed\nerror: \"the harness crashed\"\n"),
+        "",
+        0,
+    );
+    daemon.tick().expect("the failure is recorded");
+
+    let failed = golden.task();
+    assert_eq!(failed.state, TaskState::Failed);
+    assert_eq!(failed.release_pending, None);
+    assert!(
+        calls_to(&golden.treehouse.calls(), "return").is_empty(),
+        "a failed task keeps its lease until it is acknowledged or retried"
+    );
+
+    assert_eq!(
+        golden.depot_ok(&["task", "acknowledge", TASK, "--project", SLUG]),
+        format!("acknowledged {TASK}\n")
+    );
+    daemon
+        .tick()
+        .expect("the daemon reconciles the owed release");
+
+    assert_eq!(
+        calls_to(&golden.treehouse.calls(), "return").len(),
+        1,
+        "acknowledging the failure returns its worktree once"
+    );
+    assert_eq!(golden.task().release_pending, None);
+
+    daemon.tick().expect("a second tick returns nothing more");
+    assert_eq!(
+        calls_to(&golden.treehouse.calls(), "return").len(),
+        1,
+        "the lease is never returned twice"
+    );
+}
+
+#[test]
+fn the_startup_sweep_returns_a_lease_a_terminal_task_left_behind() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+
+    golden.depot_ok(&["task", "stop", TASK, "--project", SLUG]);
+    assert_eq!(golden.task().state, TaskState::Cancelled);
+    assert_eq!(
+        golden.task().release_pending,
+        Some(WorktreeLease::new(LEASE))
+    );
+    assert!(
+        calls_to(&golden.treehouse.calls(), "return").is_empty(),
+        "the stop is written while no daemon acts on it"
+    );
+
+    golden
+        .daemon()
+        .recover()
+        .expect("the startup sweep returns the lease");
+
+    assert_eq!(
+        calls_to(&golden.treehouse.calls(), "return").len(),
+        1,
+        "the sweep returns the lease the terminal task left behind"
+    );
+    assert_eq!(golden.task().release_pending, None);
+}
+
+#[test]
+fn a_lease_holding_unlanded_work_is_held_and_named_in_the_checklist() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    std::fs::write(golden.lease.join("unfinished.txt"), "half a change\n")
+        .expect("the lease holds uncommitted work");
+
+    golden.depot_ok(&["task", "stop", TASK, "--project", SLUG]);
+    daemon
+        .tick()
+        .expect("the held release does not crash the tick");
+
+    assert!(
+        calls_to(&golden.treehouse.calls(), "return").is_empty(),
+        "a lease holding work is never returned"
+    );
+    let held = golden.task();
+    assert_eq!(held.state, TaskState::Cancelled);
+    assert_eq!(held.release_pending, Some(WorktreeLease::new(LEASE)));
+    assert!(
+        held.release_held
+            .as_deref()
+            .is_some_and(|reason| reason.contains("uncommitted")),
+        "the hold names the reason: {:?}",
+        held.release_held
+    );
+
+    let history = golden.status_history();
+    assert!(
+        history.contains("worktree lease held, not returned"),
+        "{history}"
+    );
+    let inbox = golden.depot_ok(&["inbox", "--project", SLUG]);
+    assert!(inbox.contains("is held, not returned"), "{inbox}");
+
+    daemon.tick().expect("a second tick repeats no held fact");
+    assert_eq!(
+        golden
+            .history(TASK)
+            .into_iter()
+            .filter(|kind| kind == RELEASE_HELD)
+            .count(),
+        1,
+        "an unchanged hold is recorded once"
+    );
 }
 
 #[test]

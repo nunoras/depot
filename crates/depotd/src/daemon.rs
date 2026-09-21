@@ -18,7 +18,7 @@ use crate::adapters::forge::{
 };
 use crate::adapters::profiles::ProfileResolver;
 use crate::adapters::sessions::{LaunchRequest, SessionProfile, Sessions};
-use crate::adapters::worktrees::{AcquireRequest, Lease, Worktrees};
+use crate::adapters::worktrees::{AcquireRequest, Lease, WorktreeError, Worktrees};
 use crate::clock::now;
 use crate::describe::{self, Describer};
 use crate::error::{Error, Result};
@@ -797,6 +797,7 @@ where
         self.reconcile_resume()?;
         self.reconcile_budget()?;
         self.reconcile_sessions()?;
+        self.reconcile_leases()?;
         self.reconcile_notify()
     }
 
@@ -822,6 +823,7 @@ where
         self.reconcile_delivery()?;
         self.reconcile_evidence()?;
         self.reconcile_forge()?;
+        self.reconcile_leases()?;
         self.reconcile_notify()?;
         Ok(self.budget.get())
     }
@@ -1504,25 +1506,87 @@ where
         })
     }
 
-    fn release(&self, _task: TaskId, lease: WorktreeLease) -> Result<()> {
+    fn release(&self, task: TaskId, lease: WorktreeLease) -> Result<()> {
         let repo = self.repository()?;
-        let lease = self
+        let entry = self
             .worktrees
             .pool(&repo)
             .map_err(|error| Error::Project(error.to_string()))?
             .into_iter()
-            .find(|entry| entry.lease.as_ref() == Some(&lease))
-            .ok_or_else(|| {
-                Error::Project("the worktree lease is no longer present in the pool".to_string())
-            })?;
-        self.worktrees
-            .release(&Lease {
-                lease: lease.lease.expect("matched lease"),
-                path: lease.path,
-                holder: lease.holder.unwrap_or_default(),
-                acquired_at: String::new(),
-            })
-            .map_err(|error| Error::Project(error.to_string()))
+            .find(|entry| entry.lease.as_ref() == Some(&lease));
+        let Some(entry) = entry else {
+            return self.record_release(&task, &lease);
+        };
+        match self.worktrees.release(&Lease {
+            lease: entry.lease.expect("matched lease"),
+            path: entry.path,
+            holder: entry.holder.unwrap_or_default(),
+            acquired_at: String::new(),
+        }) {
+            Ok(()) => self.record_release(&task, &lease),
+            Err(WorktreeError::UnlandedWork { reason, .. }) => {
+                self.record_release_held(&task, &lease, &reason)
+            }
+            Err(error) => Err(Error::Project(error.to_string())),
+        }
+    }
+
+    fn record_release(&self, task: &TaskId, lease: &WorktreeLease) -> Result<()> {
+        let attempt = self.task(task)?.attempts.len();
+        self.record(
+            &event_key(&[
+                "worktree_released",
+                task.as_str(),
+                &attempt.to_string(),
+                lease.as_str(),
+            ]),
+            Fact {
+                at: now(),
+                kind: FactKind::WorktreeReleased {
+                    task: task.clone(),
+                    lease: lease.clone(),
+                },
+            },
+        )
+    }
+
+    fn record_release_held(
+        &self,
+        task: &TaskId,
+        lease: &WorktreeLease,
+        reason: &str,
+    ) -> Result<()> {
+        if self.task(task)?.release_held.as_deref() == Some(reason) {
+            return Ok(());
+        }
+        let attempt = self.task(task)?.attempts.len();
+        self.record(
+            &event_key(&[
+                "worktree_release_held",
+                task.as_str(),
+                &attempt.to_string(),
+                lease.as_str(),
+                reason,
+            ]),
+            Fact {
+                at: now(),
+                kind: FactKind::WorktreeReleaseHeld {
+                    task: task.clone(),
+                    lease: lease.clone(),
+                    reason: reason.to_owned(),
+                },
+            },
+        )
+    }
+
+    fn reconcile_leases(&self) -> Result<()> {
+        for task in self.store.tasks(&self.project.id)?.into_values() {
+            let Some(lease) = task.release_pending.clone() else {
+                continue;
+            };
+            self.release(task.id.clone(), lease)?;
+        }
+        Ok(())
     }
 
     fn reconcile_notify(&self) -> Result<()> {
@@ -2637,6 +2701,8 @@ mod tests {
             redirect_delivered: false,
             acknowledged_at: None,
             hold_pr: false,
+            release_pending: None,
+            release_held: None,
             rework_of: None,
             retry: None,
             created_at: depot_core::Timestamp::from_millis(0),

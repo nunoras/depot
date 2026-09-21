@@ -130,6 +130,8 @@ fn stored(cli: &Cli, id: &str, state: TaskState, question: Option<&str>) {
         redirect_delivered: false,
         acknowledged_at: None,
         hold_pr: false,
+        release_pending: None,
+        release_held: None,
         rework_of: None,
         retry: None,
         created_at: Timestamp::from_millis(1),

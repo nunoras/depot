@@ -832,6 +832,8 @@ pub fn validated_task(
         acknowledged_at: None,
         rework_of: None,
         hold_pr: false,
+        release_pending: None,
+        release_held: None,
         retry: None,
         created_at: depot_core::Timestamp::from_millis(0),
         updated_at: depot_core::Timestamp::from_millis(1),
@@ -861,7 +863,7 @@ pub fn settings() -> Settings {
 pub fn settings_with_on_event(on_event: Option<OnEventSettings>) -> Settings {
     Settings {
         on_event,
-        poll_interval_seconds: 1,
+        poll_interval_seconds: 30,
         profiles: BTreeMap::from([(
             PROFILE.to_string(),
             ProfileSettings {

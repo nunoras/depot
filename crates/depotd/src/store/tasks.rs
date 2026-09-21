@@ -96,7 +96,7 @@ impl Store {
 }
 
 const TASK_COLUMNS: &str = "project_id, id, title, intent, role, state, base_dependency, \
-     branch_head, retry_profile, retry_not_before, submission_summary, merge_refused, failure, redirect_text, redirect_delivered, created_at, updated_at, dispatch_profile, acknowledged_at, hold_pr, rework_of";
+     branch_head, retry_profile, retry_not_before, submission_summary, merge_refused, failure, redirect_text, redirect_delivered, created_at, updated_at, dispatch_profile, acknowledged_at, hold_pr, rework_of, release_pending, release_held";
 
 struct RawTask {
     project_id: String,
@@ -118,6 +118,8 @@ struct RawTask {
     acknowledged_at: Option<i64>,
     hold_pr: bool,
     rework_of: Option<String>,
+    release_pending: Option<String>,
+    release_held: Option<String>,
     created_at: i64,
     updated_at: i64,
 }
@@ -144,6 +146,8 @@ impl RawTask {
             acknowledged_at: row.get("acknowledged_at")?,
             hold_pr: row.get("hold_pr")?,
             rework_of: row.get("rework_of")?,
+            release_pending: row.get("release_pending")?,
+            release_held: row.get("release_held")?,
             created_at: row.get("created_at")?,
             updated_at: row.get("updated_at")?,
         })
@@ -205,6 +209,8 @@ impl RawTask {
                 .map(Timestamp::from_millis),
             rework_of: self.rework_of.map(TaskId::new),
             hold_pr: self.hold_pr,
+            release_pending: self.release_pending.map(WorktreeLease::new),
+            release_held: self.release_held,
             retry,
             created_at: millis(self.created_at)?,
             updated_at: millis(self.updated_at)?,
@@ -459,8 +465,8 @@ pub(super) fn write_task(transaction: &Transaction<'_>, task: &Task) -> Result<(
     transaction.execute(
         "INSERT INTO tasks (
                 project_id, id, title, intent, role, state, base_dependency, branch_head,
-                retry_profile, retry_not_before, submission_summary, merge_refused, failure, redirect_text, redirect_delivered, created_at, updated_at, dispatch_profile, acknowledged_at, hold_pr, rework_of
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
+                retry_profile, retry_not_before, submission_summary, merge_refused, failure, redirect_text, redirect_delivered, created_at, updated_at, dispatch_profile, acknowledged_at, hold_pr, rework_of, release_pending, release_held
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
         params![
             task.project.as_str(),
             task.id.as_str(),
@@ -487,6 +493,8 @@ pub(super) fn write_task(transaction: &Transaction<'_>, task: &Task) -> Result<(
             task.acknowledged_at.map(|value| value.millis() as i64),
             task.hold_pr,
             task.rework_of.as_ref().map(TaskId::as_str),
+            task.release_pending.as_ref().map(WorktreeLease::as_str),
+            task.release_held.as_deref(),
         ],
     )?;
 
@@ -677,6 +685,8 @@ mod tests {
             acknowledged_at: None,
             rework_of: None,
             hold_pr: false,
+            release_pending: None,
+            release_held: None,
             retry: None,
             created_at: Timestamp::from_millis(1),
             updated_at: Timestamp::from_millis(1),

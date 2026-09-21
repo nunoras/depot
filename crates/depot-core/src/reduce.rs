@@ -57,6 +57,8 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                         acknowledged_at: None,
                         rework_of: None,
                         hold_pr: *hold_pr,
+                        release_pending: None,
+                        release_held: None,
                         retry: None,
                         created_at: fact.at,
                         updated_at: fact.at,
@@ -126,7 +128,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                         task: task.id.clone(),
                     });
                 }
-                if let Some(lease) = take_last_worktree(task) {
+                if let Some(lease) = owe_release(task) {
                     actions.push(Action::ReleaseWorktree {
                         task: task.id.clone(),
                         lease,
@@ -203,6 +205,8 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                         acknowledged_at: None,
                         rework_of: Some(task.clone()),
                         hold_pr: false,
+                        release_pending: None,
+                        release_held: None,
                         retry: None,
                         created_at: fact.at,
                         updated_at: fact.at,
@@ -765,7 +769,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                     });
                 }
                 let fix_id = task.id.clone();
-                if let Some(lease) = take_last_worktree(task) {
+                if let Some(lease) = owe_release(task) {
                     actions.push(Action::ReleaseWorktree {
                         task: task.id.clone(),
                         lease,
@@ -792,6 +796,12 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                     });
                 }
                 let fix_id = task.id.clone();
+                if let Some(lease) = owe_release(task) {
+                    actions.push(Action::ReleaseWorktree {
+                        task: task.id.clone(),
+                        lease,
+                    });
+                }
                 actions.push(Action::HoldForUser {
                     task: task.id.clone(),
                 });
@@ -805,6 +815,38 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                 && task.acknowledged_at.is_none()
             {
                 task.acknowledged_at = Some(fact.at);
+                task.updated_at = fact.at;
+                changed = true;
+                if let Some(lease) = owe_release(task) {
+                    actions.push(Action::ReleaseWorktree {
+                        task: task.id.clone(),
+                        lease,
+                    });
+                }
+            }
+        }
+
+        FactKind::WorktreeReleased { task, lease } => {
+            if let Some(task) = next.tasks.get_mut(task)
+                && task.release_pending.as_ref() == Some(lease)
+            {
+                task.release_pending = None;
+                task.release_held = None;
+                task.updated_at = fact.at;
+                changed = true;
+            }
+        }
+
+        FactKind::WorktreeReleaseHeld {
+            task,
+            lease,
+            reason,
+        } => {
+            if let Some(task) = next.tasks.get_mut(task)
+                && task.release_pending.as_ref() == Some(lease)
+                && task.release_held.as_deref() != Some(reason.as_str())
+            {
+                task.release_held = Some(reason.clone());
                 task.updated_at = fact.at;
                 changed = true;
             }
@@ -891,7 +933,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                     });
                 }
                 let fix_id = task.id.clone();
-                if let Some(lease) = take_last_worktree(task) {
+                if let Some(lease) = owe_release(task) {
                     actions.push(Action::ReleaseWorktree {
                         task: task.id.clone(),
                         lease,
@@ -1184,6 +1226,15 @@ fn take_last_worktree(task: &mut Task) -> Option<WorktreeLease> {
     task.attempts
         .last_mut()
         .and_then(|attempt| attempt.worktree.take())
+}
+
+fn owe_release(task: &mut Task) -> Option<WorktreeLease> {
+    if task.release_pending.is_some() {
+        return None;
+    }
+    let lease = take_last_worktree(task)?;
+    task.release_pending = Some(lease.clone());
+    Some(lease)
 }
 
 fn start_ready_tasks(

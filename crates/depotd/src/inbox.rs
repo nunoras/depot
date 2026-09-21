@@ -142,6 +142,7 @@ fn need_for(tag: FactTag, task: Option<&Task>) -> Need {
             Some(TaskState::PrOpen) => Need::User,
             _ => Need::Nothing,
         },
+        FactTag::WorktreeReleaseHeld => Need::User,
         FactTag::RebaseScheduled
         | FactTag::TaskDispatchJudged
         | FactTag::TaskProposed
@@ -164,6 +165,7 @@ fn need_for(tag: FactTag, task: Option<&Task>) -> Need {
         | FactTag::WorkerSubmitted
         | FactTag::ValidationStarted
         | FactTag::WorktreeAcquired
+        | FactTag::WorktreeReleased
         | FactTag::BranchPushed
         | FactTag::PullRequestOpened
         | FactTag::TaskLandedOnBase
@@ -261,6 +263,18 @@ fn headline(tag: FactTag, event: &RecordedEvent, task: Option<&Task>) -> Result<
             Some(lease) => format!("worktree lease `{lease}` acquired"),
             None => "a worktree was acquired".to_string(),
         },
+        FactTag::WorktreeReleased => {
+            let lease = payload_field(&event.payload, "lease")?;
+            format!("worktree lease `{lease}` returned to the pool")
+        }
+        FactTag::WorktreeReleaseHeld => {
+            let lease = payload_field(&event.payload, "lease")?;
+            let reason = payload_field(&event.payload, "reason")?;
+            format!(
+                "worktree lease `{lease}` is held, not returned: {}",
+                one_line(&reason)
+            )
+        }
         FactTag::BranchPushed => match commit(task) {
             Some(commit) => format!("branch pushed at `{commit}`"),
             None => "the branch was pushed".to_string(),

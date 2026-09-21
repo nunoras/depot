@@ -140,6 +140,15 @@ pub enum FactKind {
         baseline: crate::action::Baseline,
         included: Vec<Dependency>,
     },
+    WorktreeReleased {
+        task: TaskId,
+        lease: WorktreeLease,
+    },
+    WorktreeReleaseHeld {
+        task: TaskId,
+        lease: WorktreeLease,
+        reason: String,
+    },
     BranchPushed {
         task: TaskId,
         commit: CommitId,

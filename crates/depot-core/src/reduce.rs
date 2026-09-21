@@ -313,7 +313,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             }
         }
 
-        FactKind::WorkerTurnUnresolved { task } => {
+        FactKind::WorkerTurnUnresolved { task, .. } => {
             let unresolved = next.tasks.get(task).is_some_and(|task| {
                 task.state.in_flight()
                     && task
@@ -1189,6 +1189,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
         }
 
         FactKind::OnEventNotified { .. } => {}
+        FactKind::WorkerTurnDeferred { .. } => {}
         FactKind::Polled => {}
     }
 

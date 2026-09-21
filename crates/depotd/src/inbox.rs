@@ -125,6 +125,7 @@ fn need_for(tag: FactTag, task: Option<&Task>) -> Need {
         | FactTag::ValidationFailed
         | FactTag::WorkerLivenessChanged
         | FactTag::WorkerSessionFailed
+        | FactTag::WorkerTurnDeferred
         | FactTag::WorkerTurnUnresolved
         | FactTag::PushFailed
         | FactTag::DeliveryFailed
@@ -224,9 +225,15 @@ fn headline(tag: FactTag, event: &RecordedEvent, task: Option<&Task>) -> Result<
         FactTag::WorkerRelaunchRequested => {
             "the worker was relaunched with the pending answer".to_string()
         }
-        FactTag::WorkerTurnUnresolved => {
-            "a worker turn could not be resolved; the worker may already be running".to_string()
-        }
+        FactTag::WorkerTurnUnresolved => match payload_field(&event.payload, "reason") {
+            Ok(reason) => format!(
+                "a worker turn could not be resolved: {}; the worker may already be running",
+                one_line(&reason)
+            ),
+            Err(_) => {
+                "a worker turn could not be resolved; the worker may already be running".to_string()
+            }
+        },
         FactTag::WorkerTurnStarted => "worker turn started".to_string(),
         FactTag::WorkerTurnEnded => "worker turn ended".to_string(),
         FactTag::WorkerRedirected => match payload_field(&event.payload, "text") {
@@ -243,6 +250,10 @@ fn headline(tag: FactTag, event: &RecordedEvent, task: Option<&Task>) -> Result<
         FactTag::WorkerSessionFailed => {
             let reason = payload_field(&event.payload, "reason")?;
             format!("the worker session failed: {}", one_line(&reason))
+        }
+        FactTag::WorkerTurnDeferred => {
+            let reason = payload_field(&event.payload, "reason")?;
+            format!("the worker turn could not proceed: {}", one_line(&reason))
         }
         FactTag::WorkerSubmissionRecorded => "recorded a submission".to_string(),
         FactTag::WorkerSubmitted => "submitted a change".to_string(),

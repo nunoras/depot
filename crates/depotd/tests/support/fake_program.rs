@@ -25,6 +25,24 @@ impl FakeProgram {
         Program::new(&self.binary).with_env(RESPONSES, &self.dir)
     }
 
+    #[allow(dead_code)]
+    pub fn directory_env(&self) -> (String, PathBuf) {
+        (RESPONSES.to_string(), self.dir.clone())
+    }
+
+    #[allow(dead_code)]
+    pub fn install_into(&self, directory: &Path) -> PathBuf {
+        fs::create_dir_all(directory).expect("the install directory is created");
+        let target = directory.join(
+            self.binary
+                .file_name()
+                .expect("the fake binary has a file name"),
+        );
+        fs::copy(&self.binary, &target).expect("the fake binary is installed");
+        make_executable(&target);
+        target
+    }
+
     pub fn respond(&self, key: &str, stdout: &str, stderr: &str, exit_code: i32) {
         fs::write(self.dir.join(format!("{key}.stdout")), stdout).expect("stdout is written");
         fs::write(self.dir.join(format!("{key}.stderr")), stderr).expect("stderr is written");

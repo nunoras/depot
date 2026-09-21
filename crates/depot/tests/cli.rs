@@ -6,11 +6,19 @@ use depot_core::{TaskId, TaskState};
 use depotd::{DepotHome, ProfileSettings, Settings, Store, add_project};
 use tempfile::TempDir;
 
+#[path = "../../depotd/tests/support/fake_program.rs"]
+#[allow(dead_code)]
+mod fake_program;
+
+use fake_program::FakeProgram;
+
 const BIN: &str = env!("CARGO_BIN_EXE_depot");
 
 struct Cli {
     temp: TempDir,
     home: PathBuf,
+    bin: PathBuf,
+    treehouse: FakeProgram,
 }
 
 impl Cli {
@@ -31,7 +39,24 @@ impl Cli {
                 ..Settings::default()
             })
             .expect("settings");
-        Self { temp, home }
+        let treehouse = FakeProgram::new(&temp.path().join("treehouse"), "treehouse");
+        treehouse.respond("status", "[]", "", 0);
+        let bin = temp.path().join("bin");
+        treehouse.install_into(&bin);
+        Self {
+            temp,
+            home,
+            bin,
+            treehouse,
+        }
+    }
+
+    fn lease_pool(&self, path: &Path, id: &str) {
+        let pool = format!(
+            "[{{\"name\":\"1\",\"path\":{},\"status\":\"leased\",\"lease_id\":\"{id}\",\"lease_holder\":\"depot:t-1\"}}]",
+            serde_json::Value::String(path.to_string_lossy().into_owned())
+        );
+        self.treehouse.respond("status", &pool, "", 0);
     }
 
     fn depot_home(&self) -> DepotHome {
@@ -63,6 +88,11 @@ impl Cli {
             .env("DEPOT_HOME", &self.home)
             .env("DEPOT_TASK_ID", task)
             .env("DEPOT_ATTEMPT_ID", attempt)
+            .env("PATH", with_program(&self.bin))
+            .env(
+                self.treehouse.directory_env().0,
+                self.treehouse.directory_env().1,
+            )
             .current_dir(directory)
             .output()
             .expect("the depot binary runs")
@@ -85,6 +115,14 @@ fn stdout(output: &Output) -> String {
 
 fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).to_string()
+}
+
+fn with_program(directory: &Path) -> std::ffi::OsString {
+    let mut paths = vec![directory.to_path_buf()];
+    paths.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
+    std::env::join_paths(paths).expect("the path is joined")
 }
 
 #[test]
@@ -994,6 +1032,7 @@ fn worker_submit_records_its_summary_artifacts_and_starts_validation() {
         .output()
         .expect("git runs");
     assert!(output.status.success());
+    cli.lease_pool(&worktree, "attempt-1");
 
     let output = cli.run_worker_from(
         &["submit", "--task", "t-1", "--project", "example"],
@@ -1017,6 +1056,84 @@ fn worker_submit_records_its_summary_artifacts_and_starts_validation() {
             .any(|event| event.kind == "worker_submitted"),
         "submission starts the validation path"
     );
+}
+
+#[test]
+fn worker_submit_refuses_a_commit_that_is_not_a_descendant_of_the_task_base() {
+    let cli = Cli::new();
+    let added = cli.registered_with(BUILD_ONLY);
+    let store = Store::open(&cli.depot_home()).expect("store");
+    let worktree = cli.project_directory("worktree");
+    git_in(&worktree, &["init"]);
+    git_in(&worktree, &["config", "user.email", "worker@example.test"]);
+    git_in(&worktree, &["config", "user.name", "Worker"]);
+    std::fs::write(worktree.join("root.txt"), "root\n").expect("root file");
+    git_in(&worktree, &["add", "root.txt"]);
+    git_in(&worktree, &["commit", "-m", "root"]);
+    let root = git_in(&worktree, &["rev-parse", "HEAD"]);
+    std::fs::write(worktree.join("base.txt"), "base\n").expect("base file");
+    git_in(&worktree, &["add", "base.txt"]);
+    git_in(&worktree, &["commit", "-m", "base"]);
+    let base = git_in(&worktree, &["rev-parse", "HEAD"]);
+    git_in(&worktree, &["checkout", "-b", "other", &root]);
+    std::fs::write(worktree.join("other.txt"), "other\n").expect("other file");
+    git_in(&worktree, &["add", "other.txt"]);
+    git_in(&worktree, &["commit", "-m", "other"]);
+    cli.lease_pool(&worktree, "attempt-1");
+
+    let mut seeded = task(added.project.id.as_str(), "t-1", TaskState::Running, 1);
+    seeded.dependencies = vec![depot_core::Dependency {
+        task: TaskId::new("t-0"),
+        commit: depot_core::CommitId::new(base),
+    }];
+    seeded.attempts.push(depot_core::Attempt {
+        last_seen_at: None,
+        session: Some(depot_core::SessionId::new("session-1")),
+        profile: depot_core::ProfileId::new("build"),
+        worktree: Some(depot_core::WorktreeLease::new("attempt-1")),
+        started_at: depot_core::Timestamp::from_millis(1),
+        finished_at: None,
+        outcome: depot_core::AttemptOutcome::InFlight,
+        rebase: false,
+    });
+    store.put_task(&seeded).expect("seeded task");
+
+    let output = cli.run_worker_from(
+        &["submit", "--task", "t-1", "--project", "example"],
+        "t-1",
+        "attempt-1",
+        &worktree,
+    );
+
+    assert_eq!(output.status.code(), Some(1), "stdout: {}", stdout(&output));
+    assert!(
+        stderr(&output).contains("not a descendant"),
+        "stderr: {}",
+        stderr(&output)
+    );
+    assert_eq!(
+        store
+            .task(&added.project.id, &TaskId::new("t-1"))
+            .expect("task")
+            .expect("present")
+            .state,
+        TaskState::Running,
+        "a refused submit leaves the task running"
+    );
+}
+
+fn git_in(directory: &Path, arguments: &[&str]) -> String {
+    let output = Command::new("git")
+        .args(arguments)
+        .current_dir(directory)
+        .output()
+        .expect("git runs");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_owned()
 }
 
 fn task(project: &str, id: &str, state: TaskState, offset: u64) -> depot_core::Task {

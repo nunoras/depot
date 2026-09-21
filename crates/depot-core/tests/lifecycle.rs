@@ -1229,6 +1229,7 @@ fn rule_10_restart_reconciliation_prefers_unknown_over_a_guess() {
                 9_000,
                 FactKind::WorkerTurnUnresolved {
                     task: task_id("t1"),
+                    reason: "the launch intent never completed".to_string(),
                 },
             )],
         )
@@ -1337,6 +1338,7 @@ fn terminal_states_return_their_worktree_lease_exactly_once() {
                 2_000,
                 FactKind::WorkerTurnUnresolved {
                     task: task_id("t1"),
+                    reason: "the worker turn could not be resolved".to_string(),
                 },
             )],
         )

@@ -83,6 +83,7 @@ pub enum FactKind {
     },
     WorkerTurnUnresolved {
         task: TaskId,
+        reason: String,
     },
     WorkerTurnStarted {
         task: TaskId,
@@ -104,6 +105,10 @@ pub enum FactKind {
         liveness: Liveness,
     },
     WorkerSessionFailed {
+        task: TaskId,
+        reason: String,
+    },
+    WorkerTurnDeferred {
         task: TaskId,
         reason: String,
     },

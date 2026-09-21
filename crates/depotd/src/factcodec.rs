@@ -94,7 +94,10 @@ pub fn encode_payload(kind: &FactKind) -> String {
         FactKind::WorktreeAcquireRequested { task } => task_field(task.as_str()),
         FactKind::WorkerTurnLaunchRequested { task } => task_field(task.as_str()),
         FactKind::WorkerTurnResumeRequested { task } => task_field(task.as_str()),
-        FactKind::WorkerTurnUnresolved { task } => task_field(task.as_str()),
+        FactKind::WorkerTurnUnresolved { task, reason } => object(vec![
+            ("task", quoted(task.as_str())),
+            ("reason", quoted(reason)),
+        ]),
         FactKind::WorkerTurnStarted { task, session } => object(vec![
             ("task", quoted(task.as_str())),
             ("session", quoted(session.as_str())),
@@ -114,6 +117,10 @@ pub fn encode_payload(kind: &FactKind) -> String {
             ("liveness", quoted(liveness_name(*liveness))),
         ]),
         FactKind::WorkerSessionFailed { task, reason } => object(vec![
+            ("task", quoted(task.as_str())),
+            ("reason", quoted(reason)),
+        ]),
+        FactKind::WorkerTurnDeferred { task, reason } => object(vec![
             ("task", quoted(task.as_str())),
             ("reason", quoted(reason)),
         ]),

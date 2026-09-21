@@ -1,17 +1,18 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use depot_core::{AnsweredBy, CommitId, Dependency, Fact, FactKind, Role, Task, TaskId, TaskState};
 
 use crate::adapters::process::Program;
 use crate::adapters::sessions::{Boxr, Sessions};
+use crate::adapters::worktrees::Treehouse;
 use crate::clock::now;
 use crate::config::PROJECT_CONFIG_FILE_NAME;
 use crate::documents::write_document;
 use crate::error::{Error, Result};
 use crate::home::DepotHome;
 use crate::inbox::{inbox_entries, render_inbox};
-use crate::project::Project;
+use crate::project::{LocationKind, Project};
 use crate::projects::{resolve_task, select_project};
 use crate::store::{Store, event_key};
 use crate::vocabulary::{ROLE_NAMES, answered_by_from_name, role_from_name, role_name, state_name};
@@ -162,16 +163,20 @@ pub fn submit_task(home: &DepotHome, selection: Option<&str>, id: &str) -> Resul
     if current.state != TaskState::Running {
         return Err(transition_refused(&current, "submitted"));
     }
-    let output = std::process::Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .output()
-        .map_err(Error::Io)?;
-    if !output.status.success() {
-        return Err(Error::Project(
-            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-        ));
+    let worktree = leased_worktree_path(&project, &current)?;
+    let worktree = std::fs::canonicalize(&worktree).unwrap_or(worktree);
+    let here = std::env::current_dir()
+        .map_err(Error::Io)
+        .and_then(|here| std::fs::canonicalize(&here).map_err(Error::Io))?;
+    if !here.starts_with(&worktree) {
+        return Err(Error::Project(format!(
+            "depot submit must run in the task's leased worktree at {}; the current directory is {}",
+            worktree.display(),
+            here.display()
+        )));
     }
-    let commit = CommitId::new(String::from_utf8_lossy(&output.stdout).trim());
+    let commit = CommitId::new(git_in(&worktree, &["rev-parse", "HEAD"])?);
+    check_descends_from_base(&store, &project, &current, &worktree, &commit)?;
     let fact = Fact {
         at: now(),
         kind: FactKind::WorkerSubmitted {
@@ -457,6 +462,81 @@ fn transition_refused(task: &Task, action: &str) -> Error {
         task.id,
         state_name(task.state)
     ))
+}
+
+fn leased_worktree_path(project: &Project, task: &Task) -> Result<PathBuf> {
+    let repo = match project.kind {
+        LocationKind::Path => PathBuf::from(project.id.as_str()),
+        LocationKind::Url => {
+            return Err(Error::Project(
+                "a URL project has no local repository to submit from".to_string(),
+            ));
+        }
+    };
+    let worktrees = Treehouse::new(Program::new("treehouse"));
+    Ok(crate::daemon::resolve_worktree_lease(&worktrees, &repo, task)?.path)
+}
+
+fn check_descends_from_base(
+    store: &Store,
+    project: &Project,
+    task: &Task,
+    worktree: &Path,
+    commit: &CommitId,
+) -> Result<()> {
+    match depot_core::worktree_baseline(task) {
+        depot_core::Baseline::PinnedCommit(base) => {
+            if !is_ancestor(worktree, base.as_str(), commit.as_str())? {
+                return Err(Error::Project(format!(
+                    "the submitted commit {commit} is not a descendant of the task's base {base}"
+                )));
+            }
+        }
+        depot_core::Baseline::DefaultBranchHead => {
+            let base = store.project_config(project)?.pull_request.base;
+            let remote = format!("origin/{base}");
+            if git_in(worktree, &["rev-parse", "--verify", &remote]).is_ok()
+                && git_in(worktree, &["merge-base", "HEAD", &remote]).is_err()
+            {
+                return Err(Error::Project(format!(
+                    "the worktree {} shares no history with the task's base `{base}`",
+                    worktree.display()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn git_in(directory: &Path, arguments: &[&str]) -> Result<String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(directory)
+        .args(arguments)
+        .output()
+        .map_err(Error::Io)?;
+    if !output.status.success() {
+        return Err(Error::Project(
+            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+fn is_ancestor(directory: &Path, ancestor: &str, descendant: &str) -> Result<bool> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(directory)
+        .args(["merge-base", "--is-ancestor", ancestor, descendant])
+        .output()
+        .map_err(Error::Io)?;
+    match output.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(Error::Project(
+            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        )),
+    }
 }
 
 fn turn_is_running(task: &Task) -> bool {

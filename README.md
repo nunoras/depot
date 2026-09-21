@@ -78,6 +78,11 @@ describe_timeout_seconds = 900
 [questions]
 always_relay = false
 
+[evidence]
+command = ""
+timeout_seconds = 600
+required = false
+
 [dispatch]
 confidence_floor = 0.8
 
@@ -263,6 +268,13 @@ Only one rebase is in flight per project at a time, a task past its attempt limi
 `[pull_request] describe_profile` in `.depot.toml` names a profile from the machine-local settings map; when it is set, the daemon launches a headless worker with it when a pull request opens, feeds it the unified diff of the delivery branch against its base (diffstat plus a truncated body when the diff is very large) and the task title, and the worker writes the reviewer-facing PR description: the first line of its output becomes the PR title and the rest the body, with depot's own `## Validation` section appended after it.
 The worker never sees the task intent, and a describe step that is unset, fails, times out or returns nothing falls back to the task title and the validation section alone.
 `describe_timeout_seconds` bounds the worker's turn and defaults to 900.
+
+`[evidence]` in `.depot.toml` attaches visual proof to a pull request.
+With `command` set, after validation passes and the pull request is open, the daemon runs the command once per validated commit in the pull request's worktree, with `DEPOT_EVIDENCE_BASE` and `DEPOT_EVIDENCE_RANGE` in its environment naming the same diff range the describe step reads.
+The command prints one already-hosted media URL per line as `url<TAB>caption`; depot reads only stdout lines in that shape, and an exit 0 with an empty manifest posts a comment saying nothing was captured rather than failing.
+Depot posts a single comment it owns, marked with a hidden `<!-- depot-evidence -->` marker, and edits that same comment when a later commit re-runs the capture instead of posting duplicates.
+With `required = false` (the default) a failed, timed out or unfound capture is noted in the journal and never blocks; with `required = true` a failed capture fails the task and holds it for a person while the pull request stays open.
+Absent, empty or unset `command` makes the whole feature a no-op, and depot itself never captures media, hosts files or drives a browser.
 
 On startup, the daemon performs recovery: tasks with an in-flight attempt are transitioned to `Unknown` state, allowing them to be restarted or reworked.
 

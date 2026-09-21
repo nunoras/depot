@@ -10,6 +10,7 @@ pub mod describe;
 mod dispatch;
 mod documents;
 mod error;
+pub mod evidence;
 mod factcodec;
 mod home;
 mod inbox;
@@ -27,7 +28,8 @@ pub use commands::{
     submit_task, write_narrative,
 };
 pub use config::{
-    PROJECT_CONFIG_FILE_NAME, ProjectConfig, PullRequestConfig, QuestionsConfig, ValidationConfig,
+    EvidenceConfig, PROJECT_CONFIG_FILE_NAME, ProjectConfig, PullRequestConfig, QuestionsConfig,
+    ValidationConfig,
 };
 pub use coordinator::{
     BRIEF_TEMPLATE, COORDINATOR_KICKOFF_TEMPLATE, COORDINATOR_POLICY, CoordinatorContext, Launch,
@@ -41,6 +43,7 @@ pub use daemon::{
 pub use depot_core::{ProjectState, Role, SessionId, Task, TaskId, TaskState, Timestamp};
 pub use documents::{document_path, write_document};
 pub use error::{Error, Result};
+pub use evidence::{EVIDENCE_MARKER, EvidenceArtifact, EvidenceRunner, ShellEvidence};
 pub use home::{
     ARCHIVE_DIR_NAME, CHECKLIST_FILE_NAME, CONTEXT_DOCUMENT_FILE_NAME, DATABASE_FILE_NAME,
     DOCUMENTS_DIR_NAME, DepotHome, HOME_ENV, MEDIA_DIR_NAME, PROJECTS_DIR_NAME, ProjectHome,

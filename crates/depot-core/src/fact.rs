@@ -150,6 +150,17 @@ pub enum FactKind {
         checks: Checks,
         reason: String,
     },
+    EvidencePosted {
+        task: TaskId,
+        commit: CommitId,
+        comment_id: u64,
+    },
+    EvidenceFailed {
+        task: TaskId,
+        commit: CommitId,
+        reason: String,
+        required: bool,
+    },
     RebaseScheduled {
         task: TaskId,
         profile: ProfileId,

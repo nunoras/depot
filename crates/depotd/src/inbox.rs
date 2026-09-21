@@ -108,6 +108,7 @@ fn need_for(tag: FactTag, task: Option<&Task>) -> Need {
         | FactTag::WorkerLivenessChanged
         | FactTag::WorkerTurnUnresolved
         | FactTag::PushFailed
+        | FactTag::EvidenceFailed
         | FactTag::RunDurationExceeded
         | FactTag::RetryExhausted
         | FactTag::ProviderRateLimited
@@ -142,6 +143,7 @@ fn need_for(tag: FactTag, task: Option<&Task>) -> Need {
         | FactTag::BranchPushed
         | FactTag::PullRequestOpened
         | FactTag::PullRequestChecksChanged
+        | FactTag::EvidencePosted
         | FactTag::CoordinatorSessionStarted
         | FactTag::CoordinatorContextMeasured
         | FactTag::DaemonRestarted
@@ -229,6 +231,14 @@ fn headline(tag: FactTag, event: &RecordedEvent, task: Option<&Task>) -> Result<
                 ),
                 None => format!("the forge refused to merge: {}", one_line(&reason)),
             }
+        }
+        FactTag::EvidencePosted => match task.and_then(|task| task.pull_request()) {
+            Some((number, _, _)) => format!("evidence was posted to pull request #{number}"),
+            None => "evidence was posted".to_string(),
+        },
+        FactTag::EvidenceFailed => {
+            let reason = payload_field(&event.payload, "reason")?;
+            format!("the evidence capture failed: {}", one_line(&reason))
         }
         FactTag::PushFailed => {
             let reason = payload_field(&event.payload, "reason")?;

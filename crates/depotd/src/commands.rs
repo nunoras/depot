@@ -11,7 +11,7 @@ use crate::error::{Error, Result};
 use crate::home::DepotHome;
 use crate::inbox::{inbox_entries, render_inbox};
 use crate::project::Project;
-use crate::projects::select_project;
+use crate::projects::{resolve_task, select_project};
 use crate::store::{Store, event_key};
 use crate::vocabulary::{ROLE_NAMES, answered_by_from_name, role_from_name, role_name, state_name};
 
@@ -78,11 +78,22 @@ pub fn approve_tasks(
     ids: &[String],
 ) -> Result<Vec<Task>> {
     let store = Store::open(home)?;
-    let project = select_project(&store, selection)?;
+    let mut resolved = Vec::new();
+    for id in ids {
+        resolved.push(resolve_task(&store, selection, id)?);
+    }
+    let Some((project, _)) = resolved.first() else {
+        return Err(Error::Project("no task ids were given".to_string()));
+    };
+    let project = project.clone();
+    if resolved.iter().any(|(other, _)| other.id != project.id) {
+        return Err(Error::Project(
+            "approve tasks from one project at a time".to_string(),
+        ));
+    }
     ensure_profiles_resolve(home, &store, &project)?;
     let mut ready = Vec::new();
-    for id in ids {
-        let id = TaskId::new(id);
+    for id in resolved.into_iter().map(|(_, id)| id) {
         let current = task(&store, &project, &id)?;
         let plan = prepare_approve(&current)?;
         ready.push((current, plan));
@@ -110,8 +121,7 @@ pub fn ask_question(
     relay: bool,
 ) -> Result<Task> {
     let store = Store::open(home)?;
-    let project = select_project(&store, selection)?;
-    let id = TaskId::new(id);
+    let (project, id) = resolve_task(&store, selection, id)?;
     let current = task(&store, &project, &id)?;
     if !matches!(
         current.state,
@@ -146,8 +156,7 @@ pub fn ask_question(
 
 pub fn submit_task(home: &DepotHome, selection: Option<&str>, id: &str) -> Result<Task> {
     let store = Store::open(home)?;
-    let project = select_project(&store, selection)?;
-    let id = TaskId::new(id);
+    let (project, id) = resolve_task(&store, selection, id)?;
     let current = task(&store, &project, &id)?;
     if current.state != TaskState::Running {
         return Err(transition_refused(&current, "submitted"));
@@ -186,8 +195,7 @@ pub fn answer_question(
     by: &str,
 ) -> Result<Task> {
     let store = Store::open(home)?;
-    let project = select_project(&store, selection)?;
-    let id = TaskId::new(id);
+    let (project, id) = resolve_task(&store, selection, id)?;
     let current = task(&store, &project, &id)?;
     let position = prepare_answer(&current)?;
     let by = parse_answered_by(by)?;
@@ -210,8 +218,7 @@ pub fn answer_question(
 
 pub fn acknowledge_task(home: &DepotHome, selection: Option<&str>, id: &str) -> Result<Task> {
     let store = Store::open(home)?;
-    let project = select_project(&store, selection)?;
-    let id = TaskId::new(id);
+    let (project, id) = resolve_task(&store, selection, id)?;
     let current = task(&store, &project, &id)?;
     match (current.state, current.acknowledged_at) {
         (TaskState::Failed | TaskState::Cancelled, Some(_)) => return Ok(current),
@@ -228,8 +235,7 @@ pub fn acknowledge_task(home: &DepotHome, selection: Option<&str>, id: &str) -> 
 
 pub fn retry_task(home: &DepotHome, selection: Option<&str>, id: &str) -> Result<Task> {
     let store = Store::open(home)?;
-    let project = select_project(&store, selection)?;
-    let id = TaskId::new(id);
+    let (project, id) = resolve_task(&store, selection, id)?;
     let current = task(&store, &project, &id)?;
     if !matches!(current.state, TaskState::Failed | TaskState::Cancelled) {
         return Err(transition_refused(&current, "retried"));
@@ -276,8 +282,7 @@ pub fn rework_task(
 
 pub fn stop_task(home: &DepotHome, selection: Option<&str>, id: &str) -> Result<Task> {
     let store = Store::open(home)?;
-    let project = select_project(&store, selection)?;
-    let id = TaskId::new(id);
+    let (project, id) = resolve_task(&store, selection, id)?;
     let current = task(&store, &project, &id)?;
     if prepare_stop(&current)? == Prepared::Apply {
         let fact = Fact {
@@ -297,8 +302,7 @@ pub fn redirect_task(
     queue: bool,
 ) -> Result<(Task, bool)> {
     let store = Store::open(home)?;
-    let project = select_project(&store, selection)?;
-    let id = TaskId::new(id);
+    let (project, id) = resolve_task(&store, selection, id)?;
     let current = task(&store, &project, &id)?;
     if current.state != TaskState::Running {
         return Err(transition_refused(&current, "redirected"));
@@ -328,8 +332,7 @@ pub fn redirect_task(
 
 pub fn release_task(home: &DepotHome, selection: Option<&str>, id: &str) -> Result<Task> {
     let store = Store::open(home)?;
-    let project = select_project(&store, selection)?;
-    let id = TaskId::new(id);
+    let (project, id) = resolve_task(&store, selection, id)?;
     let current = task(&store, &project, &id)?;
     if !current.hold_pr && matches!(current.state, TaskState::PrOpen | TaskState::Landed) {
         return Ok(current);
@@ -353,7 +356,7 @@ pub fn read_inbox(home: &DepotHome, selection: Option<&str>) -> Result<String> {
     let cursor = store.inbox_cursor(&project.id)?;
     let events = store.events_since(&project.id, cursor)?;
     let next = events.last().map(|event| event.id).unwrap_or(cursor);
-    let entries = inbox_entries(&store.tasks(&project.id)?, &events)?;
+    let entries = inbox_entries(&project.slug, &store.tasks(&project.id)?, &events)?;
     store.set_inbox_cursor(&project.id, next)?;
     Ok(render_inbox(&entries))
 }

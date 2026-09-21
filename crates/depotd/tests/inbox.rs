@@ -210,7 +210,7 @@ fn the_inbox_payload_names_the_task_state_and_the_owner_of_each_fact() {
     let payload = read_inbox(&fixture.home, Some("example")).expect("inbox");
 
     assert!(
-        payload.contains("`t-1` **Wire the store** (validated)"),
+        payload.contains("`example/t-1` **Wire the store** (validated)"),
         "each fact names the task and where it stands now, got\n{payload}"
     );
     assert!(
@@ -493,15 +493,15 @@ fn a_merge_that_held_the_task_reaches_the_user_from_the_inbox() {
 
     let user = section(&payload, "For the user");
     assert!(
-        user.contains("`t-2`"),
+        user.contains("`example/t-2`"),
         "a merge of a revision depot never validated needs a person, got\n{payload}"
     );
     assert!(
-        !user.contains("`t-1`"),
+        !user.contains("`example/t-1`"),
         "a landing needs nobody, got\n{payload}"
     );
     assert!(
-        section(&payload, "No action").contains("`t-1`"),
+        section(&payload, "No action").contains("`example/t-1`"),
         "a landing is the daemon's own work, got\n{payload}"
     );
 }
@@ -654,5 +654,30 @@ fn consecutive_identical_entries_render_as_one_counted_line() {
     assert!(
         rendered.contains("the worker is gone at 1970-01-01T00:04:00Z"),
         "a single entry still renders alone, got\n{rendered}"
+    );
+}
+
+#[test]
+fn inbox_lines_name_the_task_by_its_qualified_id() {
+    let fixture = support::fixture();
+    let added = support::register(&fixture, "example");
+    let store = Store::open(&fixture.home).expect("store");
+    let project = &added.project.id;
+    apply(
+        &store,
+        project,
+        "task_proposed:t-1",
+        1_000,
+        proposed("t-1", "First pass"),
+    );
+
+    let events = store.events(project).expect("events");
+    let entries = depotd::inbox_entries("example", &store.tasks(project).expect("tasks"), &events)
+        .expect("entries");
+
+    assert!(
+        entries
+            .iter()
+            .all(|entry| !entry.task.is_some() || entry.line.contains("example/t-1"))
     );
 }

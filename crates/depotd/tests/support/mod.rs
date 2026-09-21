@@ -246,6 +246,7 @@ pub fn varied_state() -> ProjectState {
     }
     ProjectState {
         project,
+        slug: "example".to_string(),
         tasks,
         coordinator: None,
         profiles: BTreeMap::from([

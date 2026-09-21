@@ -5,7 +5,7 @@ use depot_core::{
     Answer, Artifact, Attempt, Checks, CommitId, Dependency, Link, ProfileId, ProjectId, Question,
     Retry, SessionId, Submission, Task, TaskId, Timestamp, ValidationRecord, WorktreeLease,
 };
-use rusqlite::{Row, Transaction, params};
+use rusqlite::{OptionalExtension, Row, Transaction, params};
 
 use crate::checklist::render_checklist;
 use crate::error::{Error, Result};
@@ -51,15 +51,31 @@ impl Store {
     }
 
     pub fn next_task_id(&self, project: &ProjectId) -> Result<TaskId> {
-        let taken = self.tasks(project)?;
-        let mut index = taken.len() + 1;
-        loop {
-            let candidate = TaskId::new(format!("t-{index}"));
-            if !taken.contains_key(&candidate) {
-                return Ok(candidate);
+        let next: Option<i64> = self
+            .connection()
+            .query_row(
+                "SELECT next_number FROM task_counters WHERE project_id = ?1",
+                params![project.as_str()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let number = match next {
+            Some(number) => number,
+            None => {
+                self.tasks(project)?
+                    .keys()
+                    .filter_map(|id| task_id_number(id.as_str()))
+                    .max()
+                    .unwrap_or(0)
+                    + 1
             }
-            index += 1;
-        }
+        };
+        self.connection().execute(
+            "INSERT INTO task_counters (project_id, next_number) VALUES (?1, ?2)
+             ON CONFLICT(project_id) DO UPDATE SET next_number = ?2",
+            params![project.as_str(), number + 1],
+        )?;
+        Ok(TaskId::new(format!("t-{number}")))
     }
 
     pub fn tasks(&self, project: &ProjectId) -> Result<BTreeMap<TaskId, Task>> {
@@ -605,4 +621,118 @@ pub(super) fn write_task(transaction: &Transaction<'_>, task: &Task) -> Result<(
         )?;
     }
     Ok(())
+}
+
+fn task_id_number(id: &str) -> Option<i64> {
+    id.strip_prefix("t-")?.parse().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use depot_core::{ProjectId, Role, Task, TaskId, TaskState, Timestamp};
+    use tempfile::tempdir;
+
+    use crate::home::DepotHome;
+    use crate::project::{LocationKind, Project};
+    use crate::store::Store;
+
+    fn store() -> (tempfile::TempDir, Store) {
+        let temp = tempdir().expect("temporary directory");
+        let home = DepotHome::at(temp.path().join("depot-home"));
+        home.ensure().expect("depot home");
+        let store = Store::open(&home).expect("store");
+        (temp, store)
+    }
+
+    fn task(project: &ProjectId, id: &str) -> Task {
+        Task {
+            id: TaskId::new(id),
+            project: project.clone(),
+            title: format!("task {id}"),
+            intent: String::new(),
+            role: Role::Build,
+            dispatch_profile: None,
+            state: TaskState::Proposed,
+            dependencies: Vec::new(),
+            base_dependency: None,
+            attempts: Vec::new(),
+            questions: Vec::new(),
+            validations: Vec::new(),
+            submission: None,
+            artifacts: Vec::new(),
+            links: Vec::new(),
+            branch_head: None,
+            merge_refused: None,
+            redirect_text: None,
+            redirect_delivered: false,
+            acknowledged_at: None,
+            rework_of: None,
+            hold_pr: false,
+            retry: None,
+            created_at: Timestamp::from_millis(1),
+            updated_at: Timestamp::from_millis(1),
+        }
+    }
+
+    fn register(store: &Store, id: &str, slug: &str) -> ProjectId {
+        let project = Project {
+            id: ProjectId::new(id),
+            kind: LocationKind::Url,
+            slug: slug.to_string(),
+            created_at: Timestamp::from_millis(1),
+        };
+        store.put_project(&project).expect("registered");
+        project.id
+    }
+
+    #[test]
+    fn a_deleted_id_is_never_handed_out_again() {
+        let (_temp, store) = store();
+        let project = register(&store, "/tmp/example", "example");
+
+        for suffix in 1..=3 {
+            store
+                .put_task(&task(&project, &format!("t-{suffix}")))
+                .expect("stored");
+        }
+        store
+            .connection()
+            .execute(
+                "DELETE FROM tasks WHERE project_id = ?1 AND id = 't-2'",
+                [project.as_str()],
+            )
+            .expect("deleted");
+
+        assert_eq!(
+            store.next_task_id(&project).expect("next id").as_str(),
+            "t-4"
+        );
+        assert_eq!(
+            store.next_task_id(&project).expect("next id").as_str(),
+            "t-5"
+        );
+    }
+
+    #[test]
+    fn a_counter_is_seeded_from_the_highest_existing_id() {
+        let (_temp, store) = store();
+        let project = register(&store, "/tmp/example", "example");
+        store.put_task(&task(&project, "t-7")).expect("stored");
+
+        assert_eq!(
+            store.next_task_id(&project).expect("next id").as_str(),
+            "t-8"
+        );
+    }
+
+    #[test]
+    fn counters_are_per_project() {
+        let (_temp, store) = store();
+        let left = register(&store, "/tmp/left", "left");
+        let right = register(&store, "/tmp/right", "right");
+
+        assert_eq!(store.next_task_id(&left).expect("next id").as_str(), "t-1");
+        assert_eq!(store.next_task_id(&right).expect("next id").as_str(), "t-1");
+        assert_eq!(store.next_task_id(&left).expect("next id").as_str(), "t-2");
+    }
 }

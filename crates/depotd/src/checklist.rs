@@ -132,7 +132,8 @@ fn render_task(
     observed_at: Option<Timestamp>,
 ) {
     out.push_str(&format!(
-        "- `{}` **{}** ({})\n",
+        "- `{}/{}` **{}** ({})\n",
+        state.slug,
         task.id,
         one_line(&task.title),
         role_name(task.role)

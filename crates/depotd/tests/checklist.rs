@@ -135,6 +135,7 @@ fn the_checklist_states_what_each_task_waits_on() {
     let rendered = render_checklist(
         &ProjectState {
             project,
+            slug: "example".to_string(),
             tasks,
             coordinator: None,
             profiles: BTreeMap::from([(Role::Build, ProfileId::new("glm-5.3"))]),
@@ -182,6 +183,7 @@ fn an_empty_project_renders_a_checklist_with_no_tasks() {
     let rendered = render_checklist(
         &ProjectState {
             project: ProjectId::new("example/project"),
+            slug: "example".to_string(),
             tasks: BTreeMap::new(),
             coordinator: None,
             profiles: BTreeMap::new(),
@@ -231,7 +233,7 @@ fn putting_a_task_refreshes_the_on_disk_checklist() {
         "put_task must rewrite {CHECKLIST_FILE_NAME}, got\n{after}"
     );
     assert!(
-        after.contains("`t-1`"),
+        after.contains("`example/t-1`"),
         "the refreshed checklist must name the task, got\n{after}"
     );
     assert!(
@@ -396,6 +398,7 @@ fn a_pull_request_with_no_checks_renders_the_merge_decision_line() {
     let rendered = render_checklist(
         &ProjectState {
             project,
+            slug: "example".to_string(),
             tasks,
             coordinator: None,
             profiles: BTreeMap::new(),
@@ -411,4 +414,14 @@ fn a_pull_request_with_no_checks_renders_the_merge_decision_line() {
         rendered.contains("no checks configured; awaiting merge decision on pull request #42"),
         "a no-CI repository must not wait on checks that can never run, in\n{rendered}"
     );
+}
+
+#[test]
+fn task_ids_render_project_qualified() {
+    let state = support::varied_state();
+
+    let rendered = render_checklist(&state, true);
+
+    assert!(rendered.contains("`example/t-0-a`"), "got\n{rendered}");
+    assert!(!rendered.contains("- `t-"), "got\n{rendered}");
 }

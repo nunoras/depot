@@ -7,7 +7,9 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 
 use crate::clock::now;
-use crate::daemon::{DAEMON_LOCK_FILE_NAME, DAEMON_SCOPE_FILE_NAME, DaemonScope, daemon_scope};
+use crate::daemon::{
+    DAEMON_LOCK_FILE_NAME, DAEMON_SCOPE_FILE_NAME, DaemonScope, daemon_scope, project_slugs,
+};
 use crate::error::{Error, Result};
 use crate::home::DepotHome;
 
@@ -53,6 +55,7 @@ pub fn restart_daemon(home: &DepotHome, options: &RestartOptions) -> Result<Rest
         _ => None,
     };
     let projects = previous.map(|scope| scope.projects).unwrap_or_default();
+    let projects = project_slugs(home, &projects);
     let spec = launch_spec(home, options.program.clone(), &projects);
     let launched_at = now().millis();
     let pid = launch_detached(&spec)?;

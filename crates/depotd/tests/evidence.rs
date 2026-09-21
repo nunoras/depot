@@ -292,14 +292,6 @@ fn drive_to_pr_open(fixture: &Fixture, commit: &str) {
     open_pull_request_routes(&fixture.forge, commit);
 }
 
-fn request_to(forge: &FakeForge, method: &str, path: &str) -> fake_forge::Recorded {
-    forge
-        .requests()
-        .into_iter()
-        .find(|request| request.method == method && request.path == path)
-        .unwrap_or_else(|| panic!("no {method} request was made to {path}"))
-}
-
 fn patched_bodies(forge: &FakeForge) -> Vec<String> {
     forge
         .requests()
@@ -307,6 +299,14 @@ fn patched_bodies(forge: &FakeForge) -> Vec<String> {
         .filter(|request| request.method == "PATCH" && request.path == PR_PATH)
         .map(|request| request.body)
         .collect()
+}
+
+fn pull_request_body(request: &str) -> String {
+    let request: serde_json::Value = serde_json::from_str(request).expect("a JSON request");
+    request["body"]
+        .as_str()
+        .expect("the request carries a body")
+        .to_string()
 }
 
 fn daemon(
@@ -423,50 +423,101 @@ fn a_new_commit_refreshes_the_single_owned_proof_section() {
 }
 
 #[test]
-fn a_video_is_a_bare_url_and_an_uploaded_file_becomes_a_user_attachment_url() {
+fn a_relative_local_file_is_noted_as_unattachable_and_resolved_against_the_worktree() {
     let fixture = register(EVIDENCE_CONFIG);
     drive_to_pr_open(&fixture, "aaa111");
-    let base = fixture.forge.base_url();
-    fixture.forge.route(
-        "POST",
-        "/upload/policies/assets",
-        200,
-        &format!(
-            "{{\"upload_url\":\"{base}/upload/user-assets/abc\",\"asset\":{{\"href\":\"https://github.com/user-attachments/assets/uuid\",\"content_type\":\"video/mp4\"}},\"form\":{{\"key\":\"assets/uuid\"}},\"header\":{{\"x-amz-acl\":\"public-read\"}}}}"
-        ),
-    );
-    fixture
-        .forge
-        .route("POST", "/upload/user-assets/abc", 200, "{}");
 
-    let clip = fixture.temp.path().join("clip.mp4");
-    std::fs::write(&clip, b"video bytes").expect("the evidence file");
+    daemon(&fixture, evidence_with("out/clip.mp4\tthe flow\n"))
+        .tick()
+        .expect("the tick runs");
+
+    let bodies = patched_bodies(&fixture.forge);
+    assert_eq!(bodies.len(), 1, "{bodies:?}");
+    let body = &pull_request_body(&bodies[0]);
+    let resolved = fixture
+        .temp
+        .path()
+        .join("acme-widget")
+        .join("worktree")
+        .join("out/clip.mp4");
+    assert!(
+        body.contains(&resolved.display().to_string()),
+        "the note names the path resolved against the worktree: {body}"
+    );
+    assert!(
+        body.contains("cannot be attached to a pull request"),
+        "{body}"
+    );
+    assert!(
+        fixture
+            .forge
+            .requests()
+            .iter()
+            .all(|request| !request.path.contains("/upload/")),
+        "a local file is never uploaded"
+    );
+
+    let task = fixture
+        .store
+        .task(&fixture.project.id, &TaskId::new("t-1"))
+        .expect("the task is read")
+        .expect("the task exists");
+    assert_eq!(task.state, depot_core::TaskState::PrOpen);
+}
+
+#[test]
+fn a_required_evidence_run_with_one_url_and_one_local_file_publishes_both_notes() {
+    let fixture = register(
+        "base_branch = \"main\"\n\n[profiles]\nbuild = \"evidence-model\"\n\n[evidence]\ncommand = \"./capture\"\nrequired = true\n",
+    );
+    drive_to_pr_open(&fixture, "aaa111");
 
     daemon(
         &fixture,
-        evidence_with(&format!("{}\tthe flow\n", clip.display())),
+        evidence_with("https://img.example/shot.png\tlogin screen\nout/clip.mp4\tthe flow\n"),
     )
     .tick()
     .expect("the tick runs");
-
-    let policy = request_to(&fixture.forge, "POST", "/upload/policies/assets");
-    assert!(policy.body.contains("video/mp4"), "{}", policy.body);
-    let upload = request_to(&fixture.forge, "POST", "/upload/user-assets/abc");
-    assert!(
-        upload.header("authorization").is_none(),
-        "the forge credential never reaches the upload host"
-    );
 
     let bodies = patched_bodies(&fixture.forge);
     assert_eq!(bodies.len(), 1, "{bodies:?}");
     let body = &bodies[0];
     assert!(
-        body.contains("https://github.com/user-attachments/assets/uuid"),
+        body.contains("![login screen](https://img.example/shot.png)"),
         "{body}"
     );
     assert!(
-        !body.contains("](https://github.com/user-attachments"),
-        "a user attachment is a bare url, not a markdown link: {body}"
+        body.contains("cannot be attached to a pull request"),
+        "{body}"
+    );
+    let task = fixture
+        .store
+        .task(&fixture.project.id, &TaskId::new("t-1"))
+        .expect("the task is read")
+        .expect("the task exists");
+    assert_eq!(task.state, depot_core::TaskState::PrOpen);
+}
+
+#[test]
+fn a_required_evidence_run_that_captured_nothing_holds_the_task_for_the_user() {
+    let fixture = register(
+        "base_branch = \"main\"\n\n[profiles]\nbuild = \"evidence-model\"\n\n[evidence]\ncommand = \"./capture\"\nrequired = true\n",
+    );
+    drive_to_pr_open(&fixture, "aaa111");
+
+    daemon(&fixture, FakeEvidence::default())
+        .tick()
+        .expect("the tick runs");
+
+    let task = fixture
+        .store
+        .task(&fixture.project.id, &TaskId::new("t-1"))
+        .expect("the task is read")
+        .expect("the task exists");
+    assert_eq!(task.state, depot_core::TaskState::Failed);
+    assert!(
+        patched_bodies(&fixture.forge).is_empty(),
+        "nothing attachable writes no proof section"
     );
 }
 
@@ -535,26 +586,15 @@ fn a_required_evidence_failure_holds_the_task_for_the_user() {
 }
 
 #[test]
-fn a_required_upload_failure_holds_the_task_for_the_user() {
+fn a_required_evidence_run_with_nothing_attachable_holds_the_task_for_the_user() {
     let fixture = register(
         "base_branch = \"main\"\n\n[profiles]\nbuild = \"evidence-model\"\n\n[evidence]\ncommand = \"./capture\"\nrequired = true\n",
     );
     drive_to_pr_open(&fixture, "aaa111");
-    fixture.forge.route(
-        "POST",
-        "/upload/policies/assets",
-        422,
-        "<!DOCTYPE html><html><body>Oh no</body></html>",
-    );
-    let clip = fixture.temp.path().join("clip.mp4");
-    std::fs::write(&clip, b"video bytes").expect("the evidence file");
 
-    daemon(
-        &fixture,
-        evidence_with(&format!("{}\tthe flow\n", clip.display())),
-    )
-    .tick()
-    .expect("the tick runs");
+    daemon(&fixture, evidence_with("out/clip.mp4\tthe flow\n"))
+        .tick()
+        .expect("the tick runs");
 
     let task = fixture
         .store
@@ -562,9 +602,19 @@ fn a_required_upload_failure_holds_the_task_for_the_user() {
         .expect("the task is read")
         .expect("the task exists");
     assert_eq!(task.state, depot_core::TaskState::Failed);
+    let events = fixture
+        .store
+        .events(&fixture.project.id)
+        .expect("the events");
+    assert!(
+        events.iter().any(|event| event.kind == "evidence_failed"
+            && event.payload.contains("nothing attachable")
+            && event.payload.contains("\"required\":true")),
+        "{events:?}"
+    );
     assert!(
         patched_bodies(&fixture.forge).is_empty(),
-        "a failed upload writes no proof section"
+        "nothing attachable writes no proof section"
     );
 }
 

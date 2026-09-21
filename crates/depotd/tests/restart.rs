@@ -344,8 +344,7 @@ fn a_build_mismatch_is_reported_only_for_a_fresh_lock_from_another_commit() {
             .expect("the record")
             .heartbeat_millis,
     );
-    let stale_after = Duration::from_secs(90);
-    assert!(daemon_build_mismatch(&fixture.home, now, stale_after).is_none());
+    assert!(daemon_build_mismatch(&fixture.home, now).is_none());
 
     let path = fixture.home.root().join(DAEMON_SCOPE_FILE_NAME);
     let mut scope: depotd::DaemonScope =
@@ -353,13 +352,13 @@ fn a_build_mismatch_is_reported_only_for_a_fresh_lock_from_another_commit() {
     scope.build_id = "0ldbu11d".to_string();
     std::fs::write(&path, serde_json::to_vec(&scope).expect("encoded")).expect("rewritten");
 
-    let mismatch = daemon_build_mismatch(&fixture.home, now, stale_after).expect("a mismatch");
+    let mismatch = daemon_build_mismatch(&fixture.home, now).expect("a mismatch");
     assert_eq!(mismatch.build_id, "0ldbu11d");
 
     scope.heartbeat_millis = 0;
     std::fs::write(&path, serde_json::to_vec(&scope).expect("encoded")).expect("rewritten");
     assert!(
-        daemon_build_mismatch(&fixture.home, now, stale_after).is_none(),
+        daemon_build_mismatch(&fixture.home, now).is_none(),
         "a stale heartbeat means no daemon is running"
     );
 }
@@ -378,7 +377,7 @@ fn a_record_without_a_build_id_stays_quiet() {
     assert_eq!(scope.build_id, "");
     assert_eq!(scope.projects, vec!["example"]);
     assert!(
-        daemon_build_mismatch(home, Timestamp::from_millis(1), Duration::from_secs(90)).is_none(),
+        daemon_build_mismatch(home, Timestamp::from_millis(1)).is_none(),
         "a legacy lock cannot be compared and must not warn"
     );
 }

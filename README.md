@@ -1,5 +1,8 @@
 # depot
 
+[![CI](https://github.com/nunoras/depot/actions/workflows/ci.yml/badge.svg)](https://github.com/nunoras/depot/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+
 A local daemon that owns a project's agent work as deterministic facts. A model annotates the work. It never transitions a task.
 
 depot records tasks, dependency edges, worker sessions, validation results and forge state in structured records. It renders a live checklist from those records, launches workers into pooled isolated worktrees, runs your project's validation command against an exact commit, and opens a pull request once validation passes. Nothing about that state depends on a model's prose.
@@ -24,14 +27,39 @@ A task can depend on another task at a specific commit. The dependency pin is wh
 
 ## Get started
 
-1. Install from source (requires Rust 1.98 or newer and boxr):
+1. Install the dependencies depot shells out to:
+
+- [boxr](https://github.com/nunoras/boxr) - launches agent sessions
+- [treehouse](https://github.com/kunchenguid/treehouse) - pools reusable worktrees
+- [GitHub CLI](https://cli.github.com/) - forge auth (`gh auth login`)
 
 ```
+# boxr
+cargo install --git https://github.com/nunoras/boxr --locked
+
+# treehouse (macOS / Linux)
+curl -fsSL https://kunchenguid.github.io/treehouse/install.sh | sh
+
+gh auth status
+```
+
+2. Install depot (Rust 1.98 or newer):
+
+```
+git clone https://github.com/nunoras/depot
+cd depot
 cargo install --locked --path crates/depot
 cargo install --locked --path crates/depotd
 ```
 
-Confirm the dependencies:
+Or from the repository without a prior clone:
+
+```
+cargo install --git https://github.com/nunoras/depot --locked --path crates/depot
+cargo install --git https://github.com/nunoras/depot --locked --path crates/depotd
+```
+
+Confirm everything answers:
 
 ```
 depot --help
@@ -41,7 +69,7 @@ treehouse status
 gh auth status
 ```
 
-2. Set up the depot home (`~/.depot/config.toml`):
+3. Set up the depot home (`~/.depot/config.toml`):
 
 ```toml
 concurrency = 1
@@ -58,7 +86,7 @@ effort = "high"
 account = ""
 ```
 
-3. Register a project:
+4. Register a project:
 
 ```
 depot project add /path/to/your-project
@@ -66,7 +94,7 @@ depot project add /path/to/your-project
 
 This creates the project home under `~/.depot/projects/<slug>/` and adds `.depot.toml` to the repo's `.git/info/exclude` so it stays machine-local.
 
-4. Configure the project (`.depot.toml` in the repo root):
+5. Configure the project (`.depot.toml` in the repo root; machine-local, never committed):
 
 ```toml
 base_branch = "main"
@@ -83,19 +111,19 @@ base = "main"
 merge = "manual"
 ```
 
-5. Start the daemon:
+6. Start the daemon:
 
 ```
 depotd
 ```
 
-6. File a task through the coordinator or directly:
+7. File a task through the coordinator or directly:
 
 ```
 depot task add --title "add rate limiting" --intent "add request rate limiting to the API" --role build
 ```
 
-7. Approve it:
+8. Approve it:
 
 ```
 depot task approve <task-id>
@@ -188,7 +216,7 @@ depotd --project my-project
 
 ## Limitations
 
-- depot requires boxr for session launches and treehouse for worktree pooling. Both must be installed and on `PATH`.
+- depot requires [boxr](https://github.com/nunoras/boxr) for session launches and [treehouse](https://github.com/kunchenguid/treehouse) for worktree pooling. Both must be installed and on `PATH`.
 - Only GitHub is supported as a forge. Other forges have no adapter.
 - Dispatch rules require a Typesafe API key. Without one, every task needs an explicit `--role`.
 - The SQLite store does not replicate. depot is a single-machine tool.
@@ -199,6 +227,8 @@ depotd --project my-project
 
 ## References
 
+- [boxr](https://github.com/nunoras/boxr) - the session launcher depot drives.
+- [treehouse](https://github.com/kunchenguid/treehouse) - the worktree pool depot leases from.
 - [Context and glossary](CONTEXT.md) - the domain language depot uses.
 - [Architecture decisions](docs/adr/) - recorded decisions that shape the code.
 - [Daily driver guide](docs/daily-driver.md) - how to open depot as the main agent coordinator for a real project.
@@ -207,9 +237,7 @@ depotd --project my-project
 
 ## License
 
-<!-- TODO: license is not yet chosen. -->
-
-License TBD.
+Apache-2.0. See [LICENSE](LICENSE).
 
 ## Status
 

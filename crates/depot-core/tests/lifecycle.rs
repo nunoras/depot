@@ -69,6 +69,7 @@ fn task(id: &str, state: TaskState) -> Task {
         links: Vec::new(),
         branch_head: None,
         merge_refused: None,
+        conflict_base: None,
         redirect_text: None,
         redirect_delivered: false,
         acknowledged_at: None,
@@ -3813,7 +3814,7 @@ fn rule_17_a_held_task_parks_its_branch_until_release() {
 }
 
 #[test]
-fn rule_17_a_conflicting_pull_request_is_rebased_serially_when_auto_merge_is_on() {
+fn rule_17_a_conflicting_pull_request_is_rebased_serially_whatever_the_merge_policy() {
     const FIX: &str = "fix-profile";
     let fix_profiles = |mut state: ProjectState| {
         state.profiles.insert(Role::Fix, profile(FIX));
@@ -3822,6 +3823,11 @@ fn rule_17_a_conflicting_pull_request_is_rebased_serially_when_auto_merge_is_on(
     let auto_merge = |state: ProjectState| {
         let mut state = fix_profiles(state);
         state.merge_policy = MergePolicy::AfterChecks;
+        state
+    };
+    let manual = |state: ProjectState| {
+        let mut state = fix_profiles(state);
+        state.merge_policy = MergePolicy::Manual;
         state
     };
     let auto_merge_without_fix = |mut state: ProjectState| {
@@ -3846,6 +3852,14 @@ fn rule_17_a_conflicting_pull_request_is_rebased_serially_when_auto_merge_is_on(
             },
         )
     };
+    fn scheduled(state: &ProjectState) -> bool {
+        let task = subject(state, "t1");
+        task.state == TaskState::Running
+            && task.attempts.len() == 2
+            && task.attempts.last().is_some_and(|attempt| {
+                attempt.rebase && attempt.outcome == AttemptOutcome::InFlight
+            })
+    }
 
     run(vec![
         case(
@@ -3859,29 +3873,56 @@ fn rule_17_a_conflicting_pull_request_is_rebased_serially_when_auto_merge_is_on(
             vec![launch("t1", FIX), Action::RenderChecklist],
         )
         .checking(|state| {
-            let task = subject(state, "t1");
-            task.attempts.len() == 2
-                && task.attempts.last().is_some_and(|attempt| {
-                    attempt.rebase && attempt.outcome == AttemptOutcome::InFlight
-                })
-                && task
+            scheduled(state)
+                && subject(state, "t1")
                     .attempts
                     .last()
                     .and_then(|attempt| attempt.worktree.as_ref())
                     == Some(&lease("w1"))
         }),
         case(
-            "a conflict is ignored while auto merge is off",
-            fix_profiles(state(vec![open_with_lease()])),
+            "a conflict schedules the same rebase when auto merge is off",
+            manual(state(vec![open_with_lease()])),
             vec![fact(1_000, conflicting("t1"))],
         )
-        .when("t1", TaskState::PrOpen, vec![]),
+        .when(
+            "t1",
+            TaskState::Running,
+            vec![launch("t1", FIX), Action::RenderChecklist],
+        )
+        .checking(scheduled),
         case(
             "a conflict without a fix profile schedules nothing",
             auto_merge_without_fix(state(vec![open_with_lease()])),
             vec![fact(1_000, conflicting("t1"))],
         )
         .when("t1", TaskState::PrOpen, vec![]),
+    ]);
+
+    let repeating = |state: ProjectState| {
+        let mut state = manual(state);
+        let task = state.tasks.get_mut(&task_id("t1")).expect("subject task");
+        task.state = TaskState::Running;
+        task.attempts.push(Attempt {
+            last_seen_at: None,
+            session: None,
+            profile: profile(FIX),
+            worktree: Some(lease("w1")),
+            started_at: at(0),
+            finished_at: None,
+            outcome: AttemptOutcome::InFlight,
+            rebase: true,
+        });
+        state
+    };
+    run(vec![
+        case(
+            "a repeated conflict does not schedule a second rebase",
+            repeating(state(vec![open_with_lease()])),
+            vec![fact(2_000, conflicting("t1"))],
+        )
+        .when("t1", TaskState::Running, vec![])
+        .checking(|state| subject(state, "t1").attempts.len() == 2),
     ]);
 
     let mut sibling = pr_open("t2", "c9", 43);
@@ -3906,15 +3947,115 @@ fn rule_17_a_conflicting_pull_request_is_rebased_serially_when_auto_merge_is_on(
         .when("t1", TaskState::PrOpen, vec![]),
     ]);
 
+    let mut reworking = state(vec![open_with_lease()]);
+    reworking
+        .tasks
+        .get_mut(&task_id("t1"))
+        .expect("subject task")
+        .state = TaskState::ReworkPending;
+    run(vec![
+        case(
+            "a rework pending task is not rebased",
+            manual(reworking),
+            vec![fact(1_000, conflicting("t1"))],
+        )
+        .when("t1", TaskState::ReworkPending, vec![]),
+    ]);
+
+    let mut closed = state(vec![open_with_lease()]);
+    closed
+        .tasks
+        .get_mut(&task_id("t1"))
+        .expect("subject task")
+        .state = TaskState::Cancelled;
+    run(vec![
+        case(
+            "a closed task is not rebased",
+            manual(closed),
+            vec![fact(1_000, conflicting("t1"))],
+        )
+        .when("t1", TaskState::Cancelled, vec![]),
+    ]);
+
     let mut spent_out = state(vec![open_with_lease()]);
     spent_out.limits.max_attempts = 1;
     run(vec![
         case(
             "a rebase past the attempt limit is refused",
-            auto_merge(spent_out),
+            manual(spent_out),
             vec![fact(1_000, conflicting("t1"))],
         )
         .when("t1", TaskState::PrOpen, vec![]),
+    ]);
+}
+
+#[test]
+fn a_manual_merge_policy_rebases_a_conflict_but_never_merges_it() {
+    let head = commit("c1");
+    let mut state = state(vec![open_with_submitted_attempt()]);
+    state.profiles.insert(Role::Fix, profile("fix-profile"));
+    assert_eq!(
+        rebase_due(&state, subject(&state, "t1"), true),
+        Some(profile("fix-profile")),
+        "a conflicting pull request is due for a rebase even with auto merge off"
+    );
+    assert!(
+        !auto_merge_due(&state, subject(&state, "t1"), &head),
+        "auto merge stays off, so green checks and a validated head are not permission to merge"
+    );
+    state.merge_policy = MergePolicy::AfterChecks;
+    assert!(
+        auto_merge_due(&state, subject(&state, "t1"), &head),
+        "the same state merges once the project opts in"
+    );
+}
+
+#[test]
+fn a_mergeability_observation_records_and_clears_the_conflict_base() {
+    let observed = |millis: u64, mergeable: bool, base: &str| {
+        fact(
+            millis,
+            FactKind::PullRequestMergeabilityChanged {
+                task: task_id("t1"),
+                mergeable,
+                base: commit(base),
+            },
+        )
+    };
+    let open = || {
+        with_attempt(
+            pr_open("t1", "c1", 42),
+            Attempt {
+                last_seen_at: None,
+                outcome: AttemptOutcome::Submitted,
+                worktree: Some(lease("w1")),
+                ..attempt(BUILD)
+            },
+        )
+    };
+
+    run(vec![
+        case(
+            "a conflicting observation records the base it conflicts with",
+            state(vec![open()]),
+            vec![observed(1_000, false, "b1")],
+        )
+        .when("t1", TaskState::PrOpen, vec![Action::RenderChecklist])
+        .checking(|state| subject(state, "t1").conflict_base == Some(commit("b1"))),
+        case(
+            "a mergeable observation clears the conflict",
+            state(vec![open()]),
+            vec![observed(1_000, false, "b1"), observed(2_000, true, "b2")],
+        )
+        .when("t1", TaskState::PrOpen, vec![Action::RenderChecklist])
+        .checking(|state| subject(state, "t1").conflict_base.is_none()),
+        case(
+            "a moved base keeps the conflict and records the new base",
+            state(vec![open()]),
+            vec![observed(1_000, false, "b1"), observed(2_000, false, "b2")],
+        )
+        .when("t1", TaskState::PrOpen, vec![Action::RenderChecklist])
+        .checking(|state| subject(state, "t1").conflict_base == Some(commit("b2"))),
     ]);
 }
 
@@ -3946,8 +4087,8 @@ fn rebase_due_resolves_the_fix_profile_only_for_conflicting_open_pull_requests()
     manual.merge_policy = MergePolicy::Manual;
     assert_eq!(
         rebase_due(&manual, &task, true),
-        None,
-        "auto merge off means no rebase"
+        Some(profile(FIX)),
+        "auto merge off still rebases a conflict"
     );
 }
 

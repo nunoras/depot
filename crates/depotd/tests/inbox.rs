@@ -546,6 +546,41 @@ fn a_refused_auto_merge_reaches_the_user_from_the_inbox() {
 }
 
 #[test]
+fn a_mergeability_observation_reports_the_conflict_without_asking_anyone_to_act() {
+    let fixture = support::fixture();
+    let added = support::register_with_config(&fixture, "example", BUILD_ONLY);
+    let store = Store::open(&fixture.home).expect("store");
+    let project = &added.project.id;
+
+    let mut task = support::full_task(project, "t-1");
+    task.state = TaskState::PrOpen;
+    store.put_task(&task).expect("the task is stored");
+
+    apply(
+        &store,
+        project,
+        "pull_request_mergeability_changed:t-1:conflicting:bbb222:1000",
+        1_000,
+        FactKind::PullRequestMergeabilityChanged {
+            task: TaskId::new("t-1"),
+            mergeable: false,
+            base: CommitId::new("bbb222"),
+        },
+    );
+
+    let payload = read_inbox(&fixture.home, Some("example")).expect("inbox");
+    let nothing = section(&payload, "No action");
+    assert!(
+        nothing.contains("conflicts with base `bbb222`"),
+        "a conflict is reported where it can be seen, got\n{payload}"
+    );
+    assert!(
+        !payload.contains("For the user"),
+        "a conflict on its own does not hand work to the user, got\n{payload}"
+    );
+}
+
+#[test]
 fn a_long_no_action_section_collapses_behind_a_count_and_keeps_the_user_first() {
     let fixture = support::fixture();
     let added = support::register_with_config(&fixture, "example", BUILD_ONLY);

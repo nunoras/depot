@@ -169,6 +169,7 @@ const MIGRATIONS: &[&str] = &[
     "ALTER TABLE tasks ADD COLUMN redirect_text TEXT;",
     "ALTER TABLE tasks ADD COLUMN redirect_delivered INTEGER NOT NULL DEFAULT 0;",
     "ALTER TABLE tasks ADD COLUMN rework_of TEXT;",
+    "ALTER TABLE tasks ADD COLUMN conflict_base TEXT;",
     "CREATE TABLE task_counters (
     project_id   TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
     next_number  INTEGER NOT NULL

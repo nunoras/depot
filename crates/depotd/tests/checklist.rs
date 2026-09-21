@@ -417,6 +417,69 @@ fn a_pull_request_with_no_checks_renders_the_merge_decision_line() {
 }
 
 #[test]
+fn a_conflicting_pull_request_renders_its_base_until_it_is_mergeable() {
+    let project = ProjectId::new("example/project");
+    let mut tasks = BTreeMap::new();
+    let mut opened = support::simple_task(&project, "t-opened", TaskState::PrOpen, 1);
+    opened.links = vec![Link::PullRequest {
+        number: 42,
+        url: "https://example.test/pull/42".to_string(),
+        checks: Checks::Passing,
+    }];
+    opened.conflict_base = Some(CommitId::new("ba5eba11"));
+    tasks.insert(opened.id.clone(), opened.clone());
+
+    let state = ProjectState {
+        project: project.clone(),
+        slug: "example".to_string(),
+        tasks,
+        coordinator: None,
+        profiles: BTreeMap::new(),
+        fallback_profiles: Vec::new(),
+        limits: Limits::default(),
+        always_relay_questions: false,
+        merge_policy: depot_core::MergePolicy::Manual,
+    };
+    let rendered = render_checklist(&state, true);
+    assert!(
+        rendered.contains("conflicts with base `ba5eba11`"),
+        "a conflicting pull request must name its base in\n{rendered}"
+    );
+
+    let mut running = opened.clone();
+    running.state = TaskState::Running;
+    running.attempts = vec![depot_core::Attempt {
+        session: None,
+        profile: ProfileId::new("fix-profile"),
+        worktree: Some(depot_core::WorktreeLease::new("lease-2")),
+        started_at: Timestamp::from_millis(2),
+        finished_at: None,
+        outcome: depot_core::AttemptOutcome::InFlight,
+        rebase: true,
+        last_seen_at: None,
+    }];
+    let mut rebasing = state.clone();
+    rebasing.tasks.insert(running.id.clone(), running);
+    let rendered = render_checklist(&rebasing, true);
+    assert!(
+        rendered.contains("conflicts with base `ba5eba11`"),
+        "a pending rebase must keep the conflict visible in\n{rendered}"
+    );
+
+    let mut mergeable = state.clone();
+    mergeable
+        .tasks
+        .get_mut(&TaskId::new("t-opened"))
+        .expect("subject task")
+        .conflict_base = None;
+    let rendered = render_checklist(&mergeable, true);
+    assert!(
+        !rendered.contains("conflicts with base"),
+        "a mergeable pull request must not warn about a conflict in\n{rendered}"
+    );
+}
+
+#[test]
 fn task_ids_render_project_qualified() {
     let state = support::varied_state();
 

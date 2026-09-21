@@ -30,6 +30,7 @@ use crate::store::{EventOutcome, RecordedEvent, Store, event_key};
 use crate::vocabulary::{FactTag, checks_name, fact_tag_name};
 
 pub const DAEMON_LOCK_FILE_NAME: &str = "depotd.lock";
+pub const DAEMON_SCOPE_FILE_NAME: &str = "depotd.scope.json";
 const MAX_RESUME_ATTEMPTS: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,7 +42,8 @@ pub struct DaemonScope {
 }
 
 pub struct InstanceLock {
-    file: File,
+    _file: File,
+    scope_path: PathBuf,
 }
 
 impl InstanceLock {
@@ -58,22 +60,41 @@ impl InstanceLock {
     }
 
     pub fn refresh_heartbeat(&self) -> Result<()> {
-        let Some(mut scope) = read_scope_file(&self.file) else {
-            return Ok(());
-        };
+        let bytes = std::fs::read(&self.scope_path).map_err(|error| {
+            Error::Home(format!(
+                "could not read the daemon scope record {}: {error}",
+                self.scope_path.display()
+            ))
+        })?;
+        let mut scope: DaemonScope = serde_json::from_slice(&bytes).map_err(|error| {
+            Error::Home(format!(
+                "could not parse the daemon scope record {}: {error}",
+                self.scope_path.display()
+            ))
+        })?;
         scope.heartbeat_millis = now().millis();
         self.write_scope(&scope)
     }
 
     fn write_scope(&self, scope: &DaemonScope) -> Result<()> {
-        use std::io::{Seek, SeekFrom, Write};
-        let mut file = &self.file;
-        file.set_len(0)?;
-        file.seek(SeekFrom::Start(0))?;
-        serde_json::to_writer(&mut file, scope).map_err(|error| {
-            Error::Home(format!("could not write the daemon lock record: {error}"))
+        let mut temp_name = self.scope_path.as_os_str().to_os_string();
+        temp_name.push(".tmp");
+        let temp = PathBuf::from(temp_name);
+        let bytes = serde_json::to_vec(scope).map_err(|error| {
+            Error::Home(format!("could not encode the daemon scope record: {error}"))
         })?;
-        file.flush()?;
+        std::fs::write(&temp, bytes).map_err(|error| {
+            Error::Home(format!(
+                "could not write the daemon scope record {}: {error}",
+                temp.display()
+            ))
+        })?;
+        std::fs::rename(&temp, &self.scope_path).map_err(|error| {
+            Error::Home(format!(
+                "could not replace the daemon scope record {}: {error}",
+                self.scope_path.display()
+            ))
+        })?;
         Ok(())
     }
 
@@ -91,7 +112,10 @@ impl InstanceLock {
                 path.display()
             ))
         })?;
-        Ok(Self { file })
+        Ok(Self {
+            _file: file,
+            scope_path: home.root().join(DAEMON_SCOPE_FILE_NAME),
+        })
     }
 }
 
@@ -101,7 +125,7 @@ pub fn daemon_scope_covers(
     now: Timestamp,
     stale_after: Duration,
 ) -> Result<bool> {
-    let path = home.root().join(DAEMON_LOCK_FILE_NAME);
+    let path = home.root().join(DAEMON_SCOPE_FILE_NAME);
     let Ok(bytes) = std::fs::read(&path) else {
         return Ok(false);
     };
@@ -115,15 +139,6 @@ pub fn daemon_scope_covers(
             .projects
             .iter()
             .any(|covered| covered == project.as_str()))
-}
-
-fn read_scope_file(file: &File) -> Option<DaemonScope> {
-    use std::io::{Read, Seek, SeekFrom};
-    let mut contents = String::new();
-    let mut reader = file;
-    reader.seek(SeekFrom::Start(0)).ok()?;
-    reader.read_to_string(&mut contents).ok()?;
-    serde_json::from_str(&contents).ok()
 }
 
 pub trait ValidationRunner {
@@ -421,8 +436,9 @@ impl EventHook for std::sync::Arc<dyn EventHook> {
 pub(crate) fn shell_command(command: &str) -> Command {
     #[cfg(windows)]
     let process = {
+        use std::os::windows::process::CommandExt;
         let mut process = Command::new("cmd");
-        process.args(["/C", command]);
+        process.arg("/C").raw_arg(command);
         process
     };
     #[cfg(not(windows))]
@@ -631,19 +647,7 @@ impl ShellEventHook {
 
 impl EventHook for ShellEventHook {
     fn notify(&self, notice: &EventNotice) -> Result<()> {
-        #[cfg(windows)]
-        let mut process = {
-            let mut process = Command::new("cmd");
-            process.args(["/C", &self.command]);
-            process
-        };
-        #[cfg(not(windows))]
-        let mut process = {
-            let mut process = Command::new("sh");
-            process.args(["-c", &self.command]);
-            process
-        };
-        let mut child = process
+        let mut child = shell_command(&self.command)
             .stdin(std::process::Stdio::piped())
             .spawn()
             .map_err(Error::Io)?;
@@ -2400,6 +2404,11 @@ mod tests {
         String::from_utf8_lossy(&output.stdout).trim().to_owned()
     }
 
+    #[cfg(windows)]
+    const PRINT_VALIDATED_AND_EXIT_7: &str = "<nul set /p=validated& exit 7";
+    #[cfg(not(windows))]
+    const PRINT_VALIDATED_AND_EXIT_7: &str = "printf validated; exit 7";
+
     #[test]
     fn validation_runs_at_the_submitted_commit_and_keeps_its_output() {
         let temp = TempDir::new().expect("temporary directory");
@@ -2460,7 +2469,7 @@ mod tests {
             updated_at: depot_core::Timestamp::from_millis(0),
         };
         let result = ShellValidation
-            .validate(&task, &path, &commit, "main", "printf validated; exit 7")
+            .validate(&task, &path, &commit, "main", PRINT_VALIDATED_AND_EXIT_7)
             .expect("validation runs");
         assert_eq!(result.exit_code, 7);
         assert_eq!(result.output_tail, "validated");

@@ -90,6 +90,10 @@ pub enum FactKind {
         task: TaskId,
         text: String,
     },
+    WorkerRedirectDelivered {
+        task: TaskId,
+        redirect: String,
+    },
     WorkerLivenessChanged {
         task: TaskId,
         liveness: Liveness,

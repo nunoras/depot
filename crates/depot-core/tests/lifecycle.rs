@@ -69,6 +69,8 @@ fn task(id: &str, state: TaskState) -> Task {
         links: Vec::new(),
         branch_head: None,
         merge_refused: None,
+        redirect_text: None,
+        redirect_delivered: false,
         acknowledged_at: None,
         hold_pr: false,
         retry: None,
@@ -1349,10 +1351,10 @@ fn a_worker_turn_that_ends_without_submitting_is_commentary() {
 }
 
 #[test]
-fn a_redirect_is_commentary_until_the_worker_is_resumed() {
+fn a_queued_redirect_is_recorded_on_the_task() {
     run(vec![
         case(
-            "a queued redirect changes no state",
+            "a queued redirect is recorded as not yet delivered",
             state(vec![running_with_session("t1", "s1", "w1")]),
             vec![fact(
                 1_000,
@@ -1362,8 +1364,39 @@ fn a_redirect_is_commentary_until_the_worker_is_resumed() {
                 },
             )],
         )
-        .when("t1", TaskState::Running, vec![])
-        .checking(|state| holds(state, "t1", AttemptOutcome::InFlight)),
+        .when("t1", TaskState::Running, vec![Action::RenderChecklist])
+        .checking(|state| {
+            let task = subject(state, "t1");
+            task.redirect_text.as_deref() == Some("drop the migration") && !task.redirect_delivered
+        }),
+    ]);
+}
+
+#[test]
+fn a_delivered_redirect_is_marked_delivered() {
+    run(vec![
+        case(
+            "the delivery receipt marks the queued direction",
+            state(vec![running_with_session("t1", "s1", "w1")]),
+            vec![
+                fact(
+                    1_000,
+                    FactKind::WorkerRedirected {
+                        task: task_id("t1"),
+                        text: "drop the migration".to_owned(),
+                    },
+                ),
+                fact(
+                    2_000,
+                    FactKind::WorkerRedirectDelivered {
+                        task: task_id("t1"),
+                        redirect: "1".to_owned(),
+                    },
+                ),
+            ],
+        )
+        .when("t1", TaskState::Running, vec![Action::RenderChecklist])
+        .checking(|state| subject(state, "t1").redirect_delivered),
     ]);
 }
 

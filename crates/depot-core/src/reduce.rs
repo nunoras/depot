@@ -51,6 +51,8 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                         links: Vec::new(),
                         branch_head: None,
                         merge_refused: None,
+                        redirect_text: None,
+                        redirect_delivered: false,
                         acknowledged_at: None,
                         hold_pr: *hold_pr,
                         retry: None,
@@ -273,7 +275,27 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             }
         }
 
-        FactKind::WorkerRedirected { .. } => {}
+        FactKind::WorkerRedirected { task, text } => {
+            if let Some(task) = next.tasks.get_mut(task)
+                && task.state.in_flight()
+            {
+                task.redirect_text = Some(text.clone());
+                task.redirect_delivered = false;
+                task.updated_at = fact.at;
+                changed = true;
+            }
+        }
+
+        FactKind::WorkerRedirectDelivered { task, .. } => {
+            if let Some(task) = next.tasks.get_mut(task)
+                && task.redirect_text.is_some()
+                && !task.redirect_delivered
+            {
+                task.redirect_delivered = true;
+                task.updated_at = fact.at;
+                changed = true;
+            }
+        }
 
         FactKind::WorkerLivenessChanged { task, liveness } => {
             let in_flight = next

@@ -1,19 +1,34 @@
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use serde_json::Value;
-
 use crate::error::{Error, Result};
 
-pub const EVIDENCE_MARKER: &str = "<!-- depot-evidence -->";
+pub const PROOF_START: &str = "<!-- depot-proof:start -->";
+pub const PROOF_END: &str = "<!-- depot-proof:end -->";
 
 const IMAGE_EXTENSIONS: [&str; 5] = ["png", "jpg", "jpeg", "gif", "webp"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EvidenceArtifact {
+pub enum EvidenceArtifact {
+    Url { url: String, caption: String },
+    File { path: PathBuf, caption: String },
+}
+
+impl EvidenceArtifact {
+    pub fn caption(&self) -> &str {
+        match self {
+            EvidenceArtifact::Url { caption, .. } | EvidenceArtifact::File { caption, .. } => {
+                caption
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedArtifact {
     pub url: String,
     pub caption: String,
 }
@@ -28,14 +43,22 @@ pub fn parse_manifest(stdout: &str) -> Vec<EvidenceArtifact> {
     stdout
         .lines()
         .filter_map(|line| {
-            let (url, caption) = line.trim().split_once('\t')?;
-            let url = url.trim();
-            if url.is_empty() {
+            let (value, caption) = line.trim().split_once('\t')?;
+            let value = value.trim();
+            if value.is_empty() {
                 return None;
             }
-            Some(EvidenceArtifact {
-                url: url.to_owned(),
-                caption: caption.trim().to_owned(),
+            let caption = caption.trim().to_owned();
+            Some(if value.contains("://") {
+                EvidenceArtifact::Url {
+                    url: value.to_owned(),
+                    caption,
+                }
+            } else {
+                EvidenceArtifact::File {
+                    path: PathBuf::from(value),
+                    caption,
+                }
             })
         })
         .collect()
@@ -48,44 +71,62 @@ pub fn is_image(url: &str) -> bool {
     })
 }
 
-pub fn comment_body(artifacts: &[EvidenceArtifact]) -> String {
-    let mut body = String::from(EVIDENCE_MARKER);
-    body.push_str("\n### Task evidence\n\n");
+pub fn render_proof(artifacts: &[ResolvedArtifact]) -> String {
+    let mut body = String::from(PROOF_START);
+    body.push_str("\n## Proof\n\n");
     if artifacts.is_empty() {
         body.push_str("The evidence command ran but captured nothing for this commit.\n");
-        return body;
-    }
-    for artifact in artifacts {
-        if is_image(&artifact.url) {
+    } else {
+        for artifact in artifacts {
             let caption = if artifact.caption.is_empty() {
                 "evidence"
             } else {
-                &artifact.caption
+                artifact.caption.as_str()
             };
-            body.push_str(&format!("![{caption}]({0})\n\n", artifact.url));
-        } else {
-            let caption = if artifact.caption.is_empty() {
-                "evidence"
+            if is_image(&artifact.url) {
+                body.push_str(&format!("![{caption}]({})\n\n", artifact.url));
+            } else if artifact.caption.is_empty() {
+                body.push_str(&format!("{}\n\n", artifact.url));
             } else {
-                &artifact.caption
-            };
-            body.push_str(&format!("[{caption}]({0})\n\n", artifact.url));
+                body.push_str(&format!("{caption}\n\n{}\n\n", artifact.url));
+            }
         }
     }
+    body.push_str(PROOF_END);
     body
 }
 
-pub fn comment_id_with_marker(list_json: &str, marker: &str) -> Option<u64> {
-    let comments: Vec<Value> = serde_json::from_str(list_json).ok()?;
-    comments
-        .iter()
-        .rev()
-        .filter_map(|comment| {
-            let body = comment.get("body")?.as_str()?;
-            let id = comment.get("id")?.as_u64()?;
-            body.contains(marker).then_some(id)
-        })
-        .next()
+pub fn upsert_proof(body: &str, proof: &str) -> String {
+    match proof_section(body) {
+        Some(section) => {
+            let start = body
+                .find(PROOF_START)
+                .expect("the section starts where found");
+            let end = start + section.len();
+            format!("{}{}{}", &body[..start], proof, &body[end..])
+        }
+        None => {
+            let trimmed = body.trim_end();
+            if trimmed.is_empty() {
+                format!("{proof}\n")
+            } else {
+                format!("{trimmed}\n\n{proof}\n")
+            }
+        }
+    }
+}
+
+pub fn preserve_proof(existing: &str, fresh: &str) -> String {
+    match proof_section(existing) {
+        Some(section) => upsert_proof(fresh, section),
+        None => fresh.to_owned(),
+    }
+}
+
+pub fn proof_section(body: &str) -> Option<&str> {
+    let start = body.find(PROOF_START)?;
+    let end = body[start..].find(PROOF_END)? + start + PROOF_END.len();
+    Some(&body[start..end])
 }
 
 pub trait EvidenceRunner {
@@ -151,24 +192,37 @@ impl EvidenceRunner for ShellEvidence {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::{
-        EVIDENCE_MARKER, EvidenceArtifact, comment_body, comment_id_with_marker, is_image,
-        parse_manifest,
+        EvidenceArtifact, PROOF_END, PROOF_START, ResolvedArtifact, is_image, parse_manifest,
+        preserve_proof, proof_section, render_proof, upsert_proof,
     };
 
+    fn resolved(url: &str, caption: &str) -> ResolvedArtifact {
+        ResolvedArtifact {
+            url: url.to_owned(),
+            caption: caption.to_owned(),
+        }
+    }
+
     #[test]
-    fn the_manifest_reads_url_caption_lines_and_ignores_everything_else() {
-        let stdout = "noise without a tab\n\nhttps://img.example/shot.png\tlogin screen\n  https://vid.example/clip.mp4\tthe flow  \n\tdropemptyurl\n";
+    fn the_manifest_reads_url_and_file_records_and_ignores_everything_else() {
+        let stdout = "noise without a tab\n\nhttps://img.example/shot.png\tlogin screen\n  https://vid.example/clip.mp4\tthe flow  \n/tmp/clip.mp4\tthe upload  \n\tdropemptyurl\n";
         assert_eq!(
             parse_manifest(stdout),
             vec![
-                EvidenceArtifact {
+                EvidenceArtifact::Url {
                     url: "https://img.example/shot.png".to_owned(),
                     caption: "login screen".to_owned(),
                 },
-                EvidenceArtifact {
+                EvidenceArtifact::Url {
                     url: "https://vid.example/clip.mp4".to_owned(),
                     caption: "the flow".to_owned(),
+                },
+                EvidenceArtifact::File {
+                    path: PathBuf::from("/tmp/clip.mp4"),
+                    caption: "the upload".to_owned(),
                 },
             ]
         );
@@ -176,29 +230,27 @@ mod tests {
     }
 
     #[test]
-    fn images_embed_and_other_media_stay_captioned_links() {
+    fn images_embed_and_other_media_are_a_bare_url() {
         let artifacts = vec![
-            EvidenceArtifact {
-                url: "https://img.example/shot.png".to_owned(),
-                caption: "login screen".to_owned(),
-            },
-            EvidenceArtifact {
-                url: "https://vid.example/clip.mp4".to_owned(),
-                caption: "the flow".to_owned(),
-            },
+            resolved("https://img.example/shot.png", "login screen"),
+            resolved("https://vid.example/clip.mp4", "the flow"),
         ];
-        let body = comment_body(&artifacts);
-        assert!(body.starts_with(EVIDENCE_MARKER), "{body}");
+        let body = render_proof(&artifacts);
+        assert!(body.starts_with(PROOF_START), "{body}");
+        assert!(body.ends_with(PROOF_END), "{body}");
         assert!(
             body.contains("![login screen](https://img.example/shot.png)"),
             "{body}"
         );
         assert!(
-            body.contains("[the flow](https://vid.example/clip.mp4)"),
+            body.contains("the flow\n\nhttps://vid.example/clip.mp4"),
             "{body}"
         );
-        let empty = comment_body(&[]);
-        assert!(empty.starts_with(EVIDENCE_MARKER));
+        assert!(
+            !body.contains("[the flow](https://vid.example/clip.mp4)"),
+            "a video is not a markdown link: {body}"
+        );
+        let empty = render_proof(&[]);
         assert!(empty.contains("captured nothing"), "{empty}");
     }
 
@@ -211,17 +263,49 @@ mod tests {
     }
 
     #[test]
-    fn the_marker_finds_the_latest_marked_comment_id() {
-        let list = r#"[
-            {"id": 7, "body": "a plain review comment"},
-            {"id": 9, "body": "older\n<!-- depot-evidence -->\n### Task evidence"},
-            {"id": 11, "body": "newest\n<!-- depot-evidence -->\n### Task evidence"}
-        ]"#;
-        assert_eq!(comment_id_with_marker(list, EVIDENCE_MARKER), Some(11));
+    fn the_proof_section_is_replaced_in_place() {
+        let body = "## Why\n\nsome reasoning\n\n## Validation\n\ncargo test\n";
+        let once = upsert_proof(body, &render_proof(&[resolved("https://a.test/x.mp4", "")]));
+        assert!(once.contains("## Why"));
+        assert!(once.contains("## Validation"));
+        assert_eq!(once.matches("## Proof").count(), 1);
+
+        let twice = upsert_proof(
+            &once,
+            &render_proof(&[resolved("https://a.test/y.mp4", "")]),
+        );
+        assert_eq!(twice.matches("## Proof").count(), 1);
+        assert!(twice.contains("https://a.test/y.mp4"), "{twice}");
+        assert!(!twice.contains("https://a.test/x.mp4"), "{twice}");
+        assert!(twice.contains("## Validation"));
+    }
+
+    #[test]
+    fn a_fresh_body_keeps_the_owned_proof_section_across_a_describe_refresh() {
+        let published = upsert_proof(
+            "## Why\n\nold\n",
+            &render_proof(&[resolved("https://a.test/x.mp4", "clip")]),
+        );
+        let refreshed = "## Why\n\nnew\n\n## Validation\n\ncargo test\n";
+        let merged = preserve_proof(&published, refreshed);
+        assert!(merged.contains("## Why\n\nnew"), "{merged}");
+        assert!(merged.contains("https://a.test/x.mp4"), "{merged}");
+        assert_eq!(merged.matches("## Proof").count(), 1);
+        assert_eq!(preserve_proof("no proof here", refreshed), refreshed);
+    }
+
+    #[test]
+    fn the_section_reads_between_its_markers() {
+        let body =
+            "before\n<!-- depot-proof:start -->\n## Proof\nx\n<!-- depot-proof:end -->\nafter";
         assert_eq!(
-            comment_id_with_marker(r#"[{"id": 7, "body": "plain"}]"#, EVIDENCE_MARKER),
+            proof_section(body),
+            Some("<!-- depot-proof:start -->\n## Proof\nx\n<!-- depot-proof:end -->")
+        );
+        assert_eq!(proof_section("nothing"), None);
+        assert_eq!(
+            proof_section("<!-- depot-proof:start -->unterminated"),
             None
         );
-        assert_eq!(comment_id_with_marker("not json", EVIDENCE_MARKER), None);
     }
 }

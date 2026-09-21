@@ -8,7 +8,7 @@ mod temp;
 use depot_core::{Checks, CommitId};
 use depotd::adapters::forge::{
     CredentialSource, Forge, GitHub, NewPullRequest, PrState, RepoSlug, TOKEN_FILE,
-    resolve_credentials,
+    UserAssetUpload, resolve_credentials,
 };
 use fake_forge::FakeForge;
 use fake_program::FakeProgram;
@@ -647,81 +647,165 @@ fn surfaces_a_refused_branch_delete() {
 }
 
 #[test]
-fn finds_only_the_comment_carrying_the_marker() {
-    let forge_endpoint = FakeForge::start();
-    forge_endpoint.route_query(
-        "GET",
-        "/repos/acme/widget/issues/7/comments",
-        Some("per_page=100"),
-        200,
-        r#"[{"id":3,"body":"looks good to me"},{"id":9,"body":"title\n<!-- depot-evidence -->\nevidence"}]"#,
-    );
-
-    let found = GitHub::new(forge_endpoint.base_url(), "token-1")
-        .find_comment(&repo(), 7, "<!-- depot-evidence -->")
-        .expect("the comment is found");
-    assert_eq!(found, Some(9));
-
-    let recorded = forge_endpoint.request_to("/repos/acme/widget/issues/7/comments");
-    assert_eq!(recorded.query.as_deref(), Some("per_page=100"));
-}
-
-#[test]
-fn finds_no_comment_when_the_marker_is_absent() {
-    let forge_endpoint = FakeForge::start();
-    forge_endpoint.route_query(
-        "GET",
-        "/repos/acme/widget/issues/7/comments",
-        Some("per_page=100"),
-        200,
-        r#"[{"id":3,"body":"looks good to me"}]"#,
-    );
-
-    let found = GitHub::new(forge_endpoint.base_url(), "token-1")
-        .find_comment(&repo(), 7, "<!-- depot-evidence -->")
-        .expect("the comment list is read");
-    assert_eq!(found, None);
-}
-
-#[test]
-fn creates_a_comment_and_reads_its_id() {
+fn reads_a_pull_requests_title_and_body_without_asking_for_checks() {
     let forge_endpoint = FakeForge::start();
     forge_endpoint.route(
-        "POST",
-        "/repos/acme/widget/issues/7/comments",
-        201,
-        r#"{"id":55,"body":"evidence"}"#,
+        "GET",
+        "/repos/acme/widget/pulls/7",
+        200,
+        "{\"number\":7,\"title\":\"the work\",\"body\":\"## Why\\n\\nreasons\"}",
     );
 
-    let id = GitHub::new(forge_endpoint.base_url(), "token-1")
-        .create_comment(&repo(), 7, "evidence")
-        .expect("the comment is created");
-    assert_eq!(id, 55);
-
-    let recorded = forge_endpoint.request_to("/repos/acme/widget/issues/7/comments");
-    assert_eq!(recorded.method, "POST");
-    assert!(recorded.body.contains("\"body\""), "{}", recorded.body);
+    let (title, body) = GitHub::new(forge_endpoint.base_url(), "token-1")
+        .pull_request_text(&repo(), 7)
+        .expect("the text is read");
+    assert_eq!(title, "the work");
+    assert_eq!(body.as_deref(), Some("## Why\n\nreasons"));
+    assert!(
+        !forge_endpoint
+            .requests()
+            .iter()
+            .any(|request| request.path.contains("check-runs")),
+        "reading the text never asks for checks"
+    );
 }
 
 #[test]
-fn edits_the_marked_comment_in_place() {
+fn edits_a_pull_requests_title_and_body() {
     let forge_endpoint = FakeForge::start();
     forge_endpoint.route(
         "PATCH",
-        "/repos/acme/widget/issues/comments/9",
+        "/repos/acme/widget/pulls/7",
         200,
-        r#"{"id":9,"body":"evidence"}"#,
+        r#"{"number":7}"#,
     );
 
     GitHub::new(forge_endpoint.base_url(), "token-1")
-        .update_comment(&repo(), 9, "updated evidence")
-        .expect("the comment is edited");
+        .update_pull_request(&repo(), 7, "a new title", "a new body")
+        .expect("the pull request is edited");
 
-    let recorded = forge_endpoint.request_to("/repos/acme/widget/issues/comments/9");
+    let recorded = forge_endpoint.request_to("/repos/acme/widget/pulls/7");
     assert_eq!(recorded.method, "PATCH");
-    assert!(
-        recorded.body.contains("updated evidence"),
-        "{}",
-        recorded.body
+    assert!(recorded.body.contains("a new title"), "{}", recorded.body);
+    assert!(recorded.body.contains("a new body"), "{}", recorded.body);
+}
+
+#[test]
+fn surfaces_a_refused_pull_request_update() {
+    let forge_endpoint = FakeForge::start();
+    forge_endpoint.route(
+        "PATCH",
+        "/repos/acme/widget/pulls/7",
+        422,
+        r#"{"message":"Validation Failed"}"#,
     );
+
+    let error = GitHub::new(forge_endpoint.base_url(), "token-1")
+        .update_pull_request(&repo(), 7, "title", "body")
+        .expect_err("a refused update is an error");
+    assert!(error.to_string().contains("422"), "{error}");
+}
+
+#[test]
+fn uploads_a_user_asset_through_the_policy_and_upload_exchange() {
+    let forge_endpoint = FakeForge::start();
+    let base = forge_endpoint.base_url();
+    forge_endpoint.route(
+        "POST",
+        "/upload/policies/assets",
+        200,
+        &format!(
+            "{{\"upload_url\":\"{base}/upload/user-assets/abc\",\"asset\":{{\"href\":\"https://github.com/user-attachments/assets/uuid\",\"content_type\":\"video/mp4\"}},\"form\":{{\"key\":\"assets/uuid\"}},\"header\":{{\"x-amz-acl\":\"public-read\"}}}}"
+        ),
+    );
+    forge_endpoint.route("POST", "/upload/user-assets/abc", 200, "{}");
+
+    let temp = TempDir::new("upload");
+    let file = temp.path().join("clip.mp4");
+    std::fs::write(&file, b"video bytes").expect("the evidence file is written");
+    let url = GitHub::new(base.clone(), "token-1")
+        .upload_user_asset(&UserAssetUpload {
+            path: file.clone(),
+            content_type: "video/mp4".to_owned(),
+        })
+        .expect("the asset uploads");
+    assert_eq!(url, "https://github.com/user-attachments/assets/uuid");
+
+    let policy = forge_endpoint.request_to("/upload/policies/assets");
+    assert!(policy.body.contains("clip.mp4"), "{}", policy.body);
+    assert!(policy.body.contains("video/mp4"), "{}", policy.body);
+    assert!(
+        policy
+            .body
+            .contains(&format!("\"size\":{}", "video bytes".len())),
+        "{}",
+        policy.body
+    );
+
+    let upload = forge_endpoint.request_to("/upload/user-assets/abc");
+    assert_eq!(upload.method, "POST");
+    assert!(
+        upload.header("authorization").is_none(),
+        "the GitHub credential never reaches the upload host: {:?}",
+        upload.headers
+    );
+    assert_eq!(upload.header("x-amz-acl"), Some("public-read"));
+    assert!(
+        upload
+            .header("content-type")
+            .is_some_and(|value| value.starts_with("multipart/form-data; boundary=")),
+        "{:?}",
+        upload.header("content-type")
+    );
+    assert!(upload.body.contains("assets/uuid"), "{}", upload.body);
+    assert!(upload.body.contains("video bytes"), "{}", upload.body);
+}
+
+#[test]
+fn refuses_an_upload_when_the_policy_endpoint_rejects_the_credential() {
+    let forge_endpoint = FakeForge::start();
+    forge_endpoint.route(
+        "POST",
+        "/upload/policies/assets",
+        422,
+        "<!DOCTYPE html><html><body>Oh no</body></html>",
+    );
+
+    let temp = TempDir::new("upload-refused");
+    let file = temp.path().join("clip.mp4");
+    std::fs::write(&file, b"video bytes").expect("the evidence file is written");
+    let error = GitHub::new(forge_endpoint.base_url(), "token-1")
+        .upload_user_asset(&UserAssetUpload {
+            path: file,
+            content_type: "video/mp4".to_owned(),
+        })
+        .expect_err("a refused policy is an error");
+    let message = error.to_string();
+    assert!(message.contains("user-attachments"), "{message}");
+    assert!(message.contains("browser session"), "{message}");
+}
+
+#[test]
+fn refuses_a_policy_whose_asset_content_type_does_not_match() {
+    let forge_endpoint = FakeForge::start();
+    let base = forge_endpoint.base_url();
+    forge_endpoint.route(
+        "POST",
+        "/upload/policies/assets",
+        200,
+        &format!(
+            "{{\"upload_url\":\"{base}/upload/user-assets/abc\",\"asset\":{{\"href\":\"https://github.com/user-attachments/assets/uuid\",\"content_type\":\"text/plain\"}},\"form\":{{}}}}"
+        ),
+    );
+
+    let temp = TempDir::new("upload-mismatch");
+    let file = temp.path().join("clip.mp4");
+    std::fs::write(&file, b"video bytes").expect("the evidence file is written");
+    let error = GitHub::new(base, "token-1")
+        .upload_user_asset(&UserAssetUpload {
+            path: file,
+            content_type: "video/mp4".to_owned(),
+        })
+        .expect_err("a mismatched content type is an error");
+    assert!(error.to_string().contains("content type"), "{error}");
 }

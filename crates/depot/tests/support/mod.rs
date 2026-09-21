@@ -657,6 +657,12 @@ impl Golden {
             200,
             &pull_request(commit, BASE, "open", false, true),
         );
+        self.forge.route(
+            "PATCH",
+            &format!("/repos/{REPOSITORY}/pulls/1"),
+            200,
+            &format!("{{\"number\":1,\"html_url\":\"https://forge.test/{REPOSITORY}/pull/1\",\"state\":\"open\"}}"),
+        );
         self.forge.replace_route_query(
             "GET",
             &format!("/repos/{REPOSITORY}/pulls"),

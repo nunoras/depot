@@ -184,7 +184,6 @@ pub enum FactKind {
     EvidencePosted {
         task: TaskId,
         commit: CommitId,
-        comment_id: u64,
     },
     EvidenceFailed {
         task: TaskId,

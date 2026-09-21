@@ -1598,6 +1598,17 @@ fn an_open_pull_request_depot_did_not_open_is_adopted_rather_than_duplicated() {
         0,
         "an already open pull request is never opened again"
     );
+    let refreshed = golden
+        .forge
+        .requests()
+        .into_iter()
+        .find(|request| request.method == "PATCH")
+        .expect("the adopted pull request is refreshed with the daemon's title and body");
+    assert!(
+        refreshed.body.contains("## Validation"),
+        "the reused pull request carries the rendered body: {}",
+        refreshed.body
+    );
     let checklist = golden.status();
     assert!(checklist.contains("Pull request open (1)"), "{checklist}");
     assert_eq!(checklist, golden.checklist());

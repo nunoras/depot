@@ -7,9 +7,10 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use depot_core::{
-    Action, Baseline, Checks, CommitId, Dependency, Fact, FactKind, Liveness, MergePolicy, Role,
-    SessionId, Task, TaskId, TaskState, WorktreeLease,
+    Action, Baseline, Checks, CommitId, Dependency, Fact, FactKind, Liveness, MergePolicy, ProjectId,
+    Role, SessionId, Task, TaskId, TaskState, Timestamp, WorktreeLease,
 };
+use serde::{Deserialize, Serialize};
 
 use crate::adapters::forge::{Forge, NewPullRequest, PrState, RepoSlug};
 use crate::adapters::profiles::ProfileResolver;
@@ -28,11 +29,51 @@ use crate::vocabulary::{FactTag, checks_name, fact_tag_name};
 pub const DAEMON_LOCK_FILE_NAME: &str = "depotd.lock";
 const MAX_RESUME_ATTEMPTS: u32 = 3;
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DaemonScope {
+    pub pid: u32,
+    pub started_at_millis: u64,
+    pub projects: Vec<String>,
+    pub heartbeat_millis: u64,
+}
+
 pub struct InstanceLock {
-    _file: File,
+    file: File,
 }
 
 impl InstanceLock {
+    pub fn record_scope(&self, projects: &[Project]) -> Result<()> {
+        self.write_scope(&DaemonScope {
+            pid: std::process::id(),
+            started_at_millis: now().millis(),
+            projects: projects
+                .iter()
+                .map(|project| project.id.to_string())
+                .collect(),
+            heartbeat_millis: now().millis(),
+        })
+    }
+
+    pub fn refresh_heartbeat(&self) -> Result<()> {
+        let Some(mut scope) = read_scope_file(&self.file) else {
+            return Ok(());
+        };
+        scope.heartbeat_millis = now().millis();
+        self.write_scope(&scope)
+    }
+
+    fn write_scope(&self, scope: &DaemonScope) -> Result<()> {
+        use std::io::{Seek, SeekFrom, Write};
+        let mut file = &self.file;
+        file.set_len(0)?;
+        file.seek(SeekFrom::Start(0))?;
+        serde_json::to_writer(&mut file, scope).map_err(|error| {
+            Error::Home(format!("could not write the daemon lock record: {error}"))
+        })?;
+        file.flush()?;
+        Ok(())
+    }
+
     pub fn acquire(home: &DepotHome) -> Result<Self> {
         home.ensure()?;
         let path = home.root().join(DAEMON_LOCK_FILE_NAME);
@@ -47,8 +88,39 @@ impl InstanceLock {
                 path.display()
             ))
         })?;
-        Ok(Self { _file: file })
+        Ok(Self { file })
     }
+}
+
+pub fn daemon_scope_covers(
+    home: &DepotHome,
+    project: &ProjectId,
+    now: Timestamp,
+    stale_after: Duration,
+) -> Result<bool> {
+    let path = home.root().join(DAEMON_LOCK_FILE_NAME);
+    let Ok(bytes) = std::fs::read(&path) else {
+        return Ok(false);
+    };
+    let Ok(scope) = serde_json::from_slice::<DaemonScope>(&bytes) else {
+        return Ok(false);
+    };
+    let fresh =
+        now.millis().saturating_sub(scope.heartbeat_millis) <= stale_after.as_millis() as u64;
+    Ok(fresh
+        && scope
+            .projects
+            .iter()
+            .any(|covered| covered == project.as_str()))
+}
+
+fn read_scope_file(file: &File) -> Option<DaemonScope> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut contents = String::new();
+    let mut reader = file;
+    reader.seek(SeekFrom::Start(0)).ok()?;
+    reader.read_to_string(&mut contents).ok()?;
+    serde_json::from_str(&contents).ok()
 }
 
 pub trait ValidationRunner {

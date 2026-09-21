@@ -10,7 +10,7 @@ use depotd::{
     ShellValidation, Store, Supervisor, select_project,
 };
 
-const USAGE: &str = "depotd [--project <project>]\n";
+const USAGE: &str = "depotd [--project <project>]\n\n  --project narrows the daemon to one project. It is a debugging flag: the single\n  daemon lock means no other registered project is driven while it runs.\n";
 
 fn main() {
     match run() {
@@ -25,7 +25,7 @@ fn main() {
 fn run() -> depotd::Result<()> {
     let filter = arguments()?;
     let home = DepotHome::resolve()?;
-    let _lock = InstanceLock::acquire(&home)?;
+    let lock = InstanceLock::acquire(&home)?;
     let store = Store::open(&home)?;
     let projects = match filter {
         Some(name) => vec![select_project(&store, Some(&name))?],
@@ -57,6 +57,7 @@ fn run() -> depotd::Result<()> {
         hook,
     );
     supervisor.recover()?;
+    lock.record_scope(supervisor.projects())?;
     let mut turn: usize = 0;
     loop {
         if let Err(error) = supervisor.tick(turn) {
@@ -66,6 +67,7 @@ fn run() -> depotd::Result<()> {
                 return Err(error);
             }
         }
+        lock.refresh_heartbeat()?;
         turn = turn.wrapping_add(1);
         thread::sleep(home.load_settings()?.poll_interval());
     }

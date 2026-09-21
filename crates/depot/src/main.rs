@@ -37,6 +37,9 @@ SELECTION
   --all lists every registered project.
 
 NOTES
+  One depot daemon runs per depot home. `depotd --project` narrows it to one project and is a
+  debugging flag: while it runs, no daemon drives any other registered project, and `depot status`
+  says so next to the affected projects.
   A task lands held. Approving it is what lets it run.
   A role resolves to a profile through the project's machine-local .depot.toml; an unmapped role is refused.
   Multiple --depends-on need --base-dependency naming one of those tasks as the baseline.

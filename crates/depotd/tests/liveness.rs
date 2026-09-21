@@ -253,6 +253,15 @@ fn a_stale_liveness_fact_is_refreshed_but_a_fresh_one_is_left_alone() {
     assert_eq!(liveness_events(&store, &project.id).len(), 3);
 }
 
+fn real_now() -> Timestamp {
+    Timestamp::from_millis(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("the clock is after the epoch")
+            .as_millis() as u64,
+    )
+}
+
 #[test]
 fn a_healthy_session_is_never_unobserved_across_ten_minutes_of_polls() {
     let fixture = support::fixture();
@@ -261,12 +270,23 @@ fn a_healthy_session_is_never_unobserved_across_ten_minutes_of_polls() {
     let project = added.project.clone();
     let task = running_task(&project.id, "t-1", "s-1", 0);
     store.put_task(&task).expect("stored");
+    let daemon = observe_daemon(&store, &project);
+    let now = real_now();
 
     for minute in 0..=10u64 {
-        let at = Timestamp::from_millis(minute * 60_000);
-        seeded_liveness(&store, &project, &task.id, minute * 60_000, Liveness::Live);
+        let last_seen = Timestamp::from_millis(now.millis().saturating_sub(minute * 60_000));
+        seeded_liveness(
+            &store,
+            &project,
+            &task.id,
+            last_seen.millis(),
+            Liveness::Live,
+        );
+        daemon
+            .worker_liveness(task.id.clone(), Liveness::Live)
+            .expect("the daemon refreshes a stale observation");
         let state = store.project_state(&project).expect("state");
-        let rendered = render_checklist_observed(&state, false, at);
+        let rendered = render_checklist_observed(&state, false, now);
         assert!(
             !rendered.contains("unobserved"),
             "minute {minute} read as unobserved:\n{rendered}"
@@ -277,7 +297,7 @@ fn a_healthy_session_is_never_unobserved_across_ten_minutes_of_polls() {
     let stale = render_checklist_observed(
         &state,
         false,
-        Timestamp::from_millis(10 * 60_000 + 6 * 60_000),
+        Timestamp::from_millis(now.millis() + 6 * 60_000),
     );
     assert!(
         stale.contains("unobserved"),

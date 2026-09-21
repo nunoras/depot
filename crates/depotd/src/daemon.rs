@@ -120,7 +120,7 @@ impl InstanceLock {
             .create(true)
             .truncate(false)
             .open(&path)?;
-        let scope = read_scope_file(&file);
+        let scope = daemon_scope(home);
         file.try_lock_exclusive().map_err(|error| {
             Error::Home(format!(
                 "{} ({error})",
@@ -155,7 +155,7 @@ fn lock_held_message(path: &Path, scope: Option<&DaemonScope>) -> String {
 }
 
 pub fn daemon_scope(home: &DepotHome) -> Option<DaemonScope> {
-    let bytes = std::fs::read(home.root().join(DAEMON_LOCK_FILE_NAME)).ok()?;
+    let bytes = std::fs::read(home.root().join(DAEMON_SCOPE_FILE_NAME)).ok()?;
     serde_json::from_slice(&bytes).ok()
 }
 
@@ -184,15 +184,6 @@ pub fn daemon_scope_covers(
     };
     Ok(scope_is_fresh(&scope, now, stale_after)
         && scope.projects.iter().any(|covered| covered == slug))
-}
-
-fn read_scope_file(file: &File) -> Option<DaemonScope> {
-    use std::io::{Read, Seek, SeekFrom};
-    let mut contents = String::new();
-    let mut reader = file;
-    reader.seek(SeekFrom::Start(0)).ok()?;
-    reader.read_to_string(&mut contents).ok()?;
-    serde_json::from_str(&contents).ok()
 }
 
 pub trait ValidationRunner {
@@ -810,6 +801,7 @@ where
         self.reconcile_resume()?;
         self.reconcile_budget()?;
         self.reconcile_sessions()?;
+        self.reconcile_stops()?;
         self.reconcile_notify()
     }
 
@@ -831,6 +823,7 @@ where
         self.reconcile_resume()?;
         self.reconcile_budget()?;
         self.reconcile_sessions()?;
+        self.reconcile_stops()?;
         self.reconcile_validation()?;
         self.reconcile_delivery()?;
         self.reconcile_evidence()?;
@@ -1864,7 +1857,11 @@ where
         let run_duration = self.store.home().load_settings()?.run_duration();
         let at = now();
         for task in self.store.tasks(&self.project.id)?.into_values() {
-            if !task.state.in_flight() {
+            if !task.state.in_flight()
+                || task.state == TaskState::WaitingOnQuestion
+                || self.answer_owed(&task.id)?
+                || self.pending_redirect(&task.id)?.is_some()
+            {
                 continue;
             }
             let Some(attempt) = task.attempts.last() else {
@@ -1893,6 +1890,32 @@ where
             )?;
         }
         Ok(())
+    }
+
+    fn reconcile_stops(&self) -> Result<()> {
+        for task in self.store.tasks(&self.project.id)?.into_values() {
+            let Some(attempt) = task.attempts.last() else {
+                continue;
+            };
+            if attempt.outcome != depot_core::AttemptOutcome::Stopped {
+                continue;
+            }
+            let Some(session) = attempt.session.clone() else {
+                continue;
+            };
+            if !self.session_is_running(&session)? {
+                continue;
+            }
+            self.stop(task.id.clone())?;
+        }
+        Ok(())
+    }
+
+    fn session_is_running(&self, session: &SessionId) -> Result<bool> {
+        Ok(matches!(
+            self.sessions.status(session),
+            Ok(status) if status.state == crate::adapters::sessions::SessionState::Running
+        ))
     }
 
     fn reconcile_sessions(&self) -> Result<()> {

@@ -502,7 +502,7 @@ fn status_warns_when_the_running_daemon_was_built_from_another_commit() {
     lock.record_scope(std::slice::from_ref(&added.project))
         .expect("scope");
 
-    let path = fixture.home.root().join(depotd::DAEMON_LOCK_FILE_NAME);
+    let path = fixture.home.root().join(depotd::DAEMON_SCOPE_FILE_NAME);
     let mut scope: depotd::DaemonScope =
         serde_json::from_slice(&std::fs::read(&path).expect("lock record")).expect("parsed scope");
     scope.build_id = "0ldbu11d".to_string();

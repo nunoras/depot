@@ -2794,6 +2794,35 @@ fn a_run_duration_stop_that_fails_surfaces_rather_than_pretending_success() {
 }
 
 #[test]
+fn a_failed_stop_is_retried_until_the_session_is_gone() {
+    let golden = Golden::new(Validation::Passing);
+    zero_run_duration(&golden);
+    let daemon = golden.daemon();
+    golden.propose();
+    golden
+        .boxr
+        .respond("stop", "", "boxr could not stop the session", 1);
+
+    daemon.tick().expect_err("the first stop fails");
+    assert_eq!(golden.boxr.calls_to("stop").len(), 1);
+
+    golden.boxr.respond("stop", "", "", 0);
+    daemon.tick().expect("the next tick retries the stop");
+    assert_eq!(
+        golden.boxr.calls_to("stop").len(),
+        2,
+        "a session still reported running is stopped again"
+    );
+
+    daemon.tick().expect("a stopped session is left alone");
+    assert_eq!(
+        golden.boxr.calls_to("stop").len(),
+        2,
+        "the retry stops once the session is gone"
+    );
+}
+
+#[test]
 fn a_terminal_session_failure_records_its_reason_for_the_checklist_and_inbox() {
     let golden = Golden::new(Validation::Passing);
     let daemon = golden.daemon();

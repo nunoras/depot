@@ -66,6 +66,15 @@ fn respond(root: &Path, arguments: &[String]) -> ExitCode {
     {
         let _ = fs::write(root.join("status.stdout"), state);
     }
+    if code == 0
+        && key == "stop"
+        && let Some(session) = arguments.get(1)
+    {
+        let _ = fs::write(
+            root.join("status.stdout"),
+            format!("session: {session}\nstate: stopped\n"),
+        );
+    }
     ExitCode::from(code)
 }
 

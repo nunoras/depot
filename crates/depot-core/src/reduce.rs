@@ -944,6 +944,7 @@ fn relaunch(task: &mut Task, at: Timestamp, actions: &mut Vec<Action>) -> bool {
     };
     let lease = take_last_worktree(task);
     task.attempts.push(Attempt {
+        last_seen_at: None,
         session: None,
         profile: profile.clone(),
         worktree: lease,

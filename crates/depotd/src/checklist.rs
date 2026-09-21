@@ -6,7 +6,7 @@ use depot_core::{
 
 use crate::vocabulary::{checks_name, role_name};
 
-const UNOBSERVED_AFTER_MILLIS: u64 = 5 * 60 * 1000;
+pub const UNOBSERVED_AFTER_MILLIS: u64 = 5 * 60 * 1000;
 
 const SECTIONS: [(TaskState, &str, bool); 11] = [
     (

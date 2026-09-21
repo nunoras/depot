@@ -8,6 +8,7 @@ use crate::error::{Error, Result};
 
 pub const PROOF_START: &str = "<!-- depot-proof:start -->";
 pub const PROOF_END: &str = "<!-- depot-proof:end -->";
+pub const MANAGED_MARKER: &str = "<!-- depot-managed -->";
 
 const IMAGE_EXTENSIONS: [&str; 5] = ["png", "jpg", "jpeg", "gif", "webp"];
 
@@ -17,20 +18,24 @@ pub enum EvidenceArtifact {
     File { path: PathBuf, caption: String },
 }
 
-impl EvidenceArtifact {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResolvedArtifact {
+    Url { url: String, caption: String },
+    LocalFile { path: PathBuf, caption: String },
+}
+
+impl ResolvedArtifact {
     pub fn caption(&self) -> &str {
         match self {
-            EvidenceArtifact::Url { caption, .. } | EvidenceArtifact::File { caption, .. } => {
+            ResolvedArtifact::Url { caption, .. } | ResolvedArtifact::LocalFile { caption, .. } => {
                 caption
             }
         }
     }
-}
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResolvedArtifact {
-    pub url: String,
-    pub caption: String,
+    pub fn is_url(&self) -> bool {
+        matches!(self, ResolvedArtifact::Url { .. })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,6 +76,29 @@ pub fn is_image(url: &str) -> bool {
     })
 }
 
+pub fn resolve_artifacts(worktree: &Path, artifacts: &[EvidenceArtifact]) -> Vec<ResolvedArtifact> {
+    artifacts
+        .iter()
+        .map(|artifact| match artifact {
+            EvidenceArtifact::Url { url, caption } => ResolvedArtifact::Url {
+                url: url.clone(),
+                caption: caption.clone(),
+            },
+            EvidenceArtifact::File { path, caption } => {
+                let path = if path.is_absolute() {
+                    path.clone()
+                } else {
+                    worktree.join(path)
+                };
+                ResolvedArtifact::LocalFile {
+                    path,
+                    caption: caption.clone(),
+                }
+            }
+        })
+        .collect()
+}
+
 pub fn render_proof(artifacts: &[ResolvedArtifact]) -> String {
     let mut body = String::from(PROOF_START);
     body.push_str("\n## Proof\n\n");
@@ -78,22 +106,43 @@ pub fn render_proof(artifacts: &[ResolvedArtifact]) -> String {
         body.push_str("The evidence command ran but captured nothing for this commit.\n");
     } else {
         for artifact in artifacts {
-            let caption = if artifact.caption.is_empty() {
+            let caption = if artifact.caption().is_empty() {
                 "evidence"
             } else {
-                artifact.caption.as_str()
+                artifact.caption()
             };
-            if is_image(&artifact.url) {
-                body.push_str(&format!("![{caption}]({})\n\n", artifact.url));
-            } else if artifact.caption.is_empty() {
-                body.push_str(&format!("{}\n\n", artifact.url));
-            } else {
-                body.push_str(&format!("{caption}\n\n{}\n\n", artifact.url));
+            match artifact {
+                ResolvedArtifact::Url { url, .. } if is_image(url) => {
+                    body.push_str(&format!("![{caption}]({url})\n\n"));
+                }
+                ResolvedArtifact::Url { url, caption } if caption.is_empty() => {
+                    body.push_str(&format!("{url}\n\n"));
+                }
+                ResolvedArtifact::Url { url, .. } => {
+                    body.push_str(&format!("{caption}\n\n{url}\n\n"));
+                }
+                ResolvedArtifact::LocalFile { path, .. } => {
+                    body.push_str(&format!(
+                        "{caption}\n\n`{}` is a local file, so it cannot be attached to a pull request. Publish it at a URL and add that URL to the evidence manifest.\n\n",
+                        path.display()
+                    ));
+                }
             }
         }
     }
     body.push_str(PROOF_END);
     body
+}
+
+pub fn mark_managed(body: &str) -> String {
+    if is_managed(body) {
+        return body.to_owned();
+    }
+    format!("{MANAGED_MARKER}\n\n{}", body.trim_start())
+}
+
+pub fn is_managed(body: &str) -> bool {
+    body.contains(MANAGED_MARKER)
 }
 
 pub fn upsert_proof(body: &str, proof: &str) -> String {
@@ -192,15 +241,16 @@ impl EvidenceRunner for ShellEvidence {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     use super::{
-        EvidenceArtifact, PROOF_END, PROOF_START, ResolvedArtifact, is_image, parse_manifest,
-        preserve_proof, proof_section, render_proof, upsert_proof,
+        EvidenceArtifact, MANAGED_MARKER, PROOF_END, PROOF_START, ResolvedArtifact, is_image,
+        is_managed, mark_managed, parse_manifest, preserve_proof, proof_section, render_proof,
+        resolve_artifacts, upsert_proof,
     };
 
     fn resolved(url: &str, caption: &str) -> ResolvedArtifact {
-        ResolvedArtifact {
+        ResolvedArtifact::Url {
             url: url.to_owned(),
             caption: caption.to_owned(),
         }
@@ -227,6 +277,51 @@ mod tests {
             ]
         );
         assert!(parse_manifest("").is_empty());
+    }
+
+    #[test]
+    fn a_local_file_is_noted_not_attached_and_a_relative_path_resolves_against_the_worktree() {
+        let worktree = Path::new("/work");
+        let artifacts = parse_manifest("out/clip.mp4\tthe flow\n");
+        let resolved = resolve_artifacts(worktree, &artifacts);
+        assert_eq!(
+            resolved,
+            vec![ResolvedArtifact::LocalFile {
+                path: worktree.join("out/clip.mp4"),
+                caption: "the flow".to_owned(),
+            }]
+        );
+        assert!(!resolved[0].is_url(), "a local file is never a usable url");
+        let body = render_proof(&resolved);
+        assert!(body.contains("the flow"), "{body}");
+        assert!(
+            body.contains("cannot be attached to a pull request"),
+            "{body}"
+        );
+        assert!(
+            body.contains("Publish it at a URL and add that URL to the evidence manifest."),
+            "{body}"
+        );
+        assert!(!body.contains("![the flow]"), "{body}");
+
+        let absolute = parse_manifest("/tmp/clip.mp4\tthe upload\n");
+        let resolved = resolve_artifacts(worktree, &absolute);
+        assert_eq!(
+            resolved[0],
+            ResolvedArtifact::LocalFile {
+                path: PathBuf::from("/tmp/clip.mp4"),
+                caption: "the upload".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn a_body_depot_owns_carries_the_managed_marker_once() {
+        let marked = mark_managed("## Why\n\nsomething\n");
+        assert!(marked.starts_with(MANAGED_MARKER), "{marked}");
+        assert!(is_managed(&marked));
+        assert!(!is_managed("## Why\n\nsomeone else's body\n"));
+        assert!(!is_managed(""));
     }
 
     #[test]

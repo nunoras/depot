@@ -24,8 +24,8 @@ Depot worktree: this branch.
 1. Launch `--kind` is the task role (`build` / `plan` / `review` / `fix`), not the invalid boxr kind `worker`.
 2. `--account` is omitted when the profile account is empty (required for pi).
 3. Nested boxr TOON (`session:` / `id` / `state` / `status`) is accepted via leaf-key reads; regression test added.
-4. Treehouse acquire always places the lease on a delivery branch named from the holder (`depot-<task>`), including `DefaultBranchHead`.
-5. Delivery falls back to creating `depot-<task>` when the worktree is still detached, so a restart can finish a validated task.
+4. Treehouse acquire always places the lease on a delivery branch, including `DefaultBranchHead`. The name now comes from `depot_core::delivery_branch` over the task title and intent, a `feat`/`fix`/`chore`/`refactor` prefix plus a title slug, with a numeric suffix when the name is taken; this run still saw `depot-<task>`.
+5. Delivery falls back to creating that same conventional branch when the worktree is still detached, so a restart can finish a validated task. The fallback also produced `depot-<task>` during this run.
 
 ## What the run could not prove
 

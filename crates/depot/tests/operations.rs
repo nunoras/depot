@@ -328,6 +328,35 @@ fn the_worker_context_may_not_restart_the_daemon() {
 }
 
 #[test]
+fn the_worker_context_may_not_publish_an_artifact() {
+    let cli = Cli::new(&settings(Some(&publishing_command(
+        "https://example.test/x",
+    ))));
+    let file = cli.project.join("report.txt");
+    std::fs::write(&file, "the report\n").expect("the artifact");
+
+    let output = Command::new(DEPOT)
+        .args(["artifact", "add", file.to_str().expect("utf-8")])
+        .env(HOME_ENV, &cli.home)
+        .env("DEPOT_TASK_ID", "t-1")
+        .env("DEPOT_ATTEMPT_ID", "attempt-1")
+        .current_dir(&cli.project)
+        .output()
+        .expect("the depot binary runs");
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("worker context"),
+        "got {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !cli.home.join("artifacts").join("report.txt").exists(),
+        "a worker must not stage an artifact"
+    );
+}
+
+#[test]
 fn a_qualified_task_id_works_from_any_directory() {
     let cli = Cli::new(&settings(None));
     cli.add_task(&["--role", "build"]);

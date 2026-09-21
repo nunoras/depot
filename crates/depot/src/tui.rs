@@ -14,7 +14,8 @@ use crossterm::{ExecutableCommand, cursor};
 use depotd::adapters::{process::Program, toon::Document};
 use depotd::{
     DepotHome, Error, Project, Role, SessionId, StatusSelection, Store, TaskId, TaskState,
-    Timestamp, role_name, select_project, state_name,
+    Timestamp, UNOBSERVED_AFTER_MILLIS, daemon_scope_covers, needs_daemon, role_name,
+    select_project, state_name,
 };
 
 const REFRESH: Duration = Duration::from_secs(2);
@@ -81,6 +82,7 @@ struct TaskView {
     role: Role,
     title: String,
     started_at: Option<Timestamp>,
+    last_seen_at: Option<Timestamp>,
     steps: Option<u64>,
     question: Option<String>,
     artifacts: Vec<String>,
@@ -96,6 +98,7 @@ impl TaskView {
 
 struct ProjectView {
     slug: String,
+    daemon_scope_covers: bool,
     tasks: Vec<TaskView>,
 }
 
@@ -104,21 +107,20 @@ fn collect(
     selection: &StatusSelection,
 ) -> Result<(Option<String>, Vec<ProjectView>), Error> {
     let store = Store::open(home)?;
+    let now = Timestamp::from_millis(unix_millis());
     let projects: Vec<Project> = match selection {
         StatusSelection::All => store.projects()?,
         StatusSelection::Project(name) => vec![select_project(&store, Some(name))?],
         StatusSelection::CurrentDirectory => vec![select_project(&store, None)?],
     };
-    let stale_after = home.load_settings()?.poll_interval().saturating_mul(3);
-    let warning = depotd::daemon_build_mismatch(home, depotd::Timestamp::from_millis(now_millis()), stale_after)
-        .map(|scope| {
-            format!(
-                "the running depotd (pid {}) was built from commit {}, but this depot is built from {}: restart it with `depot daemon restart`",
-                scope.pid,
-                scope.build_id,
-                depotd::BUILD_ID
-            )
-        });
+    let warning = depotd::daemon_build_mismatch(home, now).map(|scope| {
+        format!(
+            "the running depotd (pid {}) was built from commit {}, but this depot is built from {}: restart it with `depot daemon restart`",
+            scope.pid,
+            scope.build_id,
+            depotd::BUILD_ID
+        )
+    });
     let views = projects
         .into_iter()
         .map(|project| {
@@ -139,6 +141,7 @@ fn collect(
                         role: task.role,
                         title: task.title.clone(),
                         started_at: attempt.map(|attempt| attempt.started_at),
+                        last_seen_at: attempt.and_then(|attempt| attempt.last_seen_at),
                         steps,
                         question: task
                             .questions
@@ -164,6 +167,7 @@ fn collect(
             tasks.sort_by_key(|task| task.state != TaskState::WaitingOnQuestion);
             Ok(ProjectView {
                 slug: project.slug,
+                daemon_scope_covers: daemon_scope_covers(home, &project.id, now)?,
                 tasks,
             })
         })
@@ -269,6 +273,12 @@ fn frame(
             lines.push(pinned(vec![Segment::Text(String::new())]));
         }
         lines.push(body(vec![Segment::Text(project.slug.clone())]));
+        if !project.daemon_scope_covers && needs_daemon(project.tasks.iter().map(|task| task.state))
+        {
+            lines.push(body(vec![Segment::Dim(
+                "  no daemon is driving this project".to_string(),
+            )]));
+        }
         if project.tasks.is_empty() {
             lines.push(body(vec![Segment::Dim("  no tasks".to_string())]));
         }
@@ -360,9 +370,25 @@ fn stats(task: &TaskView, now: u64) -> String {
         .started_at
         .map(|started| format_elapsed(now.saturating_sub(started.millis())))
         .unwrap_or_else(|| "unknown".to_string());
-    match task.steps {
-        Some(steps) => format!("up {}, {} steps", elapsed, steps),
-        None => format!("up {}", elapsed),
+    let mut parts = vec![format!("up {elapsed}")];
+    if let Some(steps) = task.steps {
+        parts.push(format!("{steps} steps"));
+    }
+    parts.push(observation(task.last_seen_at, now));
+    parts.join(", ")
+}
+
+fn observation(last_seen_at: Option<Timestamp>, now: u64) -> String {
+    match last_seen_at {
+        Some(seen) => {
+            let age = now.saturating_sub(seen.millis());
+            if age > UNOBSERVED_AFTER_MILLIS {
+                format!("unobserved for {}", format_elapsed(age))
+            } else {
+                format!("last seen {}", format_elapsed(age))
+            }
+        }
+        None => "not yet observed".to_string(),
     }
 }
 
@@ -378,8 +404,7 @@ fn format_elapsed(millis: u64) -> String {
 }
 
 fn clock() -> String {
-    let seconds = now_millis() / 1000;
-    let day = seconds % 86400;
+    let day = unix_millis() / 1000 % 86400;
     format!(
         "depot  {:02}:{:02}:{:02} UTC  refresh 2s  h history  q quit",
         day / 3600,
@@ -388,7 +413,7 @@ fn clock() -> String {
     )
 }
 
-fn now_millis() -> u64 {
+fn unix_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -438,7 +463,7 @@ impl Terminal {
         let (width, height) = size()
             .map(|(width, height)| (width as usize, height as usize))
             .unwrap_or((80, 24));
-        let now = now_millis();
+        let now = unix_millis();
         let lines = frame(
             projects,
             warning,
@@ -523,6 +548,9 @@ impl Drop for Terminal {
 
 #[cfg(test)]
 mod tests {
+    use depot_core::ProjectId;
+    use depotd::{LocationKind, Task};
+
     use super::*;
 
     fn view(id: &str, title: &str, state: TaskState) -> TaskView {
@@ -532,6 +560,7 @@ mod tests {
             role: Role::Build,
             title: title.to_string(),
             started_at: Some(Timestamp::from_millis(0)),
+            last_seen_at: Some(Timestamp::from_millis(0)),
             steps: None,
             question: None,
             artifacts: Vec::new(),
@@ -541,10 +570,58 @@ mod tests {
     }
 
     fn project_view(tasks: Vec<TaskView>) -> Vec<ProjectView> {
+        covered_project(true, tasks)
+    }
+
+    fn covered_project(daemon_scope_covers: bool, tasks: Vec<TaskView>) -> Vec<ProjectView> {
         vec![ProjectView {
             slug: "depot".to_string(),
+            daemon_scope_covers,
             tasks,
         }]
+    }
+
+    fn stored_project() -> Project {
+        Project {
+            id: ProjectId::new("https://example.test/repo"),
+            kind: LocationKind::Url,
+            slug: "depot".to_string(),
+            created_at: Timestamp::from_millis(0),
+        }
+    }
+
+    fn stored_task(state: TaskState) -> Task {
+        Task {
+            id: TaskId::new("t-1"),
+            project: ProjectId::new("https://example.test/repo"),
+            title: "task t-1".to_string(),
+            intent: "intent for t-1".to_string(),
+            role: Role::Build,
+            dispatch_profile: None,
+            state,
+            dependencies: Vec::new(),
+            base_dependency: None,
+            attempts: Vec::new(),
+            questions: Vec::new(),
+            validations: Vec::new(),
+            submission: None,
+            artifacts: Vec::new(),
+            links: Vec::new(),
+            branch_head: None,
+            merge_refused: None,
+            conflict_base: None,
+            failure: None,
+            release_pending: Vec::new(),
+            release_held: std::collections::BTreeMap::new(),
+            redirect_text: None,
+            redirect_delivered: false,
+            acknowledged_at: None,
+            rework_of: None,
+            hold_pr: false,
+            retry: None,
+            created_at: Timestamp::from_millis(0),
+            updated_at: Timestamp::from_millis(0),
+        }
     }
 
     fn split(lines: &[Line]) -> (Vec<String>, Vec<String>) {
@@ -587,7 +664,9 @@ mod tests {
         assert!(
             matches!(&lines[4].segments[0], Segment::Text(text) if text == "    Rework the status TUI task layout")
         );
-        assert!(matches!(&lines[5].segments[0], Segment::Dim(text) if text == "    up 2m10s"));
+        assert!(
+            matches!(&lines[5].segments[0], Segment::Dim(text) if text == "    up 2m10s, last seen 2m10s")
+        );
     }
 
     #[test]
@@ -612,7 +691,84 @@ mod tests {
         let projects = project_view(vec![task]);
         let lines = frame(&projects, None, 0, 130_000, 80, false);
         assert!(
-            matches!(&lines[5].segments[0], Segment::Dim(text) if text == "    up 2m10s, 42 steps")
+            matches!(&lines[5].segments[0], Segment::Dim(text) if text == "    up 2m10s, 42 steps, last seen 2m10s")
+        );
+    }
+
+    #[test]
+    fn a_fresh_observation_reports_last_seen_age() {
+        let mut task = view("t-1", "task t-1", TaskState::Running);
+        task.last_seen_at = Some(Timestamp::from_millis(100_000));
+        let lines = frame(&project_view(vec![task]), None, 0, 130_000, 80, false);
+        assert!(
+            matches!(&lines[5].segments[0], Segment::Dim(text) if text == "    up 2m10s, last seen 30s")
+        );
+    }
+
+    #[test]
+    fn a_stale_observation_reports_unobserved_age() {
+        let mut task = view("t-1", "task t-1", TaskState::Running);
+        task.last_seen_at = Some(Timestamp::from_millis(580_000));
+        let lines = frame(&project_view(vec![task]), None, 0, 1_000_000, 80, false);
+        assert!(
+            matches!(&lines[5].segments[0], Segment::Dim(text) if text == "    up 16m40s, unobserved for 7m00s")
+        );
+    }
+
+    #[test]
+    fn a_missing_observation_reports_no_age() {
+        let mut task = view("t-1", "task t-1", TaskState::Running);
+        task.last_seen_at = None;
+        let lines = frame(&project_view(vec![task]), None, 0, 130_000, 80, false);
+        assert!(
+            matches!(&lines[5].segments[0], Segment::Dim(text) if text == "    up 2m10s, not yet observed")
+        );
+    }
+
+    #[test]
+    fn an_uncovered_project_with_open_work_says_no_daemon_drives_it() {
+        let projects = covered_project(false, vec![view("t-1", "task t-1", TaskState::Approved)]);
+        let (_, body) = split(&frame(&projects, None, 0, 0, 80, false));
+        assert!(
+            body.iter()
+                .any(|line| line == "  no daemon is driving this project")
+        );
+    }
+
+    #[test]
+    fn a_covered_project_with_open_work_stays_quiet() {
+        let projects = covered_project(true, vec![view("t-1", "task t-1", TaskState::Approved)]);
+        let (_, body) = split(&frame(&projects, None, 0, 0, 80, false));
+        assert!(!body.iter().any(|line| line.contains("no daemon")));
+    }
+
+    #[test]
+    fn an_uncovered_project_without_open_work_stays_quiet() {
+        let projects = covered_project(false, vec![view("t-1", "task t-1", TaskState::Proposed)]);
+        let (_, body) = split(&frame(&projects, None, 0, 0, 80, false));
+        assert!(!body.iter().any(|line| line.contains("no daemon")));
+    }
+
+    #[test]
+    fn a_selected_uncovered_project_still_warns() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let home = DepotHome::at(temp.path().join("depot-home"));
+        home.ensure().expect("depot home");
+        let store = Store::open(&home).expect("store");
+        let project = stored_project();
+        store.put_project(&project).expect("project");
+        store
+            .put_task(&stored_task(TaskState::Running))
+            .expect("task");
+
+        let (_, projects) =
+            collect(&home, &StatusSelection::Project(project.slug.clone())).expect("collected");
+        assert_eq!(projects.len(), 1);
+        assert!(!projects[0].daemon_scope_covers);
+        let (_, body) = split(&frame(&projects, None, 0, 0, 80, false));
+        assert!(
+            body.iter()
+                .any(|line| line == "  no daemon is driving this project")
         );
     }
 

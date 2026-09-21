@@ -218,6 +218,7 @@ impl Golden {
         let lock = depotd::InstanceLock::acquire(&home).expect("the daemon takes the single lock");
         lock.record_scope(std::slice::from_ref(&project))
             .expect("the daemon scope is recorded");
+        hold_daemon_coverage(&home);
 
         Self {
             temp,
@@ -568,11 +569,19 @@ impl Golden {
     }
 
     pub fn status(&self) -> String {
+        self.refresh_daemon_heartbeat();
         self.depot_ok(&["status", "--project", SLUG])
     }
 
     pub fn status_history(&self) -> String {
+        self.refresh_daemon_heartbeat();
         self.depot_ok(&["status", "--project", SLUG, "--history"])
+    }
+
+    fn refresh_daemon_heartbeat(&self) {
+        if let Some(lock) = &self._lock {
+            lock.refresh_heartbeat().expect("the daemon heartbeat");
+        }
     }
 
     pub fn status_matches_checklist(&self, rendered: &str) {
@@ -645,6 +654,10 @@ impl Golden {
     }
 
     pub fn script_existing_pull_request(&self, commit: &str) {
+        self.script_existing_pull_request_with_body(commit, None);
+    }
+
+    pub fn script_existing_pull_request_with_body(&self, commit: &str, body: Option<&str>) {
         self.forge.route(
             "GET",
             &format!("/repos/{REPOSITORY}/commits/{commit}/check-runs"),
@@ -655,7 +668,7 @@ impl Golden {
             "GET",
             &format!("/repos/{REPOSITORY}/pulls/1"),
             200,
-            &pull_request(commit, BASE, "open", false, true),
+            &pull_request_with_body(commit, BASE, "open", false, true, body),
         );
         self.forge.route(
             "PATCH",
@@ -853,6 +866,19 @@ pub fn settings() -> Settings {
     settings_with_on_event(None)
 }
 
+fn hold_daemon_coverage(home: &DepotHome) {
+    let path = home.root().join(depotd::DAEMON_SCOPE_FILE_NAME);
+    let mut scope: depotd::DaemonScope =
+        serde_json::from_slice(&std::fs::read(&path).expect("the daemon scope record"))
+            .expect("the daemon scope record parses");
+    scope.heartbeat_millis = u64::MAX;
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&scope).expect("the daemon scope record encodes"),
+    )
+    .expect("the daemon scope record is rewritten");
+}
+
 pub fn settings_with_on_event(on_event: Option<OnEventSettings>) -> Settings {
     Settings {
         on_event,
@@ -1002,12 +1028,27 @@ fn check_runs() -> String {
 }
 
 fn pull_request(commit: &str, base: &str, state: &str, merged: bool, mergeable: bool) -> String {
+    pull_request_with_body(commit, base, state, merged, mergeable, None)
+}
+
+fn pull_request_with_body(
+    commit: &str,
+    base: &str,
+    state: &str,
+    merged: bool,
+    mergeable: bool,
+    body: Option<&str>,
+) -> String {
     let merged = if state == "closed" {
         format!("\"merged\":{merged},")
     } else {
         String::new()
     };
+    let body = match body {
+        Some(body) => format!("\"body\":{},", serde_json::Value::String(body.to_owned())),
+        None => String::new(),
+    };
     format!(
-        "{{\"number\":1,\"html_url\":\"https://forge.test/{REPOSITORY}/pull/1\",\"title\":\"Wire the store\",\"state\":\"{state}\",{merged}\"mergeable\":{mergeable},\"head\":{{\"sha\":\"{commit}\",\"ref\":\"{BRANCH}\"}},\"base\":{{\"sha\":\"{base}\"}}}}"
+        "{{\"number\":1,\"html_url\":\"https://forge.test/{REPOSITORY}/pull/1\",\"title\":\"Wire the store\",{body}\"state\":\"{state}\",{merged}\"mergeable\":{mergeable},\"head\":{{\"sha\":\"{commit}\",\"ref\":\"{BRANCH}\"}},\"base\":{{\"sha\":\"{base}\"}}}}"
     )
 }

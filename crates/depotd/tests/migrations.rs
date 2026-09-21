@@ -113,13 +113,13 @@ fn a_store_migrated_from_main_gains_every_new_column() {
 
     let previous = Connection::open(&path).expect("previous database");
     previous
-        .execute_batch(include_str!("fixtures/schema-v16.sql"))
+        .execute_batch(include_str!("fixtures/schema-v18.sql"))
         .expect("previous schema");
     let previous_version: i64 = previous
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("previous schema version");
     assert_eq!(
-        previous_version, 16,
+        previous_version, 18,
         "the frozen fixture is main's released schema"
     );
     assert!(

@@ -159,4 +159,6 @@ CREATE TABLE task_counters (
     next_number  INTEGER NOT NULL
 );
 ALTER TABLE task_validations ADD COLUMN base_commit TEXT;
-PRAGMA user_version = 16;
+ALTER TABLE tasks ADD COLUMN conflict_base TEXT;
+ALTER TABLE tasks ADD COLUMN failure TEXT;
+PRAGMA user_version = 18;

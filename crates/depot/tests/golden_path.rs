@@ -4,7 +4,7 @@ mod support;
 
 use depot_core::{
     AttemptOutcome, Checks, CommitId, Dependency, ProfileId, SessionId, TaskId, TaskState,
-    ValidationRecord, WorktreeLease,
+    Timestamp, ValidationRecord, WorktreeLease,
 };
 use depotd::InstanceLock;
 use depotd::evidence::MANAGED_MARKER;
@@ -1770,6 +1770,52 @@ fn a_running_task_keeps_the_lease_it_still_owes() {
 }
 
 #[test]
+fn a_retried_task_returns_the_lease_a_closed_earlier_attempt_still_names() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+
+    golden.boxr.respond(
+        "status",
+        &format!("session: {SESSION}\nstate: failed\nerror: \"the harness crashed\"\n"),
+        "",
+        0,
+    );
+    daemon.tick().expect("the failure is recorded");
+
+    const RELAUNCHED_SESSION: &str = "b3c7e2";
+    golden.boxr.respond_launches(&[SESSION, RELAUNCHED_SESSION]);
+    golden.depot_ok(&["task", "retry", TASK, "--project", SLUG]);
+    daemon
+        .tick()
+        .expect("the retry takes the lease the first attempt left behind");
+
+    let retried = golden.task();
+    assert_eq!(retried.attempts.len(), 2);
+    assert_eq!(
+        retried.attempts[0].worktree,
+        Some(WorktreeLease::new(LEASE)),
+        "the failed attempt keeps its lease for the retry"
+    );
+    assert_eq!(
+        retried.attempts[1].worktree,
+        Some(WorktreeLease::new(LEASE)),
+        "the retry works in the same lease"
+    );
+
+    golden.depot_ok(&["task", "stop", TASK, "--project", SLUG]);
+    daemon.tick().expect("the stop reconciles the owed release");
+
+    assert_eq!(
+        calls_to(&golden.treehouse.calls(), "return").len(),
+        1,
+        "a closed attempt naming the lease never protects it from the release pass"
+    );
+    assert!(golden.task().release_pending.is_empty());
+}
+
+#[test]
 fn a_lease_holding_unlanded_work_is_held_and_named_in_the_checklist() {
     let golden = Golden::new(Validation::Passing);
     let daemon = golden.daemon();
@@ -1815,6 +1861,51 @@ fn a_lease_holding_unlanded_work_is_held_and_named_in_the_checklist() {
             .count(),
         1,
         "an unchanged hold is recorded once"
+    );
+}
+
+#[test]
+fn a_repeated_hold_for_the_same_lease_applies_no_second_change() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    std::fs::write(golden.lease.join("unfinished.txt"), "half a change\n")
+        .expect("the lease holds uncommitted work");
+
+    golden.depot_ok(&["task", "stop", TASK, "--project", SLUG]);
+    daemon
+        .tick()
+        .expect("the held release does not crash the tick");
+
+    let lease = WorktreeLease::new(LEASE);
+    let mut held = golden.task();
+    held.release_held
+        .get_mut(&lease)
+        .expect("the first hold is recorded")
+        .at = Timestamp::from_millis(0);
+    golden
+        .store
+        .put_task(&held)
+        .expect("the aged hold is written");
+
+    daemon
+        .tick()
+        .expect("the expired backoff retries the release");
+
+    assert_eq!(
+        golden
+            .history(TASK)
+            .into_iter()
+            .filter(|kind| kind == RELEASE_HELD)
+            .count(),
+        1,
+        "an unchanged hold is never recorded twice"
+    );
+    assert_eq!(
+        golden.task().release_held.get(&lease).map(|hold| hold.at),
+        Some(Timestamp::from_millis(0)),
+        "the repeated hold applies no second change"
     );
 }
 

@@ -1521,6 +1521,35 @@ fn a_held_release_does_not_swallow_the_next_lease() {
 }
 
 #[test]
+fn a_repeated_hold_for_the_same_lease_and_reason_changes_nothing() {
+    let failed = with_attempt(
+        task("t1", TaskState::Failed),
+        Attempt {
+            last_seen_at: None,
+            outcome: AttemptOutcome::Failed,
+            finished_at: Some(at(0)),
+            worktree: Some(lease("w1")),
+            ..attempt(BUILD)
+        },
+    );
+    let held = |millis| {
+        fact(
+            millis,
+            FactKind::WorktreeReleaseHeld {
+                task: task_id("t1"),
+                lease: lease("w1"),
+                reason: "the lease holds uncommitted work".to_owned(),
+            },
+        )
+    };
+    let (once, _) = reduce(&state(vec![failed]), &held(5_000));
+    let (twice, actions) = reduce(&once, &held(9_000));
+
+    assert_eq!(once, twice, "the repeated hold changes no field");
+    assert!(actions.is_empty());
+}
+
+#[test]
 fn facts_about_unknown_tasks_change_nothing() {
     let state = base();
     let (next, actions) = reduce(&state, &fact(1_000, approved("ghost")));

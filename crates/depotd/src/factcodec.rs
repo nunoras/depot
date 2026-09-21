@@ -238,6 +238,10 @@ pub fn encode_payload(kind: &FactKind) -> String {
             ("commit", quoted(commit.as_str())),
             ("reason", quoted(reason)),
         ]),
+        FactKind::DescribeFailed { task, reason } => object(vec![
+            ("task", quoted(task.as_str())),
+            ("reason", quoted(reason)),
+        ]),
         FactKind::RebaseScheduled {
             task,
             profile,

@@ -3115,6 +3115,43 @@ fn push_failure_fails_the_task_and_holds_it_for_the_user() {
 }
 
 #[test]
+fn a_describe_failure_fails_the_task_and_holds_it_for_the_user() {
+    run(vec![
+        case(
+            "a describe failure in validated fails the task and holds it",
+            state(vec![with_attempt(
+                task("t1", TaskState::Validated),
+                attempt(BUILD),
+            )]),
+            vec![fact(
+                1_000,
+                FactKind::DescribeFailed {
+                    task: task_id("t1"),
+                    reason: "the describe worker wrote no usable output".to_owned(),
+                },
+            )],
+        )
+        .when(
+            "t1",
+            TaskState::Failed,
+            vec![hold("t1"), Action::RenderChecklist],
+        ),
+        case(
+            "a pr-open task ignores a describe failure",
+            state(vec![task("t1", TaskState::PrOpen)]),
+            vec![fact(
+                2_000,
+                FactKind::DescribeFailed {
+                    task: task_id("t1"),
+                    reason: "the describe worker wrote no usable output".to_owned(),
+                },
+            )],
+        )
+        .when("t1", TaskState::PrOpen, vec![]),
+    ]);
+}
+
+#[test]
 fn a_required_evidence_failure_holds_the_task_and_an_optional_one_does_not() {
     run(vec![
         case(

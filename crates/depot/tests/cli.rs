@@ -1314,12 +1314,10 @@ fn a_client_command_refuses_an_older_store_and_an_explicit_migrate_moves_it() {
 
     assert_eq!(refused.status.code(), Some(1));
     assert!(
-        stderr(&refused).contains(&fixture_version.to_string()),
-        "stderr: {}",
-        stderr(&refused)
-    );
-    assert!(
-        stderr(&refused).contains(&depotd::SCHEMA_VERSION.to_string()),
+        stderr(&refused).contains(&format!(
+            "the store is at schema {fixture_version} but this build understands schema {}",
+            depotd::SCHEMA_VERSION
+        )),
         "stderr: {}",
         stderr(&refused)
     );

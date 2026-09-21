@@ -203,8 +203,15 @@ fn an_older_store(fixture: &support::Fixture) -> i64 {
     legacy
         .execute_batch(include_str!("fixtures/schema-v18.sql"))
         .expect("v18 schema");
+    let version: i64 = legacy
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .expect("fixture schema version");
     drop(legacy);
-    SCHEMA_VERSION - 2
+    assert!(
+        SCHEMA_VERSION > version,
+        "the frozen fixture must be an older schema than {SCHEMA_VERSION}"
+    );
+    version
 }
 
 #[test]

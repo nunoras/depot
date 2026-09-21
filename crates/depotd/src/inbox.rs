@@ -133,6 +133,7 @@ fn need_for(tag: FactTag, task: Option<&Task>) -> Need {
         | FactTag::WorktreeAcquireRequested
         | FactTag::WorkerTurnLaunchRequested
         | FactTag::WorkerTurnResumeRequested
+        | FactTag::WorkerRelaunchRequested
         | FactTag::WorkerTurnStarted
         | FactTag::WorkerTurnEnded
         | FactTag::WorkerRedirected
@@ -182,6 +183,9 @@ fn headline(tag: FactTag, event: &RecordedEvent, task: Option<&Task>) -> Result<
         FactTag::WorktreeAcquireRequested => "worktree acquire requested".to_string(),
         FactTag::WorkerTurnLaunchRequested => "worker turn launch requested".to_string(),
         FactTag::WorkerTurnResumeRequested => "worker turn resume requested".to_string(),
+        FactTag::WorkerRelaunchRequested => {
+            "the worker was relaunched with the pending answer".to_string()
+        }
         FactTag::WorkerTurnUnresolved => {
             "a worker turn could not be resolved; the worker may already be running".to_string()
         }

@@ -79,6 +79,22 @@ impl FakeBoxr {
         );
     }
 
+    pub fn respond_status_sequence(&self, states: &[&str]) {
+        for (index, scripted) in states.iter().enumerate() {
+            let suffix = format!(".{}", index + 1);
+            let write = |field: &str, text: &str| {
+                fs::write(self.root.join(format!("status.{field}{suffix}")), text)
+                    .expect("a scripted status response is written");
+            };
+            write(
+                "stdout",
+                &format!("session: {}\nstate: {scripted}\n", super::SESSION),
+            );
+            write("stderr", "");
+            write("exit", "0\n");
+        }
+    }
+
     pub fn resume_reports_running(&self) {
         self.respond(
             "resume.state",

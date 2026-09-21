@@ -73,6 +73,9 @@ pub enum FactKind {
     WorkerTurnResumeRequested {
         task: TaskId,
     },
+    WorkerRelaunchRequested {
+        task: TaskId,
+    },
     WorkerTurnUnresolved {
         task: TaskId,
     },

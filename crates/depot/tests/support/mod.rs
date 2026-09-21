@@ -512,6 +512,7 @@ impl Golden {
                         | "worktree_acquire_requested"
                         | "worker_turn_launch_requested"
                         | "worker_turn_resume_requested"
+                        | "worker_relaunch_requested"
                 )
             })
             .collect()

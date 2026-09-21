@@ -538,19 +538,58 @@ fn a_long_no_action_section_collapses_behind_a_count_and_keeps_the_user_first() 
     let nothing = section(&payload, "No action");
     assert_eq!(
         nothing.lines().count(),
-        12,
-        "the heading, the summary line and the newest ten facts, got\n{payload}"
+        3,
+        "the heading, the summary line, the filing and the collapsed run, got\n{payload}"
     );
     assert!(
-        nothing.contains("... and 6 earlier no-action facts"),
-        "the collapsed bulk is counted, not printed, got\n{payload}"
+        nothing.contains("(15 times through 1970-01-01T00:15:00Z)"),
+        "the run of identical facts collapses into one counted line, got\n{payload}"
     );
     assert!(
-        !nothing.contains("00:05:00Z"),
-        "the oldest facts are the ones collapsed, got\n{payload}"
+        !nothing.contains("1970-01-01T00:05:00Z"),
+        "the middle of the run is not printed, got\n{payload}"
     );
     assert!(
-        nothing.contains("00:14:00Z"),
-        "the newest facts still show, got\n{payload}"
+        nothing.contains("1970-01-01T00:15:00Z"),
+        "the end of the run still shows, got\n{payload}"
+    );
+}
+
+#[test]
+fn consecutive_identical_entries_render_as_one_counted_line() {
+    use depot_core::Timestamp;
+    use depotd::{InboxEntry, Need, render_inbox};
+
+    let mut entries: Vec<InboxEntry> = (0..3)
+        .map(|millis| InboxEntry {
+            at: Timestamp::from_millis(millis * 60_000),
+            task: None,
+            line: "the worker is live".to_owned(),
+            need: Need::Nothing,
+        })
+        .collect();
+    entries.push(InboxEntry {
+        at: Timestamp::from_millis(4 * 60_000),
+        task: None,
+        line: "the worker is gone".to_owned(),
+        need: Need::Nothing,
+    });
+
+    let rendered = render_inbox(&entries);
+
+    assert_eq!(
+        rendered.matches("the worker is live").count(),
+        1,
+        "the run of identical entries collapses, got\n{rendered}"
+    );
+    assert!(
+        rendered.contains(
+            "the worker is live at 1970-01-01T00:00:00Z (3 times through 1970-01-01T00:02:00Z)"
+        ),
+        "the collapsed line carries the count and the span, got\n{rendered}"
+    );
+    assert!(
+        rendered.contains("the worker is gone at 1970-01-01T00:04:00Z"),
+        "a single entry still renders alone, got\n{rendered}"
     );
 }

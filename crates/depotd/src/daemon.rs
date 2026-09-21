@@ -812,6 +812,7 @@ where
                 },
             )?;
         }
+        Ok(())
     }
 
     fn surface_unresolved_turn(&self, task: &TaskId) -> Result<()> {

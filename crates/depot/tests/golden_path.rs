@@ -835,6 +835,7 @@ fn a_redirect_queued_mid_turn_reaches_the_worker_at_the_next_turn() {
     );
 
     golden.boxr.report_running();
+    eprintln!("PHASE midturn");
     daemon
         .tick()
         .expect("a running worker is not interrupted mid-turn");
@@ -845,8 +846,13 @@ fn a_redirect_queued_mid_turn_reaches_the_worker_at_the_next_turn() {
     golden.boxr.respond_launches(&[SESSION, REDIRECT_SESSION]);
     golden
         .boxr
-        .respond_status_sequence(&["running", "running", "finished", "finished"]);
-    golden.boxr.report_running();
+        .respond_status_sequence(&["running", "running", "finished", "finished", "finished"]);
+    golden.boxr.respond(
+        "status",
+        &format!("session: {REDIRECT_SESSION}\nstate: running\n"),
+        "",
+        0,
+    );
     daemon
         .tick()
         .expect("the daemon delivers the redirect when the turn ends");
@@ -948,8 +954,13 @@ fn a_redirect_at_a_finished_turn_needs_queue_and_reports_the_receipt() {
     golden.boxr.respond_launches(&[SESSION, REDIRECT_SESSION]);
     golden
         .boxr
-        .respond_status_sequence(&["running", "finished"]);
-    golden.boxr.report_running();
+        .respond_status_sequence(&["finished", "finished", "finished", "finished", "finished"]);
+    golden.boxr.respond(
+        "status",
+        &format!("session: {REDIRECT_SESSION}\nstate: running\n"),
+        "",
+        0,
+    );
     daemon
         .tick()
         .expect("the daemon delivers the redirect when the turn ends");

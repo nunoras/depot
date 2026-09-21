@@ -973,6 +973,7 @@ fn relaunch(task: &mut Task, at: Timestamp, actions: &mut Vec<Action>) -> bool {
         finished_at: None,
         outcome: AttemptOutcome::InFlight,
         rebase: false,
+        last_seen_at: None,
     });
     task.state = TaskState::Running;
     task.updated_at = at;

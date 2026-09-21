@@ -298,6 +298,9 @@ fn waiting_on(state: &ProjectState, task: &Task) -> String {
             Some((number, _, Checks::Passing)) => {
                 format!("the merge of pull request #{number}")
             }
+            Some((number, _, Checks::None)) => {
+                format!("no checks configured; awaiting merge decision on pull request #{number}")
+            }
             Some((number, _, Checks::Failing)) => {
                 format!("failing checks on pull request #{number}")
             }

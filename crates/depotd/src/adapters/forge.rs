@@ -271,7 +271,7 @@ impl GitHub {
         }
 
         if runs.is_empty() {
-            return Ok(Checks::Unknown);
+            return Ok(Checks::None);
         }
 
         let mut failing = false;

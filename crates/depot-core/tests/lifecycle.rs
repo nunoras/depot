@@ -169,7 +169,7 @@ fn base() -> ProjectState {
         fallback_profiles: Vec::new(),
         limits: Limits::default(),
         always_relay_questions: false,
-        auto_merge: false,
+        merge_policy: MergePolicy::Manual,
     }
 }
 
@@ -2412,7 +2412,7 @@ fn auto_merge_waits_for_the_project_to_opt_in_and_for_the_validated_head() {
         "a project that did not opt in is never merged automatically"
     );
 
-    state.auto_merge = true;
+    state.merge_policy = MergePolicy::AfterChecks;
     assert!(auto_merge_due(&state, subject(&state, "t1"), &head));
     assert!(
         !auto_merge_due(&state, subject(&state, "t1"), &commit("c2")),
@@ -2430,8 +2430,20 @@ fn auto_merge_waits_for_the_project_to_opt_in_and_for_the_validated_head() {
         checks: Checks::Unknown,
     }];
     assert!(
-        auto_merge_due(&unconfigured, subject(&unconfigured, "t1"), &head),
-        "a repository with no checks configured is not a failing check"
+        !auto_merge_due(&unconfigured, subject(&unconfigured, "t1"), &head),
+        "checks never observed are not proof the pull request is good"
+    );
+
+    let mut none = state.clone();
+    let task = none.tasks.get_mut(&task_id("t1")).expect("subject task");
+    task.links = vec![Link::PullRequest {
+        number: 42,
+        url: "https://github.com/nunoras/depot/pull/42".to_owned(),
+        checks: Checks::None,
+    }];
+    assert!(
+        !auto_merge_due(&none, subject(&none, "t1"), &head),
+        "a repository with no checks configured is never merged automatically"
     );
 
     let mut pending = state.clone();
@@ -2473,6 +2485,69 @@ fn auto_merge_waits_for_the_project_to_opt_in_and_for_the_validated_head() {
     assert!(
         !auto_merge_due(&blocked, subject(&blocked, "t1"), &head),
         "a stale dependency pin is never merged automatically"
+    );
+}
+
+#[test]
+fn after_review_waits_for_a_linked_review_task_to_validate() {
+    let head = commit("c1");
+    let mut state = state(vec![pr_open("t1", "c1", 42)]);
+    state.merge_policy = MergePolicy::AfterReview;
+
+    assert!(
+        !auto_merge_due(&state, subject(&state, "t1"), &head),
+        "after review does not merge while no review task is linked"
+    );
+
+    let mut review = validated("t9", "c8");
+    review.role = Role::Review;
+    review.state = TaskState::Running;
+    review.dependencies = vec![Dependency {
+        task: task_id("t1"),
+        commit: commit("c1"),
+    }];
+    state.tasks.insert(task_id("t9"), review);
+    assert!(
+        !auto_merge_due(&state, subject(&state, "t1"), &head),
+        "a review still in flight does not unblock the merge"
+    );
+
+    state
+        .tasks
+        .get_mut(&task_id("t9"))
+        .expect("review task")
+        .state = TaskState::Validated;
+    assert!(
+        auto_merge_due(&state, subject(&state, "t1"), &head),
+        "a validated review on the pulled head unblocks the merge"
+    );
+
+    let mut unlinked = state.clone();
+    unlinked
+        .tasks
+        .get_mut(&task_id("t9"))
+        .expect("review task")
+        .dependencies = vec![Dependency {
+        task: task_id("t2"),
+        commit: commit("c1"),
+    }];
+    assert!(
+        !auto_merge_due(&unlinked, subject(&unlinked, "t1"), &head),
+        "a review of another task does not unblock the merge"
+    );
+
+    let mut other_commit = state.clone();
+    other_commit
+        .tasks
+        .get_mut(&task_id("t9"))
+        .expect("review task")
+        .dependencies = vec![Dependency {
+        task: task_id("t1"),
+        commit: commit("c9"),
+    }];
+    assert!(
+        !auto_merge_due(&other_commit, subject(&other_commit, "t1"), &head),
+        "a review pinned to a different commit does not unblock the merge"
     );
 }
 
@@ -3674,12 +3749,12 @@ fn rule_17_a_conflicting_pull_request_is_rebased_serially_when_auto_merge_is_on(
     };
     let auto_merge = |state: ProjectState| {
         let mut state = fix_profiles(state);
-        state.auto_merge = true;
+        state.merge_policy = MergePolicy::AfterChecks;
         state
     };
     let auto_merge_without_fix = |mut state: ProjectState| {
         state.profiles.clear();
-        state.auto_merge = true;
+        state.merge_policy = MergePolicy::AfterChecks;
         state
     };
     let conflicting = |id: &str| FactKind::RebaseScheduled {
@@ -3776,7 +3851,7 @@ fn rebase_due_resolves_the_fix_profile_only_for_conflicting_open_pull_requests()
     const FIX: &str = "fix-profile";
     let mut base_state = base();
     base_state.profiles.insert(Role::Fix, profile(FIX));
-    base_state.auto_merge = true;
+    base_state.merge_policy = MergePolicy::AfterChecks;
     let task = open_with_submitted_attempt();
     assert_eq!(
         rebase_due(&base_state, &task, true),
@@ -3796,7 +3871,7 @@ fn rebase_due_resolves_the_fix_profile_only_for_conflicting_open_pull_requests()
         "no fix profile means no rebase"
     );
     let mut manual = base_state;
-    manual.auto_merge = false;
+    manual.merge_policy = MergePolicy::Manual;
     assert_eq!(
         rebase_due(&manual, &task, true),
         None,

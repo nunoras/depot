@@ -81,6 +81,7 @@ pub fn outcome_from_name(name: &str) -> Result<AttemptOutcome> {
 
 pub fn checks_name(checks: Checks) -> &'static str {
     match checks {
+        Checks::None => "none",
         Checks::Unknown => "unknown",
         Checks::Pending => "pending",
         Checks::Passing => "passing",
@@ -90,6 +91,7 @@ pub fn checks_name(checks: Checks) -> &'static str {
 
 pub fn checks_from_name(name: &str) -> Result<Checks> {
     match name {
+        "none" => Ok(Checks::None),
         "unknown" => Ok(Checks::Unknown),
         "pending" => Ok(Checks::Pending),
         "passing" => Ok(Checks::Passing),

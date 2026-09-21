@@ -5,8 +5,8 @@ use crate::action::{Action, Baseline};
 use crate::fact::{Fact, FactKind, Liveness};
 use crate::model::{
     Answer, Attempt, AttemptOutcome, Checks, CommitId, CoordinatorSession, Dependency, Limits,
-    Link, ProfileId, ProjectState, Question, Retry, Role, Submission, Task, TaskId, TaskState,
-    Timestamp, ValidationRecord, WorktreeLease,
+    Link, MergePolicy, ProfileId, ProjectState, Question, Retry, Role, Submission, Task, TaskId,
+    TaskState, Timestamp, ValidationRecord, WorktreeLease,
 };
 
 pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) {
@@ -879,7 +879,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
         }
 
         FactKind::RebaseScheduled { task, profile, .. } => {
-            let scheduled = next.auto_merge
+            let scheduled = next.merge_policy != MergePolicy::Manual
                 && next
                     .profiles
                     .get(&Role::Fix)
@@ -1062,13 +1062,33 @@ fn base_dependency_is_valid(dependencies: &[Dependency], base_dependency: &Optio
 }
 
 pub fn auto_merge_due(state: &ProjectState, task: &Task, head: &CommitId) -> bool {
-    state.auto_merge
-        && task.state == TaskState::PrOpen
-        && !publication_blocked(state, &task.id)
-        && task
-            .pull_request()
-            .is_some_and(|(_, _, checks)| matches!(checks, Checks::Passing | Checks::Unknown))
-        && task.validated_commit() == Some(head)
+    match state.merge_policy {
+        MergePolicy::Manual => false,
+        MergePolicy::AfterChecks | MergePolicy::AfterReview => {
+            task.state == TaskState::PrOpen
+                && !publication_blocked(state, &task.id)
+                && task
+                    .pull_request()
+                    .is_some_and(|(_, _, checks)| checks == Checks::Passing)
+                && task.validated_commit() == Some(head)
+                && (state.merge_policy == MergePolicy::AfterChecks
+                    || review_landed(state, task, head))
+        }
+    }
+}
+
+fn review_landed(state: &ProjectState, task: &Task, head: &CommitId) -> bool {
+    state.tasks.values().any(|other| {
+        other.role == Role::Review
+            && matches!(
+                other.state,
+                TaskState::Validated | TaskState::PrOpen | TaskState::Landed
+            )
+            && other
+                .dependencies
+                .iter()
+                .any(|dependency| dependency.task == task.id && dependency.commit == *head)
+    })
 }
 
 pub fn rebase_due(state: &ProjectState, task: &Task, conflicting: bool) -> Option<ProfileId> {
@@ -1079,7 +1099,7 @@ pub fn rebase_due(state: &ProjectState, task: &Task, conflicting: bool) -> Optio
 }
 
 fn rebase_allowed(state: &ProjectState, task: &Task) -> bool {
-    state.auto_merge
+    state.merge_policy != MergePolicy::Manual
         && task.state == TaskState::PrOpen
         && task
             .attempts

@@ -656,7 +656,7 @@ where
             .iter()
             .rev()
             .find_map(|attempt| attempt.worktree.clone())
-            && self.leased_worktree(&task)?.as_ref() == Some(&lease)
+            && self.lease_is_in_pool(&lease)?
         {
             return self.record_worktree_acquired(&task, lease, baseline);
         }
@@ -1260,6 +1260,17 @@ where
             .into_iter()
             .find(|entry| entry.holder.as_deref() == Some(holder.as_str()))
             .and_then(|entry| entry.lease))
+    }
+
+    fn lease_is_in_pool(&self, lease: &WorktreeLease) -> Result<bool> {
+        let repo = self.repository()?;
+        let pool = self
+            .worktrees
+            .pool(&repo)
+            .map_err(|error| Error::Project(error.to_string()))?;
+        Ok(pool
+            .into_iter()
+            .any(|entry| entry.lease.as_ref() == Some(lease)))
     }
 
     fn acquire_is_pending(&self, task: &TaskId) -> Result<bool> {
@@ -2072,6 +2083,7 @@ mod tests {
             redirect_delivered: false,
             acknowledged_at: None,
             hold_pr: false,
+            rework_of: None,
             retry: None,
             created_at: depot_core::Timestamp::from_millis(0),
             updated_at: depot_core::Timestamp::from_millis(0),

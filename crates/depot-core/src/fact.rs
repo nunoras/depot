@@ -54,6 +54,11 @@ pub enum FactKind {
     TaskRetried {
         task: TaskId,
     },
+    TaskReworked {
+        task: TaskId,
+        fix: TaskId,
+        text: String,
+    },
     QuestionAsked {
         task: TaskId,
         text: String,

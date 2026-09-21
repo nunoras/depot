@@ -34,6 +34,7 @@ pub fn state_name(state: TaskState) -> &'static str {
         TaskState::Validating => "validating",
         TaskState::Validated => "validated",
         TaskState::PrOpen => "pr_open",
+        TaskState::ReworkPending => "rework_pending",
         TaskState::Landed => "landed",
         TaskState::Failed => "failed",
         TaskState::Cancelled => "cancelled",
@@ -49,6 +50,7 @@ pub fn state_from_name(name: &str) -> Result<TaskState> {
         "validating" => Ok(TaskState::Validating),
         "validated" => Ok(TaskState::Validated),
         "pr_open" => Ok(TaskState::PrOpen),
+        "rework_pending" => Ok(TaskState::ReworkPending),
         "landed" => Ok(TaskState::Landed),
         "failed" => Ok(TaskState::Failed),
         "cancelled" => Ok(TaskState::Cancelled),
@@ -109,6 +111,7 @@ pub enum FactTag {
     TaskCancelled,
     TaskAcknowledged,
     TaskRetried,
+    TaskReworked,
     QuestionAsked,
     QuestionAnswered,
     WorktreeAcquireRequested,
@@ -155,6 +158,7 @@ pub fn fact_tag(kind: &FactKind) -> FactTag {
         FactKind::TaskApproved { .. } => FactTag::TaskApproved,
         FactKind::TaskCancelled { .. } => FactTag::TaskCancelled,
         FactKind::TaskRetried { .. } => FactTag::TaskRetried,
+        FactKind::TaskReworked { .. } => FactTag::TaskReworked,
         FactKind::TaskAcknowledged { .. } => FactTag::TaskAcknowledged,
         FactKind::QuestionAsked { .. } => FactTag::QuestionAsked,
         FactKind::QuestionAnswered { .. } => FactTag::QuestionAnswered,
@@ -203,6 +207,7 @@ pub fn fact_tag_name(tag: FactTag) -> &'static str {
         FactTag::TaskApproved => "task_approved",
         FactTag::TaskCancelled => "task_cancelled",
         FactTag::TaskRetried => "task_retried",
+        FactTag::TaskReworked => "task_reworked",
         FactTag::TaskAcknowledged => "task_acknowledged",
         FactTag::QuestionAsked => "question_asked",
         FactTag::QuestionAnswered => "question_answered",
@@ -251,6 +256,7 @@ pub fn fact_tag_from_name(name: &str) -> Result<FactTag> {
         "task_approved" => FactTag::TaskApproved,
         "task_cancelled" => FactTag::TaskCancelled,
         "task_retried" => FactTag::TaskRetried,
+        "task_reworked" => FactTag::TaskReworked,
         "task_acknowledged" => FactTag::TaskAcknowledged,
         "question_asked" => FactTag::QuestionAsked,
         "question_answered" => FactTag::QuestionAnswered,
@@ -302,6 +308,7 @@ pub fn fact_task(kind: &FactKind) -> Option<TaskId> {
         | FactKind::TaskApproved { task }
         | FactKind::TaskCancelled { task }
         | FactKind::TaskRetried { task }
+        | FactKind::TaskReworked { task, .. }
         | FactKind::TaskAcknowledged { task }
         | FactKind::QuestionAsked { task, .. }
         | FactKind::QuestionAnswered { task, .. }

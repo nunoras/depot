@@ -85,6 +85,7 @@ struct TaskView {
     question: Option<String>,
     artifacts: Vec<String>,
     pull_request: Option<(u64, String)>,
+    conflict_base: Option<String>,
 }
 
 impl TaskView {
@@ -153,6 +154,10 @@ fn collect(
                         pull_request: task
                             .pull_request()
                             .map(|(number, url, _)| (number, url.to_string())),
+                        conflict_base: task
+                            .conflict_base
+                            .as_ref()
+                            .map(|base| base.as_str().to_string()),
                     }
                 })
                 .collect();
@@ -313,6 +318,12 @@ fn task_lines(
     let mut lines = vec![head];
     let title: String = task.title.chars().take(width.saturating_sub(4)).collect();
     lines.push(vec![Segment::Text(format!("    {title}"))]);
+    if let Some(base) = &task.conflict_base {
+        let base: String = base.chars().take(width.saturating_sub(24)).collect();
+        lines.push(vec![Segment::Dim(format!(
+            "    conflicts with base {base}"
+        ))]);
+    }
     if task.running() {
         lines.push(vec![Segment::Dim(format!("    {}", stats(task, now)))]);
     }
@@ -525,6 +536,7 @@ mod tests {
             question: None,
             artifacts: Vec::new(),
             pull_request: None,
+            conflict_base: None,
         }
     }
 
@@ -678,6 +690,16 @@ mod tests {
                 .segments
                 .iter()
                 .any(|segment| matches!(segment, Segment::Link { .. }))
+        );
+    }
+
+    #[test]
+    fn conflicting_task_names_the_base_it_conflicts_with() {
+        let mut task = view("t-1", "task t-1", TaskState::PrOpen);
+        task.conflict_base = Some("ba5eba11".to_string());
+        let lines = frame(&project_view(vec![task]), None, 0, 0, 80, false);
+        assert!(
+            matches!(&lines[5].segments[0], Segment::Dim(text) if text == "    conflicts with base ba5eba11")
         );
     }
 

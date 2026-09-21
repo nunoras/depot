@@ -251,6 +251,7 @@ pub struct Task {
     pub links: Vec<Link>,
     pub branch_head: Option<CommitId>,
     pub merge_refused: Option<String>,
+    pub conflict_base: Option<CommitId>,
     pub redirect_text: Option<String>,
     pub redirect_delivered: bool,
     pub acknowledged_at: Option<Timestamp>,

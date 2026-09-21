@@ -2119,6 +2119,32 @@ where
                             },
                         )?;
                     }
+                    if let Some(mergeable) = observed.mergeable {
+                        let conflicting_base = (!mergeable).then(|| observed.base.clone());
+                        if task.conflict_base != conflicting_base {
+                            self.record(
+                                &event_key(&[
+                                    "pull_request_mergeability_changed",
+                                    task.id.as_str(),
+                                    if mergeable {
+                                        "mergeable"
+                                    } else {
+                                        "conflicting"
+                                    },
+                                    observed.base.as_str(),
+                                    &at.millis().to_string(),
+                                ]),
+                                Fact {
+                                    at,
+                                    kind: FactKind::PullRequestMergeabilityChanged {
+                                        task: task.id.clone(),
+                                        mergeable,
+                                        base: observed.base.clone(),
+                                    },
+                                },
+                            )?;
+                        }
+                    }
                     observed_open.push((task.id.clone(), number, observed));
                 }
             }
@@ -2529,6 +2555,7 @@ mod tests {
             links: Vec::new(),
             branch_head: None,
             merge_refused: None,
+            conflict_base: None,
             redirect_text: None,
             redirect_delivered: false,
             acknowledged_at: None,

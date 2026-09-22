@@ -1,5 +1,5 @@
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{File, OpenOptions};
 
 use fs2::FileExt;
@@ -34,6 +34,9 @@ const MAX_RESUME_ATTEMPTS: u32 = 3;
 const MAX_DEFERRED_ATTEMPTS: u32 = 3;
 const LIVENESS_REFRESH_MILLIS: u64 = 60_000;
 const RELEASE_HOLD_BACKOFF_MILLIS: u64 = 60_000;
+const COMMITTED_NOTHING_REASON: &str = "the worker committed nothing";
+const COMMIT_ALREADY_ON_BASE_REASON: &str =
+    "the submitted commit is already on the base branch and this attempt adds nothing over it";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DaemonScope {
@@ -818,6 +821,7 @@ where
         self.reconcile_sessions()?;
         self.reconcile_stops()?;
         self.reconcile_leases(true)?;
+        self.reconcile_stale_merges()?;
         self.reconcile_notify()
     }
 
@@ -855,7 +859,11 @@ where
             &event_key(&["worker_submitted", task.as_str(), commit.as_str()]),
             Fact {
                 at: now(),
-                kind: FactKind::WorkerSubmitted { task, commit },
+                kind: FactKind::WorkerSubmitted {
+                    task,
+                    commit,
+                    base: None,
+                },
             },
         )
     }
@@ -942,9 +950,10 @@ where
 
     fn acquire(&self, task: TaskId, baseline: Baseline) -> Result<()> {
         if self.acquire_is_pending(&task)?
-            && let Some(lease) = self.leased_worktree(&task)?
+            && let Some(entry) = self.leased_worktree(&task)?
+            && let Some(lease) = entry.lease
         {
-            return self.record_worktree_acquired(&task, lease, baseline);
+            return self.record_worktree_acquired(&task, lease, &entry.path, baseline);
         }
         let attempt = self.task(&task)?.attempts.len();
         if attempt == 0 {
@@ -967,9 +976,9 @@ where
             .iter()
             .rev()
             .find_map(|attempt| attempt.worktree.clone())
-            && self.lease_is_in_pool(&lease)?
+            && let Some(entry) = self.pool_lease(&lease)?
         {
-            return self.record_worktree_acquired(&task, lease, baseline);
+            return self.record_worktree_acquired(&task, lease, &entry.path, baseline);
         }
         let repo = self.repository()?;
         let task = self.task(&task)?;
@@ -986,13 +995,14 @@ where
                 baseline: baseline.clone(),
             })
             .map_err(|error| Error::Project(error.to_string()))?;
-        self.record_worktree_acquired(&task.id, lease.lease, baseline)
+        self.record_worktree_acquired(&task.id, lease.lease, &lease.path, baseline)
     }
 
     fn record_worktree_acquired(
         &self,
         task: &TaskId,
         lease: WorktreeLease,
+        path: &Path,
         baseline: Baseline,
     ) -> Result<()> {
         let attempt = self.task(task)?.attempts.len();
@@ -1007,9 +1017,41 @@ where
                 at: now(),
                 kind: FactKind::WorktreeAcquired {
                     task: task.clone(),
-                    lease,
+                    lease: lease.clone(),
                     baseline,
                     included: Vec::new(),
+                },
+            },
+        )?;
+        self.record_worktree_baselined(task, &lease, path)
+    }
+
+    fn record_worktree_baselined(
+        &self,
+        task: &TaskId,
+        lease: &WorktreeLease,
+        path: &Path,
+    ) -> Result<()> {
+        let commit =
+            match git_output(path, &["rev-parse", "HEAD"]).map(|head| CommitId::new(head.trim())) {
+                Ok(commit) => commit,
+                Err(error) => {
+                    log("worktree-baseline-unresolved", &error.to_string());
+                    return Ok(());
+                }
+            };
+        self.record(
+            &event_key(&[
+                "worktree_baselined",
+                task.as_str(),
+                lease.as_str(),
+                commit.as_str(),
+            ]),
+            Fact {
+                at: now(),
+                kind: FactKind::WorktreeBaselined {
+                    task: task.clone(),
+                    commit,
                 },
             },
         )
@@ -1893,7 +1935,10 @@ where
         ))
     }
 
-    fn leased_worktree(&self, task: &TaskId) -> Result<Option<WorktreeLease>> {
+    fn leased_worktree(
+        &self,
+        task: &TaskId,
+    ) -> Result<Option<crate::adapters::worktrees::PoolEntry>> {
         let repo = self.repository()?;
         let holder = format!("depot:{}", task.as_str());
         let pool = self
@@ -1902,11 +1947,13 @@ where
             .map_err(|error| Error::Project(error.to_string()))?;
         Ok(pool
             .into_iter()
-            .find(|entry| entry.holder.as_deref() == Some(holder.as_str()))
-            .and_then(|entry| entry.lease))
+            .find(|entry| entry.holder.as_deref() == Some(holder.as_str())))
     }
 
-    fn lease_is_in_pool(&self, lease: &WorktreeLease) -> Result<bool> {
+    fn pool_lease(
+        &self,
+        lease: &WorktreeLease,
+    ) -> Result<Option<crate::adapters::worktrees::PoolEntry>> {
         let repo = self.repository()?;
         let pool = self
             .worktrees
@@ -1914,7 +1961,7 @@ where
             .map_err(|error| Error::Project(error.to_string()))?;
         Ok(pool
             .into_iter()
-            .any(|entry| entry.lease.as_ref() == Some(lease)))
+            .find(|entry| entry.lease.as_ref() == Some(lease)))
     }
 
     fn acquire_is_pending(&self, task: &TaskId) -> Result<bool> {
@@ -2249,8 +2296,8 @@ where
             if task.state != TaskState::Validating {
                 continue;
             }
-            let commit = match self.submitted_commit(&task.id) {
-                Ok(commit) => commit,
+            let (commit, base) = match self.submission(&task.id) {
+                Ok(submission) => submission,
                 Err(error) => {
                     let commit = task
                         .branch_head
@@ -2264,12 +2311,42 @@ where
             if task.validations.iter().any(|v| v.commit == commit) {
                 continue;
             }
+            match self.baselined_commit(&task.id) {
+                Ok(Some(baseline)) if baseline == commit => {
+                    self.record_worker_committed_nothing(
+                        &task.id,
+                        &commit,
+                        COMMITTED_NOTHING_REASON,
+                    )?;
+                    continue;
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    self.record_validation_failure(&task.id, &commit, &error.to_string())?;
+                    continue;
+                }
+            }
+            match self.submitted_nothing_over_base(&task, &commit, base.as_ref()) {
+                Ok(true) => {
+                    self.record_worker_committed_nothing(
+                        &task.id,
+                        &commit,
+                        COMMIT_ALREADY_ON_BASE_REASON,
+                    )?;
+                    continue;
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    self.record_validation_failure(&task.id, &commit, &error.to_string())?;
+                    continue;
+                }
+            }
             self.validate(task.id, commit)?;
         }
         Ok(())
     }
 
-    fn submitted_commit(&self, task: &TaskId) -> Result<CommitId> {
+    fn submission(&self, task: &TaskId) -> Result<(CommitId, Option<CommitId>)> {
         let event = self
             .store
             .events(&self.project.id)?
@@ -2286,7 +2363,85 @@ where
             .ok_or_else(|| {
                 Error::Schema(format!("worker submission for task `{task}` has no commit"))
             })?;
-        Ok(CommitId::new(commit))
+        let base = payload
+            .get("base")
+            .and_then(serde_json::Value::as_str)
+            .filter(|base| !base.is_empty())
+            .map(CommitId::new);
+        Ok((CommitId::new(commit), base))
+    }
+
+    fn submitted_nothing_over_base(
+        &self,
+        task: &Task,
+        commit: &CommitId,
+        base: Option<&CommitId>,
+    ) -> Result<bool> {
+        let Some(base) = base else {
+            return Ok(false);
+        };
+        let Ok(lease) = self.lease_for(task) else {
+            return Ok(false);
+        };
+        match git_exit(
+            &lease.path,
+            &[
+                "merge-base",
+                "--is-ancestor",
+                commit.as_str(),
+                base.as_str(),
+            ],
+        )? {
+            0 => Ok(true),
+            1 => Ok(false),
+            code => Err(Error::Project(format!(
+                "git merge-base --is-ancestor exited {code} for {} against base {}",
+                commit.as_str(),
+                base.as_str()
+            ))),
+        }
+    }
+
+    fn baselined_commit(&self, task: &TaskId) -> Result<Option<CommitId>> {
+        let Some(event) = self
+            .store
+            .events(&self.project.id)?
+            .into_iter()
+            .rev()
+            .find(|event| event.task.as_ref() == Some(task) && event.kind == "worktree_baselined")
+        else {
+            return Ok(None);
+        };
+        let payload: serde_json::Value = serde_json::from_str(&event.payload)
+            .map_err(|error| Error::Schema(error.to_string()))?;
+        let commit = payload
+            .get("commit")
+            .and_then(serde_json::Value::as_str)
+            .filter(|commit| !commit.is_empty())
+            .ok_or_else(|| {
+                Error::Schema(format!("worktree baseline for task `{task}` has no commit"))
+            })?;
+        Ok(Some(CommitId::new(commit)))
+    }
+
+    fn record_worker_committed_nothing(
+        &self,
+        task: &TaskId,
+        commit: &CommitId,
+        reason: &str,
+    ) -> Result<()> {
+        log("worker-committed-nothing", task.as_str());
+        self.record(
+            &event_key(&["worker_committed_nothing", task.as_str(), commit.as_str()]),
+            Fact {
+                at: now(),
+                kind: FactKind::WorkerCommittedNothing {
+                    task: task.clone(),
+                    commit: commit.clone(),
+                    reason: reason.to_owned(),
+                },
+            },
+        )
     }
 
     fn reconcile_delivery(&self) -> Result<()> {
@@ -2449,32 +2604,80 @@ where
             .update_pull_request(task, repo, number, &title, &body)
     }
 
+    fn observe_shared(
+        &self,
+        task: &Task,
+        number: u64,
+        polled: &mut BTreeMap<u64, Option<ObservedPullRequest>>,
+    ) -> Option<ObservedPullRequest> {
+        polled
+            .entry(number)
+            .or_insert_with(|| {
+                self.project_repo()
+                    .and_then(|repo| self.delivery.observe_pull_request(task, &repo))
+                    .unwrap_or_else(|error| {
+                        log("forge_unavailable", &error.to_string());
+                        None
+                    })
+            })
+            .clone()
+    }
+
+    fn reconcile_stale_merges(&self) -> Result<()> {
+        let state = self.store.project_state(&self.project)?;
+        let mut polled: BTreeMap<u64, Option<ObservedPullRequest>> = BTreeMap::new();
+        for task in state.tasks.values() {
+            if task.state != TaskState::Failed || task.acknowledged_at.is_some() {
+                continue;
+            }
+            let Some((number, _, _)) = task.pull_request() else {
+                continue;
+            };
+            let Some(observed) = self.observe_shared(task, number, &mut polled) else {
+                continue;
+            };
+            if observed.state != PrState::Merged {
+                continue;
+            }
+            self.record(
+                &event_key(&[
+                    "stale_merge_observed",
+                    task.id.as_str(),
+                    observed.commit.as_str(),
+                ]),
+                Fact {
+                    at: now(),
+                    kind: FactKind::StaleMergeObserved {
+                        task: task.id.clone(),
+                        commit: observed.commit,
+                    },
+                },
+            )?;
+        }
+        Ok(())
+    }
+
     fn reconcile_forge(&self) -> Result<()> {
         let state = self.store.project_state(&self.project)?;
+        let mut polled: BTreeMap<u64, Option<ObservedPullRequest>> = BTreeMap::new();
+        let mut settled: BTreeSet<u64> = BTreeSet::new();
         let mut observed_open: Vec<(TaskId, u64, ObservedPullRequest)> = Vec::new();
         for task in state.tasks.values() {
-            if task.state != TaskState::PrOpen {
+            if !task.state.tracks_pull_request() {
                 continue;
             }
             let Some((number, _, recorded)) = task.pull_request() else {
                 continue;
             };
-            let observed = match self
-                .project_repo()
-                .and_then(|repo| self.delivery.observe_pull_request(task, &repo))
-            {
-                Ok(observed) => observed,
-                Err(error) => {
-                    log("forge_unavailable", &error.to_string());
-                    continue;
-                }
-            };
-            let Some(mut observed) = observed else {
+            let Some(mut observed) = self.observe_shared(task, number, &mut polled) else {
                 continue;
             };
             let at = now();
             match observed.state {
                 PrState::Merged => {
+                    if !settled.insert(number) {
+                        continue;
+                    }
                     self.record(
                         &event_key(&[
                             "pull_request_merged",
@@ -2491,6 +2694,9 @@ where
                     )?;
                 }
                 PrState::Closed => {
+                    if !settled.insert(number) {
+                        continue;
+                    }
                     self.record(
                         &event_key(&["pull_request_closed_unmerged", task.id.as_str()]),
                         Fact {

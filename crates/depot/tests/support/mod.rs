@@ -534,6 +534,14 @@ impl Golden {
         )]))
     }
 
+    pub fn worker_fast_forwards_and_submits(&self) -> Output {
+        self.worker(&script(&[
+            "git fetch origin",
+            "git merge --ff-only origin/main",
+            &format!("depot submit --task {TASK} --project {SLUG}"),
+        ]))
+    }
+
     pub fn worker_submits_outside_the_lease(&self) -> Output {
         self.worker_in(
             &self.repo,
@@ -718,6 +726,15 @@ impl Golden {
             &format!(
                 "{{\"number\":1,\"html_url\":\"https://forge.test/{REPOSITORY}/pull/1\",\"state\":\"open\"}}"
             ),
+        );
+    }
+
+    pub fn script_failing_checks(&self, commit: &str) {
+        self.forge.replace_route(
+            "GET",
+            &format!("/repos/{REPOSITORY}/commits/{commit}/check-runs"),
+            200,
+            &check_runs_with("failure"),
         );
     }
 
@@ -1128,8 +1145,13 @@ fn quoted(path: &Path) -> String {
 }
 
 fn check_runs() -> String {
-    "{\"total_count\":1,\"check_runs\":[{\"status\":\"completed\",\"conclusion\":\"success\"}]}"
-        .to_string()
+    check_runs_with("success")
+}
+
+fn check_runs_with(conclusion: &str) -> String {
+    format!(
+        "{{\"total_count\":1,\"check_runs\":[{{\"status\":\"completed\",\"conclusion\":\"{conclusion}\"}}]}}"
+    )
 }
 
 fn pull_request(commit: &str, base: &str, state: &str, merged: bool, mergeable: bool) -> String {

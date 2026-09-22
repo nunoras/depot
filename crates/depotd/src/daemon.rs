@@ -1,4 +1,5 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::collections::BTreeSet;
 use std::fs::{File, OpenOptions};
 
 use fs2::FileExt;
@@ -745,6 +746,7 @@ pub struct Daemon<'a, S, W, V, D, H> {
     hook: H,
     evidence: Box<dyn EvidenceRunner>,
     budget: Cell<usize>,
+    deferred_this_tick: RefCell<BTreeSet<TaskId>>,
 }
 
 pub struct ValidationResult {
@@ -787,6 +789,7 @@ where
             hook,
             evidence: Box::new(ShellEvidence),
             budget: Cell::new(usize::MAX),
+            deferred_this_tick: RefCell::new(BTreeSet::new()),
         }
     }
 
@@ -796,6 +799,7 @@ where
     }
 
     pub fn recover(&self) -> Result<()> {
+        self.deferred_this_tick.borrow_mut().clear();
         let at = now();
         self.record(
             &event_key(&[
@@ -823,6 +827,7 @@ where
 
     pub fn tick_under(&self, budget: usize) -> Result<usize> {
         self.budget.set(budget);
+        self.deferred_this_tick.borrow_mut().clear();
         let at = now();
         self.record(
             &event_key(&["polled", &at.millis().to_string()]),
@@ -904,10 +909,17 @@ where
     fn execute(&self, action: Action) -> Result<()> {
         log("action", &format!("{action:?}"));
         match action {
-            Action::AcquireWorktree { task, baseline } => self.admit(task, baseline),
-            Action::LaunchSession { task, profile } => self.launch(task, profile),
-            Action::ResumeSession { task } => self.resume(task),
-            Action::StopSession { task } => self.stop(task),
+            Action::AcquireWorktree { task, baseline } => {
+                self.deferring(&task, || self.admit(task.clone(), baseline))
+            }
+            Action::LaunchSession { task, profile } => {
+                self.deferring(&task, || self.launch(task.clone(), profile))
+            }
+            Action::ResumeSession { task } => self.deferring(&task, || self.resume(task.clone())),
+            Action::StopSession { task } => {
+                let id = task.clone();
+                self.deferring(&id, || self.stop(task))
+            }
             Action::RunValidation { task, commit } => self.validate(task, commit),
             Action::Push { task, commit } => self.push(task, commit),
             Action::OpenPullRequest { task, commit } => self.open_pull_request(task, commit),
@@ -1144,7 +1156,24 @@ where
         )
     }
 
+    fn deferring(&self, task: &TaskId, work: impl FnOnce() -> Result<()>) -> Result<()> {
+        if self.deferred_this_tick.borrow().contains(task) {
+            return Ok(());
+        }
+        match work() {
+            Ok(()) => Ok(()),
+            Err(error) if error.is_project() => self.defer_turn(task, &error.to_string()),
+            Err(error) if error.is_task_fatal() => {
+                self.surface_unresolved_turn(task, &error.to_string())
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     fn defer_turn(&self, task: &TaskId, reason: &str) -> Result<()> {
+        if !self.deferred_this_tick.borrow_mut().insert(task.clone()) {
+            return Ok(());
+        }
         let attempt = self.task(task)?.attempts.len();
         if attempt == 0 {
             return Err(Error::Project(format!("task `{task}` has no attempt")));
@@ -1174,6 +1203,13 @@ where
     }
 
     fn deferred_attempts(&self, task: &TaskId) -> Result<u32> {
+        let Some(record) = self.store.task(&self.project.id, task)? else {
+            return Ok(0);
+        };
+        let attempt = record.attempts.len();
+        if attempt == 0 {
+            return Ok(0);
+        }
         let started = self.store.last_event_id(
             &self.project.id,
             task,
@@ -1185,14 +1221,12 @@ where
             fact_tag_name(FactTag::WorkerLivenessChanged),
         )?;
         let after = started.unwrap_or(0).max(observed.unwrap_or(0));
+        let prefix = event_key(&["worker_turn_deferred", task.as_str(), &attempt.to_string()]);
         let count = self
             .store
             .events_since(&self.project.id, after)?
             .into_iter()
-            .filter(|event| {
-                event.task.as_ref() == Some(task)
-                    && event.kind == fact_tag_name(FactTag::WorkerTurnDeferred)
-            })
+            .filter(|event| event.key.starts_with(&format!("{prefix}:")))
             .count();
         Ok(count as u32)
     }
@@ -1687,10 +1721,13 @@ where
             return Ok(());
         }
         let repo = self.repository()?;
-        let pool = self
-            .worktrees
-            .pool(&repo)
-            .map_err(|error| Error::Project(error.to_string()))?;
+        let pool = match self.worktrees.pool(&repo) {
+            Ok(pool) => pool,
+            Err(error) => {
+                log_project_error(&self.project.slug, &Error::Project(error.to_string()));
+                return Ok(());
+            }
+        };
         for task in owed {
             let leases = if sweep {
                 owed_leases(task, &pool)
@@ -1780,7 +1817,9 @@ where
                 continue;
             };
             if task.state.in_flight() && attempt.outcome.is_open() && attempt.worktree.is_none() {
-                self.admit(task.id.clone(), depot_core::worktree_baseline(task))?;
+                self.deferring(&task.id, || {
+                    self.admit(task.id.clone(), depot_core::worktree_baseline(task))
+                })?;
             }
         }
         for task in self.store.tasks(&self.project.id)?.values() {
@@ -1792,7 +1831,9 @@ where
                 && attempt.worktree.is_some()
                 && attempt.session.is_none()
             {
-                self.launch(task.id.clone(), attempt.profile.clone())?;
+                self.deferring(&task.id, || {
+                    self.launch(task.id.clone(), attempt.profile.clone())
+                })?;
             }
         }
         Ok(())
@@ -1825,7 +1866,7 @@ where
             {
                 continue;
             }
-            self.resume(task.id)?;
+            self.deferring(&task.id, || self.resume(task.id.clone()))?;
         }
         Ok(())
     }
@@ -2093,7 +2134,7 @@ where
             if !self.session_is_running(&session)? {
                 continue;
             }
-            self.stop(task.id.clone())?;
+            self.deferring(&task.id, || self.stop(task.id.clone()))?;
         }
         Ok(())
     }
@@ -2687,7 +2728,8 @@ where
     }
 
     fn lease_for(&self, task: &Task) -> Result<Lease> {
-        resolve_worktree_lease(&self.worktrees, &self.repository()?, task)
+        crate::adapters::worktrees::resolve_lease(&self.worktrees, &self.repository()?, task)
+            .map_err(|error| Error::Project(error.to_string()))
     }
 
     fn session_for(&self, task: &Task) -> Result<SessionId> {
@@ -2750,34 +2792,6 @@ pub fn resume_reason(redirect: &Option<String>, answers: &[(String, String)]) ->
         parts.push(resume_prompt(answers));
     }
     parts.join(" ")
-}
-
-pub(crate) fn resolve_worktree_lease(
-    worktrees: &impl Worktrees,
-    repo: &std::path::Path,
-    task: &Task,
-) -> Result<Lease> {
-    let lease = task
-        .attempts
-        .last()
-        .and_then(|attempt| attempt.worktree.as_ref())
-        .ok_or_else(|| Error::Project(format!("task `{}` has no worktree lease", task.id)))?;
-    worktrees
-        .pool(repo)
-        .map_err(|error| Error::Project(error.to_string()))?
-        .into_iter()
-        .find(|entry| entry.lease.as_ref() == Some(lease))
-        .map(|entry| Lease {
-            lease: lease.clone(),
-            path: entry.path,
-            holder: entry.holder.unwrap_or_default(),
-            acquired_at: String::new(),
-        })
-        .ok_or_else(|| {
-            Error::Project(format!(
-                "worktree lease `{lease}` is not present in the pool"
-            ))
-        })
 }
 
 fn stripped(answer: &str) -> String {

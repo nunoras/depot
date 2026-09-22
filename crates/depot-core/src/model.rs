@@ -239,6 +239,12 @@ pub struct ReleaseHold {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnDeferral {
+    pub count: u32,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Task {
     pub id: TaskId,
     pub project: ProjectId,
@@ -266,6 +272,7 @@ pub struct Task {
     pub hold_pr: bool,
     pub release_pending: Vec<WorktreeLease>,
     pub release_held: BTreeMap<WorktreeLease, ReleaseHold>,
+    pub turn_deferral: Option<TurnDeferral>,
     pub retry: Option<Retry>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
@@ -346,6 +353,7 @@ impl Default for Task {
             hold_pr: false,
             release_pending: Vec::new(),
             release_held: BTreeMap::new(),
+            turn_deferral: None,
             retry: None,
             created_at: Timestamp::from_millis(0),
             updated_at: Timestamp::from_millis(0),

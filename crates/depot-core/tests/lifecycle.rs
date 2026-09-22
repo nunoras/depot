@@ -117,6 +117,14 @@ fn running_with_lease(id: &str, lease_id: &str) -> Task {
     )
 }
 
+fn with_deferral(mut task: Task, count: u32, reason: &str) -> Task {
+    task.turn_deferral = Some(TurnDeferral {
+        count,
+        reason: reason.to_string(),
+    });
+    task
+}
+
 fn validating(id: &str) -> Task {
     with_attempt(task(id, TaskState::Validating), attempt(BUILD))
 }
@@ -1231,6 +1239,83 @@ fn rule_10_restart_reconciliation_prefers_unknown_over_a_guess() {
         .when("t1", TaskState::Running, vec![Action::RenderChecklist])
         .checking(|state| holds(state, "t1", AttemptOutcome::AwaitingAnswer)),
         case(
+            "a deferred worker turn is counted and visible on the task",
+            state(vec![running_with_lease("t1", "w1")]),
+            vec![fact(
+                8_500,
+                FactKind::WorkerTurnDeferred {
+                    task: task_id("t1"),
+                    reason: "the worktree pool is exhausted".to_string(),
+                },
+            )],
+        )
+        .when("t1", TaskState::Running, vec![Action::RenderChecklist])
+        .checking(|state| {
+            subject(state, "t1")
+                .turn_deferral
+                .as_ref()
+                .is_some_and(|deferral| {
+                    deferral.count == 1 && deferral.reason == "the worktree pool is exhausted"
+                })
+        }),
+        case(
+            "a session that comes back clears the deferral its outage left behind",
+            state(vec![with_deferral(
+                running_with_session("t1", "s1", "w1"),
+                2,
+                "boxr is down",
+            )]),
+            vec![fact(
+                8_600,
+                FactKind::WorkerLivenessChanged {
+                    task: task_id("t1"),
+                    liveness: Liveness::Live,
+                },
+            )],
+        )
+        .when("t1", TaskState::Running, vec![Action::RenderChecklist])
+        .checking(|state| subject(state, "t1").turn_deferral.is_none()),
+        case(
+            "an acquired worktree clears the deferral the acquire outage left behind",
+            state(vec![with_deferral(
+                running_with_lease("t1", "w1"),
+                1,
+                "the worktree pool is exhausted",
+            )]),
+            vec![fact(
+                8_700,
+                FactKind::WorktreeAcquired {
+                    task: task_id("t1"),
+                    lease: lease("w1"),
+                    baseline: Baseline::DefaultBranchHead,
+                    included: Vec::new(),
+                },
+            )],
+        )
+        .when("t1", TaskState::Running, vec![Action::RenderChecklist])
+        .checking(|state| subject(state, "t1").turn_deferral.is_none()),
+        case(
+            "a submitted turn clears the deferral that preceded it",
+            state(vec![with_deferral(
+                running_with_session("t1", "s1", "w1"),
+                3,
+                "boxr is down",
+            )]),
+            vec![fact(8_800, submitted("t1", "c1"))],
+        )
+        .when(
+            "t1",
+            TaskState::Validating,
+            vec![
+                Action::RunValidation {
+                    task: task_id("t1"),
+                    commit: commit("c1"),
+                },
+                Action::RenderChecklist,
+            ],
+        )
+        .checking(|state| subject(state, "t1").turn_deferral.is_none()),
+        case(
             "a worker turn that cannot be resolved is held for a person",
             state(vec![running_with_lease("t1", "w1")]),
             vec![fact(
@@ -1246,7 +1331,12 @@ fn rule_10_restart_reconciliation_prefers_unknown_over_a_guess() {
             TaskState::Failed,
             vec![hold("t1"), Action::RenderChecklist],
         )
-        .checking(|state| holds(state, "t1", AttemptOutcome::Failed)),
+        .checking(|state| {
+            holds(state, "t1", AttemptOutcome::Failed)
+                && subject(state, "t1").failure.as_deref()
+                    == Some("the launch intent never completed")
+                && subject(state, "t1").turn_deferral.is_none()
+        }),
     ]);
 }
 

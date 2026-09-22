@@ -178,6 +178,7 @@ const MIGRATIONS: &[&str] = &[
     "ALTER TABLE tasks ADD COLUMN failure TEXT;",
     "ALTER TABLE tasks ADD COLUMN release_pending TEXT;",
     "ALTER TABLE tasks ADD COLUMN release_held TEXT;",
+    "ALTER TABLE tasks ADD COLUMN turn_deferral TEXT;",
 ];
 
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;

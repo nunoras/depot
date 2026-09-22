@@ -3,8 +3,8 @@ use std::time::Duration;
 
 use depot_core::{
     Answer, Artifact, Attempt, Checks, CommitId, Dependency, Link, ProfileId, ProjectId, Question,
-    ReleaseHold, Retry, SessionId, Submission, Task, TaskId, Timestamp, ValidationRecord,
-    WorktreeLease,
+    ReleaseHold, Retry, SessionId, Submission, Task, TaskId, Timestamp, TurnDeferral,
+    ValidationRecord, WorktreeLease,
 };
 use rusqlite::{OptionalExtension, Row, Transaction, params};
 
@@ -97,7 +97,7 @@ impl Store {
 }
 
 const TASK_COLUMNS: &str = "project_id, id, title, intent, role, state, base_dependency, \
-     branch_head, retry_profile, retry_not_before, submission_summary, merge_refused, conflict_base, failure, redirect_text, redirect_delivered, created_at, updated_at, dispatch_profile, acknowledged_at, hold_pr, rework_of, release_pending, release_held";
+     branch_head, retry_profile, retry_not_before, submission_summary, merge_refused, conflict_base, failure, redirect_text, redirect_delivered, created_at, updated_at, dispatch_profile, acknowledged_at, hold_pr, rework_of, release_pending, release_held, turn_deferral";
 
 struct RawTask {
     project_id: String,
@@ -122,6 +122,7 @@ struct RawTask {
     rework_of: Option<String>,
     release_pending: Option<String>,
     release_held: Option<String>,
+    turn_deferral: Option<String>,
     created_at: i64,
     updated_at: i64,
 }
@@ -151,6 +152,7 @@ impl RawTask {
             rework_of: row.get("rework_of")?,
             release_pending: row.get("release_pending")?,
             release_held: row.get("release_held")?,
+            turn_deferral: row.get("turn_deferral")?,
             created_at: row.get("created_at")?,
             updated_at: row.get("updated_at")?,
         })
@@ -215,6 +217,7 @@ impl RawTask {
             hold_pr: self.hold_pr,
             release_pending: pending_leases(self.release_pending.as_deref())?,
             release_held: held_releases(self.release_held.as_deref())?,
+            turn_deferral: parse_deferral(self.turn_deferral.as_deref())?,
             retry,
             created_at: millis(self.created_at)?,
             updated_at: millis(self.updated_at)?,
@@ -533,9 +536,44 @@ fn encode_held(held: &BTreeMap<WorktreeLease, ReleaseHold>) -> Result<Option<Str
     Ok(Some(encoded))
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+struct StoredDeferral {
+    count: u32,
+    reason: String,
+}
+
+fn parse_deferral(raw: Option<&str>) -> Result<Option<TurnDeferral>> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    if raw.trim().is_empty() {
+        return Ok(None);
+    }
+    let stored: StoredDeferral =
+        serde_json::from_str(raw).map_err(|error| Error::Schema(error.to_string()))?;
+    Ok(Some(TurnDeferral {
+        count: stored.count,
+        reason: stored.reason,
+    }))
+}
+
+fn encode_deferral(deferral: Option<&TurnDeferral>) -> Result<Option<String>> {
+    let Some(deferral) = deferral else {
+        return Ok(None);
+    };
+    let stored = StoredDeferral {
+        count: deferral.count,
+        reason: deferral.reason.clone(),
+    };
+    let encoded =
+        serde_json::to_string(&stored).map_err(|error| Error::Schema(error.to_string()))?;
+    Ok(Some(encoded))
+}
+
 pub(super) fn write_task(transaction: &Transaction<'_>, task: &Task) -> Result<()> {
     let release_pending = encode_pending(&task.release_pending)?;
     let release_held = encode_held(&task.release_held)?;
+    let turn_deferral = encode_deferral(task.turn_deferral.as_ref())?;
     transaction.execute(
         "DELETE FROM tasks WHERE project_id = ?1 AND id = ?2",
         params![task.project.as_str(), task.id.as_str()],
@@ -543,8 +581,8 @@ pub(super) fn write_task(transaction: &Transaction<'_>, task: &Task) -> Result<(
     transaction.execute(
         "INSERT INTO tasks (
                 project_id, id, title, intent, role, state, base_dependency, branch_head,
-                retry_profile, retry_not_before, submission_summary, merge_refused, conflict_base, failure, redirect_text, redirect_delivered, created_at, updated_at, dispatch_profile, acknowledged_at, hold_pr, rework_of, release_pending, release_held
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
+                retry_profile, retry_not_before, submission_summary, merge_refused, conflict_base, failure, redirect_text, redirect_delivered, created_at, updated_at, dispatch_profile, acknowledged_at, hold_pr, rework_of, release_pending, release_held, turn_deferral
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
         params![
             task.project.as_str(),
             task.id.as_str(),
@@ -574,6 +612,7 @@ pub(super) fn write_task(transaction: &Transaction<'_>, task: &Task) -> Result<(
             task.rework_of.as_ref().map(TaskId::as_str),
             release_pending.as_deref(),
             release_held.as_deref(),
+            turn_deferral.as_deref(),
         ],
     )?;
 

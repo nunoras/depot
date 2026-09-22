@@ -148,6 +148,7 @@ fn a_store_migrated_from_main_gains_every_new_column() {
         "failure",
         "release_pending",
         "release_held",
+        "turn_deferral",
     ] {
         assert!(
             columns.contains(&column.to_string()),

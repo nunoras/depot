@@ -27,6 +27,7 @@ pub fn move_legacy_home(home: &DepotHome) -> Result<Option<PathBuf>> {
         return Ok(None);
     }
     refuse_if_a_daemon_holds_the_legacy_lock(&legacy_root)?;
+    refuse_a_second_database(&legacy_root, home.root())?;
     home.ensure()?;
     move_settings(&legacy_root, home.root())?;
     for entry in fs::read_dir(&legacy_root)? {
@@ -42,6 +43,19 @@ pub fn move_legacy_home(home: &DepotHome) -> Result<Option<PathBuf>> {
     }
     remove_if_empty(&legacy_root);
     Ok(Some(legacy_root))
+}
+
+fn refuse_a_second_database(legacy_root: &Path, root: &Path) -> Result<()> {
+    let source = legacy_root.join(LEGACY_DATABASE_FILE_NAME);
+    let destination = root.join(DATABASE_FILE_NAME);
+    if source.is_file() && destination.exists() {
+        return Err(Error::Home(format!(
+            "cannot move {}: {} already holds records; merge them by hand, then run `depot store migrate` again",
+            source.display(),
+            destination.display()
+        )));
+    }
+    Ok(())
 }
 
 fn move_settings(legacy_root: &Path, root: &Path) -> Result<()> {

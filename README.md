@@ -101,23 +101,41 @@ depot project add /path/to/your-project
 
 This creates the project home under `~/.agni/projects/<slug>/` and adds `.depot.toml` to the repo's `.git/info/exclude` so it stays machine-local.
 
-5. Configure the project (`.depot.toml` in the repo root; machine-local, never committed):
+5. Configure the project.
+
+The keys that describe the repository are committed in `.agni/project.toml`:
 
 ```toml
 base_branch = "main"
+
+[validation]
+command = "cargo test"
+
+[evidence]
+command = "./capture"
+
+[pull_request]
+describe_style = "Write in the house voice: plain sentences, no emoji."
+```
+
+depot reads that file from the fetched base branch, never from a worker's branch, so a worker cannot loosen the gate its own work is judged by.
+A task whose branch changes anything under `.agni/` is held for you before validation runs; its checklist entry names the files.
+`.agni/automations/` is reserved for repository automations and read by nothing yet.
+
+The keys that describe this machine's choices stay in `.depot.toml` in the repo root, which `depot project add` adds to `.git/info/exclude` so it stays machine-local:
+
+```toml
 max_concurrent_tasks = 1
 
 [profiles]
 build = "my-builder"
 
-[validation]
-command = "cargo test"
-
 [pull_request]
-base = "main"
 merge = "manual"
 describe_profile = "my-describer"
-describe_style = "Write in the house voice: plain sentences, no emoji."
+
+[questions]
+always_relay = false
 ```
 
 6. Start the daemon:

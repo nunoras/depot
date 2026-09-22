@@ -27,8 +27,6 @@ Read this index, then use the matching feature file as the recipe.
 ## Proof and skip reporting
 
 - CLI proof is the command, stdout, stderr and exit code, all in `transcript.txt`.
-- Visual proof for a PR is `proof.mp4`, built from one frame per command and per TUI capture.
-  A new `run_in` call or `frame_pane` capture adds its frame automatically.
 - State proof is a second view: the checklist, a `depot status` call, the journal in `events.txt`, or the files on disk.
 - Daemon proof also shows what did not happen: no worktree lease, no boxr session, held tasks unchanged.
 - Report a path the driver cannot reach with the command you tried and the precondition it needs.

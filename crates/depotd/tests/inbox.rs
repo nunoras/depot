@@ -190,6 +190,7 @@ fn the_inbox_payload_names_the_task_state_and_the_owner_of_each_fact() {
         FactKind::WorkerSubmitted {
             task: TaskId::new("t-1"),
             commit: CommitId::new("abc123"),
+            base: None,
         },
     );
     apply(
@@ -251,6 +252,7 @@ fn a_failed_validation_reaches_the_user_from_the_inbox() {
         FactKind::WorkerSubmitted {
             task: TaskId::new("t-1"),
             commit: CommitId::new("abc123"),
+            base: None,
         },
     );
     apply(
@@ -305,6 +307,7 @@ fn a_describe_failure_reaches_the_user_from_the_inbox() {
         FactKind::WorkerSubmitted {
             task: TaskId::new("t-1"),
             commit: CommitId::new("abc123"),
+            base: None,
         },
     );
     apply(
@@ -745,6 +748,7 @@ fn a_delivery_failure_reaches_the_user_and_a_landing_on_base_needs_nobody() {
         FactKind::WorkerSubmitted {
             task: TaskId::new("t-1"),
             commit: CommitId::new("abc123"),
+            base: None,
         },
     );
     apply(
@@ -790,6 +794,7 @@ fn a_delivery_failure_reaches_the_user_and_a_landing_on_base_needs_nobody() {
         FactKind::WorkerSubmitted {
             task: TaskId::new("t-2"),
             commit: CommitId::new("def456"),
+            base: None,
         },
     );
     apply(

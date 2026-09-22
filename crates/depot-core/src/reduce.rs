@@ -468,7 +468,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             }
         }
 
-        FactKind::WorkerSubmitted { task, commit } => {
+        FactKind::WorkerSubmitted { task, commit, .. } => {
             let can_submit = next.tasks.get(task).is_some_and(|task| {
                 task.state == TaskState::Running
                     && task

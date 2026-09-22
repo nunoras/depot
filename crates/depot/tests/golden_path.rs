@@ -3172,6 +3172,59 @@ fn a_worker_that_commits_nothing_fails_instead_of_landing() {
 }
 
 #[test]
+fn a_worker_that_fast_forwards_its_lease_and_commits_nothing_fails_instead_of_landing() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+
+    support::commit_file(
+        &golden.repo,
+        "base.txt",
+        "the base moves on\n",
+        "the base moves on",
+    );
+    git::git(&golden.repo, &["push", "origin", "HEAD:main"]);
+
+    let submitted = golden.worker_fast_forwards_and_submits();
+    assert_eq!(
+        submitted.status.code(),
+        Some(0),
+        "the worker script failed: {}",
+        support::stderr(&submitted)
+    );
+
+    daemon
+        .tick()
+        .expect("the daemon sees nothing over the fetched base and holds the task");
+
+    let failed = golden.task();
+    assert_eq!(failed.state, TaskState::Failed);
+    assert_eq!(
+        failed.failure.as_deref(),
+        Some("the worker committed nothing")
+    );
+    assert!(
+        golden
+            .history(TASK)
+            .contains(&"worker_committed_nothing".to_string()),
+        "the empty submission is on the journal: {:?}",
+        golden.history(TASK)
+    );
+    assert!(
+        !golden.history(TASK).contains(&VALIDATED.to_string()),
+        "nothing was validated: {:?}",
+        golden.history(TASK)
+    );
+    assert!(
+        !golden.history(TASK).contains(&PUSHED.to_string()),
+        "nothing was pushed: {:?}",
+        golden.history(TASK)
+    );
+    assert_eq!(golden.pull_requests_opened(), 0);
+}
+
+#[test]
 fn a_base_that_cannot_be_read_holds_the_task_instead_of_landing_it() {
     let golden = Golden::new(Validation::Passing);
     let daemon = golden.daemon();

@@ -120,6 +120,7 @@ pub enum FactKind {
     WorkerSubmitted {
         task: TaskId,
         commit: CommitId,
+        base: Option<CommitId>,
     },
     WorkerCommittedNothing {
         task: TaskId,

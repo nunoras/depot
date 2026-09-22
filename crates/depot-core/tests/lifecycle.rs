@@ -219,6 +219,7 @@ fn submitted(task: &str, commit_id: &str) -> FactKind {
     FactKind::WorkerSubmitted {
         task: task_id(task),
         commit: commit(commit_id),
+        base: None,
     }
 }
 
@@ -4933,6 +4934,19 @@ fn rule_22_a_worker_that_committed_nothing_fails_the_task() {
             "an empty submission fails the validating task with a reason",
             state(vec![validating("t1")]),
             vec![fact(1_000, committed_nothing("t1", "c1"))],
+        )
+        .when(
+            "t1",
+            TaskState::Failed,
+            vec![hold("t1"), Action::RenderChecklist],
+        )
+        .checking(|state| {
+            subject(state, "t1").failure.as_deref() == Some("the worker committed nothing")
+        }),
+        case(
+            "a submission already on the fetched base fails the validating task",
+            state(vec![validating("t1")]),
+            vec![fact(1_500, committed_nothing("t1", "c2"))],
         )
         .when(
             "t1",

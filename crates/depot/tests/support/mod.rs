@@ -508,6 +508,14 @@ impl Golden {
         )]))
     }
 
+    pub fn worker_fast_forwards_and_submits(&self) -> Output {
+        self.worker(&script(&[
+            "git fetch origin",
+            "git merge --ff-only origin/main",
+            &format!("depot submit --task {TASK} --project {SLUG}"),
+        ]))
+    }
+
     pub fn worker_submits_outside_the_lease(&self) -> Output {
         self.worker_in(
             &self.repo,

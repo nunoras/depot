@@ -855,7 +855,11 @@ where
             &event_key(&["worker_submitted", task.as_str(), commit.as_str()]),
             Fact {
                 at: now(),
-                kind: FactKind::WorkerSubmitted { task, commit },
+                kind: FactKind::WorkerSubmitted {
+                    task,
+                    commit,
+                    base: None,
+                },
             },
         )
     }
@@ -2256,8 +2260,8 @@ where
             if task.state != TaskState::Validating {
                 continue;
             }
-            let commit = match self.submitted_commit(&task.id) {
-                Ok(commit) => commit,
+            let (commit, base) = match self.submission(&task.id) {
+                Ok(submission) => submission,
                 Err(error) => {
                     let commit = task
                         .branch_head
@@ -2271,7 +2275,9 @@ where
             if task.validations.iter().any(|v| v.commit == commit) {
                 continue;
             }
-            if self.baselined_commit(&task.id)?.as_ref() == Some(&commit) {
+            if self.baselined_commit(&task.id)?.as_ref() == Some(&commit)
+                || self.submitted_nothing_over_base(&task, &commit, base.as_ref())?
+            {
                 self.record_worker_committed_nothing(&task.id, &commit)?;
                 continue;
             }
@@ -2280,7 +2286,7 @@ where
         Ok(())
     }
 
-    fn submitted_commit(&self, task: &TaskId) -> Result<CommitId> {
+    fn submission(&self, task: &TaskId) -> Result<(CommitId, Option<CommitId>)> {
         let event = self
             .store
             .events(&self.project.id)?
@@ -2297,7 +2303,45 @@ where
             .ok_or_else(|| {
                 Error::Schema(format!("worker submission for task `{task}` has no commit"))
             })?;
-        Ok(CommitId::new(commit))
+        let base = payload
+            .get("base")
+            .and_then(serde_json::Value::as_str)
+            .filter(|base| !base.is_empty())
+            .map(CommitId::new);
+        Ok((CommitId::new(commit), base))
+    }
+
+    fn submitted_nothing_over_base(
+        &self,
+        task: &Task,
+        commit: &CommitId,
+        base: Option<&CommitId>,
+    ) -> Result<bool> {
+        let Some(base) = base else {
+            return Ok(false);
+        };
+        let Ok(lease) = self.lease_for(task) else {
+            return Ok(false);
+        };
+        match git_exit(
+            &lease.path,
+            &[
+                "merge-base",
+                "--is-ancestor",
+                commit.as_str(),
+                base.as_str(),
+            ],
+        )? {
+            0 => Ok(true),
+            1 => Ok(false),
+            code => {
+                log(
+                    "submitted-base-unreadable",
+                    &format!("git merge-base --is-ancestor exited {code}"),
+                );
+                Ok(false)
+            }
+        }
     }
 
     fn baselined_commit(&self, task: &TaskId) -> Result<Option<CommitId>> {

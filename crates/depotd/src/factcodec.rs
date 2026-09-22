@@ -147,6 +147,10 @@ pub fn encode_payload(kind: &FactKind) -> String {
             ("task", quoted(task.as_str())),
             ("commit", quoted(commit.as_str())),
         ]),
+        FactKind::WorkerCommittedNothing { task, commit } => object(vec![
+            ("task", quoted(task.as_str())),
+            ("commit", quoted(commit.as_str())),
+        ]),
         FactKind::ValidationStarted { task, commit } => object(vec![
             ("task", quoted(task.as_str())),
             ("commit", quoted(commit.as_str())),
@@ -215,6 +219,10 @@ pub fn encode_payload(kind: &FactKind) -> String {
                         .collect(),
                 ),
             ),
+        ]),
+        FactKind::WorktreeBaselined { task, commit } => object(vec![
+            ("task", quoted(task.as_str())),
+            ("commit", quoted(commit.as_str())),
         ]),
         FactKind::WorktreeReleased { task, lease } => object(vec![
             ("task", quoted(task.as_str())),

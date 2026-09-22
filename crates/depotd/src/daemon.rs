@@ -942,9 +942,10 @@ where
 
     fn acquire(&self, task: TaskId, baseline: Baseline) -> Result<()> {
         if self.acquire_is_pending(&task)?
-            && let Some(lease) = self.leased_worktree(&task)?
+            && let Some(entry) = self.leased_worktree(&task)?
+            && let Some(lease) = entry.lease
         {
-            return self.record_worktree_acquired(&task, lease, baseline);
+            return self.record_worktree_acquired(&task, lease, &entry.path, baseline);
         }
         let attempt = self.task(&task)?.attempts.len();
         if attempt == 0 {
@@ -967,9 +968,9 @@ where
             .iter()
             .rev()
             .find_map(|attempt| attempt.worktree.clone())
-            && self.lease_is_in_pool(&lease)?
+            && let Some(entry) = self.pool_lease(&lease)?
         {
-            return self.record_worktree_acquired(&task, lease, baseline);
+            return self.record_worktree_acquired(&task, lease, &entry.path, baseline);
         }
         let repo = self.repository()?;
         let task = self.task(&task)?;
@@ -986,13 +987,14 @@ where
                 baseline: baseline.clone(),
             })
             .map_err(|error| Error::Project(error.to_string()))?;
-        self.record_worktree_acquired(&task.id, lease.lease, baseline)
+        self.record_worktree_acquired(&task.id, lease.lease, &lease.path, baseline)
     }
 
     fn record_worktree_acquired(
         &self,
         task: &TaskId,
         lease: WorktreeLease,
+        path: &Path,
         baseline: Baseline,
     ) -> Result<()> {
         let attempt = self.task(task)?.attempts.len();
@@ -1007,9 +1009,41 @@ where
                 at: now(),
                 kind: FactKind::WorktreeAcquired {
                     task: task.clone(),
-                    lease,
+                    lease: lease.clone(),
                     baseline,
                     included: Vec::new(),
+                },
+            },
+        )?;
+        self.record_worktree_baselined(task, &lease, path)
+    }
+
+    fn record_worktree_baselined(
+        &self,
+        task: &TaskId,
+        lease: &WorktreeLease,
+        path: &Path,
+    ) -> Result<()> {
+        let commit =
+            match git_output(path, &["rev-parse", "HEAD"]).map(|head| CommitId::new(head.trim())) {
+                Ok(commit) => commit,
+                Err(error) => {
+                    log("worktree-baseline-unresolved", &error.to_string());
+                    return Ok(());
+                }
+            };
+        self.record(
+            &event_key(&[
+                "worktree_baselined",
+                task.as_str(),
+                lease.as_str(),
+                commit.as_str(),
+            ]),
+            Fact {
+                at: now(),
+                kind: FactKind::WorktreeBaselined {
+                    task: task.clone(),
+                    commit,
                 },
             },
         )
@@ -1879,7 +1913,10 @@ where
         ))
     }
 
-    fn leased_worktree(&self, task: &TaskId) -> Result<Option<WorktreeLease>> {
+    fn leased_worktree(
+        &self,
+        task: &TaskId,
+    ) -> Result<Option<crate::adapters::worktrees::PoolEntry>> {
         let repo = self.repository()?;
         let holder = format!("depot:{}", task.as_str());
         let pool = self
@@ -1888,11 +1925,13 @@ where
             .map_err(|error| Error::Project(error.to_string()))?;
         Ok(pool
             .into_iter()
-            .find(|entry| entry.holder.as_deref() == Some(holder.as_str()))
-            .and_then(|entry| entry.lease))
+            .find(|entry| entry.holder.as_deref() == Some(holder.as_str())))
     }
 
-    fn lease_is_in_pool(&self, lease: &WorktreeLease) -> Result<bool> {
+    fn pool_lease(
+        &self,
+        lease: &WorktreeLease,
+    ) -> Result<Option<crate::adapters::worktrees::PoolEntry>> {
         let repo = self.repository()?;
         let pool = self
             .worktrees
@@ -1900,7 +1939,7 @@ where
             .map_err(|error| Error::Project(error.to_string()))?;
         Ok(pool
             .into_iter()
-            .any(|entry| entry.lease.as_ref() == Some(lease)))
+            .find(|entry| entry.lease.as_ref() == Some(lease)))
     }
 
     fn acquire_is_pending(&self, task: &TaskId) -> Result<bool> {
@@ -2232,6 +2271,10 @@ where
             if task.validations.iter().any(|v| v.commit == commit) {
                 continue;
             }
+            if self.baselined_commit(&task.id)?.as_ref() == Some(&commit) {
+                self.record_worker_committed_nothing(&task.id, &commit)?;
+                continue;
+            }
             self.validate(task.id, commit)?;
         }
         Ok(())
@@ -2255,6 +2298,42 @@ where
                 Error::Schema(format!("worker submission for task `{task}` has no commit"))
             })?;
         Ok(CommitId::new(commit))
+    }
+
+    fn baselined_commit(&self, task: &TaskId) -> Result<Option<CommitId>> {
+        let Some(event) = self
+            .store
+            .events(&self.project.id)?
+            .into_iter()
+            .rev()
+            .find(|event| event.task.as_ref() == Some(task) && event.kind == "worktree_baselined")
+        else {
+            return Ok(None);
+        };
+        let payload: serde_json::Value = serde_json::from_str(&event.payload)
+            .map_err(|error| Error::Schema(error.to_string()))?;
+        let commit = payload
+            .get("commit")
+            .and_then(serde_json::Value::as_str)
+            .filter(|commit| !commit.is_empty())
+            .ok_or_else(|| {
+                Error::Schema(format!("worktree baseline for task `{task}` has no commit"))
+            })?;
+        Ok(Some(CommitId::new(commit)))
+    }
+
+    fn record_worker_committed_nothing(&self, task: &TaskId, commit: &CommitId) -> Result<()> {
+        log("worker-committed-nothing", task.as_str());
+        self.record(
+            &event_key(&["worker_committed_nothing", task.as_str(), commit.as_str()]),
+            Fact {
+                at: now(),
+                kind: FactKind::WorkerCommittedNothing {
+                    task: task.clone(),
+                    commit: commit.clone(),
+                },
+            },
+        )
     }
 
     fn reconcile_delivery(&self) -> Result<()> {

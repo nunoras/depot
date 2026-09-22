@@ -222,6 +222,20 @@ fn submitted(task: &str, commit_id: &str) -> FactKind {
     }
 }
 
+fn committed_nothing(task: &str, commit_id: &str) -> FactKind {
+    FactKind::WorkerCommittedNothing {
+        task: task_id(task),
+        commit: commit(commit_id),
+    }
+}
+
+fn baselined(task: &str, commit_id: &str) -> FactKind {
+    FactKind::WorktreeBaselined {
+        task: task_id(task),
+        commit: commit(commit_id),
+    }
+}
+
 fn merged(task: &str) -> FactKind {
     FactKind::PullRequestMerged {
         task: task_id(task),
@@ -4909,6 +4923,43 @@ fn rule_21_a_commit_already_on_the_base_lands_and_releases_its_worktree() {
             )],
         )
         .when("t1", TaskState::PrOpen, vec![]),
+    ]);
+}
+
+#[test]
+fn rule_22_a_worker_that_committed_nothing_fails_the_task() {
+    run(vec![
+        case(
+            "an empty submission fails the validating task with a reason",
+            state(vec![validating("t1")]),
+            vec![fact(1_000, committed_nothing("t1", "c1"))],
+        )
+        .when(
+            "t1",
+            TaskState::Failed,
+            vec![hold("t1"), Action::RenderChecklist],
+        )
+        .checking(|state| {
+            subject(state, "t1").failure.as_deref() == Some("the worker committed nothing")
+        }),
+        case(
+            "a running task is not failed by an empty submission",
+            state(vec![running("t1")]),
+            vec![fact(2_000, committed_nothing("t1", "c1"))],
+        )
+        .when("t1", TaskState::Running, vec![]),
+        case(
+            "a validated task is not failed by a late empty submission",
+            state(vec![validated("t1", "c1")]),
+            vec![fact(3_000, committed_nothing("t1", "c1"))],
+        )
+        .when("t1", TaskState::Validated, vec![]),
+        case(
+            "a baseline alone changes nothing",
+            state(vec![running("t1")]),
+            vec![fact(4_000, baselined("t1", "c1"))],
+        )
+        .when("t1", TaskState::Running, vec![]),
     ]);
 }
 

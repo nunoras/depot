@@ -128,10 +128,12 @@ pub enum FactTag {
     WorkerTurnDeferred,
     WorkerSubmissionRecorded,
     WorkerSubmitted,
+    WorkerCommittedNothing,
     ValidationStarted,
     ValidationFinished,
     ValidationFailed,
     WorktreeAcquired,
+    WorktreeBaselined,
     WorktreeReleased,
     WorktreeReleaseHeld,
     BranchPushed,
@@ -184,10 +186,12 @@ pub fn fact_tag(kind: &FactKind) -> FactTag {
         FactKind::WorkerTurnDeferred { .. } => FactTag::WorkerTurnDeferred,
         FactKind::WorkerSubmissionRecorded { .. } => FactTag::WorkerSubmissionRecorded,
         FactKind::WorkerSubmitted { .. } => FactTag::WorkerSubmitted,
+        FactKind::WorkerCommittedNothing { .. } => FactTag::WorkerCommittedNothing,
         FactKind::ValidationStarted { .. } => FactTag::ValidationStarted,
         FactKind::ValidationFinished { .. } => FactTag::ValidationFinished,
         FactKind::ValidationFailed { .. } => FactTag::ValidationFailed,
         FactKind::WorktreeAcquired { .. } => FactTag::WorktreeAcquired,
+        FactKind::WorktreeBaselined { .. } => FactTag::WorktreeBaselined,
         FactKind::WorktreeReleased { .. } => FactTag::WorktreeReleased,
         FactKind::WorktreeReleaseHeld { .. } => FactTag::WorktreeReleaseHeld,
         FactKind::BranchPushed { .. } => FactTag::BranchPushed,
@@ -241,10 +245,12 @@ pub fn fact_tag_name(tag: FactTag) -> &'static str {
         FactTag::WorkerTurnDeferred => "worker_turn_deferred",
         FactTag::WorkerSubmissionRecorded => "worker_submission_recorded",
         FactTag::WorkerSubmitted => "worker_submitted",
+        FactTag::WorkerCommittedNothing => "worker_committed_nothing",
         FactTag::ValidationStarted => "validation_started",
         FactTag::ValidationFinished => "validation_finished",
         FactTag::ValidationFailed => "validation_failed",
         FactTag::WorktreeAcquired => "worktree_acquired",
+        FactTag::WorktreeBaselined => "worktree_baselined",
         FactTag::WorktreeReleased => "worktree_released",
         FactTag::WorktreeReleaseHeld => "worktree_release_held",
         FactTag::BranchPushed => "branch_pushed",
@@ -298,10 +304,12 @@ pub fn fact_tag_from_name(name: &str) -> Result<FactTag> {
         "worker_relaunch_requested" => FactTag::WorkerRelaunchRequested,
         "worker_submission_recorded" => FactTag::WorkerSubmissionRecorded,
         "worker_submitted" => FactTag::WorkerSubmitted,
+        "worker_committed_nothing" => FactTag::WorkerCommittedNothing,
         "validation_started" => FactTag::ValidationStarted,
         "validation_finished" => FactTag::ValidationFinished,
         "validation_failed" => FactTag::ValidationFailed,
         "worktree_acquired" => FactTag::WorktreeAcquired,
+        "worktree_baselined" => FactTag::WorktreeBaselined,
         "worktree_released" => FactTag::WorktreeReleased,
         "worktree_release_held" => FactTag::WorktreeReleaseHeld,
         "branch_pushed" => FactTag::BranchPushed,
@@ -359,10 +367,12 @@ pub fn fact_task(kind: &FactKind) -> Option<TaskId> {
         | FactKind::WorkerTurnDeferred { task, .. }
         | FactKind::WorkerSubmissionRecorded { task, .. }
         | FactKind::WorkerSubmitted { task, .. }
+        | FactKind::WorkerCommittedNothing { task, .. }
         | FactKind::ValidationStarted { task, .. }
         | FactKind::ValidationFinished { task, .. }
         | FactKind::ValidationFailed { task, .. }
         | FactKind::WorktreeAcquired { task, .. }
+        | FactKind::WorktreeBaselined { task, .. }
         | FactKind::WorktreeReleased { task, .. }
         | FactKind::WorktreeReleaseHeld { task, .. }
         | FactKind::BranchPushed { task, .. }

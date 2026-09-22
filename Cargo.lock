@@ -107,6 +107,7 @@ dependencies = [
  "crossterm",
  "depot-core",
  "depotd",
+ "fs2",
  "rusqlite",
  "serde_json",
  "tempfile",

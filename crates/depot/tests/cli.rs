@@ -3,7 +3,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use depot_core::{TaskId, TaskState};
-use depotd::{DepotHome, HOME_ENV, ProfileSettings, Settings, Store, add_project};
+use depotd::{DepotHome, HOME_ENV, LEGACY_HOME_ENV, ProfileSettings, Settings, Store, add_project};
+use fs2::FileExt;
 use tempfile::TempDir;
 
 #[path = "../../depotd/tests/support/fake_program.rs"]
@@ -71,6 +72,7 @@ impl Cli {
         Command::new(BIN)
             .args(arguments)
             .env(HOME_ENV, &self.home)
+            .env_remove(LEGACY_HOME_ENV)
             .current_dir(directory)
             .output()
             .expect("the depot binary runs")
@@ -86,6 +88,7 @@ impl Cli {
         Command::new(BIN)
             .args(arguments)
             .env(HOME_ENV, &self.home)
+            .env_remove(LEGACY_HOME_ENV)
             .env("DEPOT_TASK_ID", task)
             .env("DEPOT_ATTEMPT_ID", attempt)
             .env("PATH", with_program(&self.bin))
@@ -1427,11 +1430,49 @@ fn a_fresh_machine_gets_an_agni_home_and_nothing_under_depot() {
     );
 }
 
+fn a_legacy_depot_home(user_home: &Path) -> PathBuf {
+    let project = user_home.join("example-project");
+    std::fs::create_dir_all(&project).expect("the project directory");
+    let legacy = user_home.join(".depot");
+    std::fs::create_dir_all(legacy.join("projects").join("example")).expect("legacy project store");
+    let connection = rusqlite::Connection::open(legacy.join("depot.db")).expect("legacy database");
+    connection
+        .execute_batch(include_str!("../../depotd/tests/fixtures/schema-v1.sql"))
+        .expect("v1 schema");
+    let id = project.to_string_lossy();
+    connection
+        .execute(
+            "INSERT INTO projects (id, kind, slug, created_at) VALUES (?1, 'path', 'example', 1700000000000)",
+            [id.as_ref()],
+        )
+        .expect("legacy project");
+    connection
+        .execute(
+            "INSERT INTO tasks (project_id, id, title, intent, role, state, base_dependency, branch_head, retry_profile, retry_not_before, created_at, updated_at)
+                 VALUES (?1, 't-1', 'Wire the store', 'persist the records', 'build', 'validated', NULL, NULL, NULL, NULL, 1700000000000, 1700000000000)",
+            [id.as_ref()],
+        )
+        .expect("legacy task");
+    connection
+        .execute(
+            "INSERT INTO events (project_id, key, at, kind, payload) VALUES (?1, 't-1:task_proposed', 1700000000000, 'task_proposed', '{}')",
+            [id.as_ref()],
+        )
+        .expect("legacy event");
+    drop(connection);
+    std::fs::write(
+        legacy.join("projects").join("example").join("checklist.md"),
+        "kept\n",
+    )
+    .expect("legacy checklist");
+    legacy
+}
+
 #[test]
 fn a_client_refuses_an_unmoved_depot_home_and_names_the_move() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let user_home = temp.path();
-    std::fs::create_dir_all(user_home.join(".depot")).expect("the old home");
+    a_legacy_depot_home(user_home);
 
     let refused = run_with_user_home(user_home, &["status", "--all"]);
 
@@ -1458,29 +1499,101 @@ fn a_client_refuses_an_unmoved_depot_home_and_names_the_move() {
 }
 
 #[test]
+fn a_refused_move_leaves_no_agni_home_and_the_clients_keep_refusing() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let user_home = temp.path();
+    let legacy = a_legacy_depot_home(user_home);
+    std::fs::write(
+        legacy.join("depotd.scope.json"),
+        r#"{"pid":4242,"started_at_millis":1,"projects":[],"heartbeat_millis":1}"#,
+    )
+    .expect("the legacy scope record");
+    let lock = std::fs::File::create(legacy.join("depotd.lock")).expect("the legacy lock");
+    lock.lock_exclusive()
+        .expect("the legacy daemon holds the lock");
+
+    let refused = run_with_user_home(user_home, &["store", "migrate"]);
+
+    assert_eq!(
+        refused.status.code(),
+        Some(1),
+        "stdout: {}",
+        stdout(&refused)
+    );
+    assert!(
+        stderr(&refused).contains("4242"),
+        "the refusal names the pid, stderr: {}",
+        stderr(&refused)
+    );
+    assert!(
+        !user_home.join(".agni").exists(),
+        "a refused move leaves no agni skeleton behind"
+    );
+
+    let status = run_with_user_home(user_home, &["status", "--all"]);
+    assert_eq!(status.status.code(), Some(1), "stdout: {}", stdout(&status));
+    assert!(
+        stderr(&status).contains("depot store migrate"),
+        "the client keeps refusing while the home is unmoved, stderr: {}",
+        stderr(&status)
+    );
+
+    drop(lock);
+
+    let migrated = run_with_user_home(user_home, &["store", "migrate"]);
+    assert_eq!(
+        migrated.status.code(),
+        Some(0),
+        "stderr: {}",
+        stderr(&migrated)
+    );
+    assert!(!legacy.exists(), "the old home is gone once it has moved");
+
+    let listed = run_with_user_home(user_home, &["project", "list"]);
+    assert_eq!(listed.status.code(), Some(0), "stderr: {}", stderr(&listed));
+    assert!(
+        stdout(&listed).contains("example"),
+        "the project survived the move, stdout: {}",
+        stdout(&listed)
+    );
+}
+
+#[test]
+fn a_shell_that_still_exports_depot_home_is_refused_and_pointed_at_agni_home() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let user_home = temp.path();
+
+    let refused = Command::new(BIN)
+        .args(["project", "list"])
+        .env_remove(HOME_ENV)
+        .env(LEGACY_HOME_ENV, user_home.join(".depot"))
+        .env("HOME", user_home)
+        .current_dir(user_home)
+        .output()
+        .expect("the depot binary runs");
+
+    assert_eq!(
+        refused.status.code(),
+        Some(1),
+        "stdout: {}",
+        stdout(&refused)
+    );
+    assert!(
+        stderr(&refused).contains(HOME_ENV),
+        "the refusal names the new variable, stderr: {}",
+        stderr(&refused)
+    );
+    assert!(
+        !user_home.join(".agni").exists(),
+        "a refused client leaves no agni home behind"
+    );
+}
+
+#[test]
 fn an_explicit_migrate_moves_a_populated_depot_home_into_agni() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let user_home = temp.path();
-    let legacy = user_home.join(".depot");
-    std::fs::create_dir_all(legacy.join("projects").join("example")).expect("legacy project store");
-    let connection = rusqlite::Connection::open(legacy.join("depot.db")).expect("legacy database");
-    connection
-        .execute_batch(include_str!("../../depotd/tests/fixtures/schema-v1.sql"))
-        .expect("v1 schema");
-    connection
-        .execute_batch(
-            "INSERT INTO projects (id, kind, slug, created_at) VALUES ('/work/example', 'path', 'example', 1700000000000);
-             INSERT INTO tasks (project_id, id, title, intent, role, state, base_dependency, branch_head, retry_profile, retry_not_before, created_at, updated_at)
-                 VALUES ('/work/example', 't-1', 'Wire the store', 'persist the records', 'build', 'validated', NULL, NULL, NULL, NULL, 1700000000000, 1700000000000);
-             INSERT INTO events (project_id, key, at, kind, payload) VALUES ('/work/example', 't-1:task_proposed', 1700000000000, 'task_proposed', '{}');",
-        )
-        .expect("legacy rows");
-    drop(connection);
-    std::fs::write(
-        legacy.join("projects").join("example").join("checklist.md"),
-        "kept\n",
-    )
-    .expect("legacy checklist");
+    let legacy = a_legacy_depot_home(user_home);
 
     let migrated = run_with_user_home(user_home, &["store", "migrate"]);
 
@@ -1505,7 +1618,9 @@ fn an_explicit_migrate_moves_a_populated_depot_home_into_agni() {
 
     let store = Store::open(&home).expect("the moved store opens");
     let project = store
-        .project(&depot_core::ProjectId::new("/work/example"))
+        .project(&depot_core::ProjectId::new(
+            user_home.join("example-project").to_string_lossy(),
+        ))
         .expect("projects are read")
         .expect("the project survived the move");
     assert!(

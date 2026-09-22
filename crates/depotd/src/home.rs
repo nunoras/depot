@@ -6,6 +6,7 @@ use crate::error::{Error, Result};
 use crate::settings::Settings;
 
 pub const HOME_ENV: &str = "AGNI_HOME";
+pub const LEGACY_HOME_ENV: &str = "DEPOT_HOME";
 pub const HOME_DIR_NAME: &str = ".agni";
 pub const LEGACY_HOME_DIR_NAME: &str = ".depot";
 pub const SETTINGS_FILE_NAME: &str = "config.toml";
@@ -46,6 +47,11 @@ impl DepotHome {
     }
 
     fn resolve_unchecked() -> Result<Self> {
+        if env::var_os(LEGACY_HOME_ENV).is_some_and(|value| !value.is_empty()) {
+            return Err(Error::Home(format!(
+                "{LEGACY_HOME_ENV} is no longer read; set {HOME_ENV} instead"
+            )));
+        }
         if let Some(root) = env::var_os(HOME_ENV).filter(|value| !value.is_empty()) {
             return Ok(Self::at(PathBuf::from(root)));
         }
@@ -58,13 +64,10 @@ impl DepotHome {
     }
 
     fn refuse_unmoved(&self) -> Result<()> {
-        if self.root.exists() {
-            return Ok(());
-        }
         let Some(legacy) = self.legacy_sibling() else {
             return Ok(());
         };
-        if !legacy.root().exists() {
+        if !legacy.root().join(LEGACY_DATABASE_FILE_NAME).exists() {
             return Ok(());
         }
         Err(Error::Home(format!(

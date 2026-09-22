@@ -1,9 +1,11 @@
 use std::ffi::OsStr;
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 use fs2::FileExt;
 
+use crate::adapters::forge::TOKEN_FILE;
+use crate::adapters::typesafe::KEY_FILE;
 use crate::daemon::{DAEMON_LOCK_FILE_NAME, DAEMON_SCOPE_FILE_NAME, DaemonScope};
 use crate::error::{Error, Result};
 use crate::home::{
@@ -15,10 +17,39 @@ use crate::settings::Settings;
 
 const LEGACY_DATABASE_WAL: &str = "depot.db-wal";
 const LEGACY_DATABASE_SHM: &str = "depot.db-shm";
-const LEGACY_TOKEN_FILE: &str = "github-token";
-const LEGACY_KEY_FILE: &str = "typesafe-key";
 
-pub fn move_legacy_home(home: &DepotHome) -> Result<Option<PathBuf>> {
+pub struct LegacyLock {
+    file: Option<File>,
+}
+
+impl LegacyLock {
+    fn release(&mut self) {
+        self.file = None;
+    }
+}
+
+pub fn hold_legacy_lock(home: &DepotHome) -> Result<LegacyLock> {
+    let Some(legacy) = home.legacy_sibling() else {
+        return Ok(LegacyLock { file: None });
+    };
+    let root = legacy.root();
+    if !root.is_dir() {
+        return Ok(LegacyLock { file: None });
+    }
+    let path = root.join(DAEMON_LOCK_FILE_NAME);
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .create(true)
+        .open(&path)?;
+    if file.try_lock_exclusive().is_err() {
+        return Err(Error::Home(legacy_lock_refusal(root)));
+    }
+    Ok(LegacyLock { file: Some(file) })
+}
+
+pub fn move_legacy_home(home: &DepotHome, mut lock: LegacyLock) -> Result<Option<PathBuf>> {
     let Some(legacy) = home.legacy_sibling() else {
         return Ok(None);
     };
@@ -26,36 +57,92 @@ pub fn move_legacy_home(home: &DepotHome) -> Result<Option<PathBuf>> {
     if !legacy_root.is_dir() {
         return Ok(None);
     }
-    refuse_if_a_daemon_holds_the_legacy_lock(&legacy_root)?;
-    refuse_a_second_database(&legacy_root, home.root())?;
     home.ensure()?;
     move_settings(&legacy_root, home.root())?;
+    move_database(&legacy_root, home.root())?;
     for entry in fs::read_dir(&legacy_root)? {
         let entry = entry?;
-        if entry.file_name() == OsStr::new(DAEMON_LOCK_FILE_NAME) {
+        let name = entry.file_name();
+        if is_database_file(&name) {
+            continue;
+        }
+        if name == OsStr::new(DAEMON_LOCK_FILE_NAME) {
+            lock.release();
             fs::remove_file(entry.path())?;
             continue;
         }
-        move_entry(
-            &entry.path(),
-            &home.root().join(destination_for(&entry.file_name())),
-        )?;
+        move_entry(&entry.path(), &home.root().join(destination_for(&name)))?;
     }
+    drop(lock);
     remove_if_empty(&legacy_root);
     Ok(Some(legacy_root))
 }
 
-fn refuse_a_second_database(legacy_root: &Path, root: &Path) -> Result<()> {
+fn is_database_file(name: &OsStr) -> bool {
+    let name = name.to_string_lossy();
+    name == LEGACY_DATABASE_FILE_NAME || name == LEGACY_DATABASE_WAL || name == LEGACY_DATABASE_SHM
+}
+
+fn move_database(legacy_root: &Path, root: &Path) -> Result<()> {
     let source = legacy_root.join(LEGACY_DATABASE_FILE_NAME);
+    if !source.is_file() {
+        return Ok(());
+    }
     let destination = root.join(DATABASE_FILE_NAME);
-    if source.is_file() && destination.exists() {
-        return Err(Error::Home(format!(
-            "cannot move {}: {} already holds records; merge them by hand, then run `depot store migrate` again",
-            source.display(),
-            destination.display()
-        )));
+    if destination.exists() {
+        let source_projects = projects_in(&source)?;
+        let destination_projects = projects_in(&destination)?;
+        if source_projects > 0 && destination_projects > 0 {
+            return Err(Error::Home(format!(
+                "cannot move {}: {} already holds records; merge them by hand, then run `depot store migrate` again",
+                source.display(),
+                destination.display()
+            )));
+        }
+        if source_projects == 0 {
+            remove_database(&source);
+            return Ok(());
+        }
+    }
+    remove_database(&destination);
+    move_database_file(
+        &legacy_root.join(LEGACY_DATABASE_WAL),
+        &root.join(format!("{DATABASE_FILE_NAME}-wal")),
+    )?;
+    move_database_file(
+        &legacy_root.join(LEGACY_DATABASE_SHM),
+        &root.join(format!("{DATABASE_FILE_NAME}-shm")),
+    )?;
+    fs::rename(&source, &destination)?;
+    Ok(())
+}
+
+fn move_database_file(source: &Path, destination: &Path) -> Result<()> {
+    if source.exists() {
+        fs::rename(source, destination)?;
     }
     Ok(())
+}
+
+fn remove_database(database: &Path) {
+    if let Some(name) = database.file_name().and_then(|name| name.to_str()) {
+        let _ = fs::remove_file(database.with_file_name(format!("{name}-wal")));
+        let _ = fs::remove_file(database.with_file_name(format!("{name}-shm")));
+    }
+    let _ = fs::remove_file(database);
+}
+
+fn projects_in(database: &Path) -> Result<i64> {
+    let connection = rusqlite::Connection::open(database)
+        .map_err(|error| Error::Home(format!("cannot read {}: {error}", database.display())))?;
+    connection
+        .query_row("select count(*) from projects", [], |row| row.get(0))
+        .map_err(|error| {
+            Error::Home(format!(
+                "cannot count the projects in {}: {error}",
+                database.display()
+            ))
+        })
 }
 
 fn move_settings(legacy_root: &Path, root: &Path) -> Result<()> {
@@ -82,10 +169,7 @@ fn move_settings(legacy_root: &Path, root: &Path) -> Result<()> {
 fn destination_for(name: &OsStr) -> PathBuf {
     let name = name.to_string_lossy();
     match name.as_ref() {
-        LEGACY_DATABASE_FILE_NAME => PathBuf::from(DATABASE_FILE_NAME),
-        LEGACY_DATABASE_WAL => PathBuf::from(format!("{DATABASE_FILE_NAME}-wal")),
-        LEGACY_DATABASE_SHM => PathBuf::from(format!("{DATABASE_FILE_NAME}-shm")),
-        LEGACY_TOKEN_FILE | LEGACY_KEY_FILE => Path::new(SECRETS_DIR_NAME).join(name.as_ref()),
+        TOKEN_FILE | KEY_FILE => Path::new(SECRETS_DIR_NAME).join(name.as_ref()),
         DAEMON_LOCK_FILE_NAME | DAEMON_SCOPE_FILE_NAME | DAEMON_STOP_FILE_NAME => {
             Path::new(RUN_DIR_NAME).join(name.as_ref())
         }
@@ -126,29 +210,17 @@ fn remove_if_empty(directory: &Path) {
     }
 }
 
-fn refuse_if_a_daemon_holds_the_legacy_lock(legacy_root: &Path) -> Result<()> {
+fn legacy_lock_refusal(legacy_root: &Path) -> String {
     let path = legacy_root.join(DAEMON_LOCK_FILE_NAME);
-    let Ok(file) = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .truncate(false)
-        .open(&path)
-    else {
-        return Ok(());
-    };
-    if file.try_lock_exclusive().is_ok() {
-        let _ = file.unlock();
-        return Ok(());
-    }
     let held = format!("another depot daemon already holds {}", path.display());
-    Err(Error::Home(match legacy_scope_pid(legacy_root) {
+    match legacy_scope_pid(legacy_root) {
         Some(pid) => format!(
             "{held}: pid {pid}; stop it, then run `depot store migrate` to move the old depot home into agni"
         ),
         None => format!(
             "{held}: the lock record names no daemon; stop it by hand, then run `depot store migrate`"
         ),
-    }))
+    }
 }
 
 fn legacy_scope_pid(legacy_root: &Path) -> Option<u32> {

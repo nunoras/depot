@@ -381,4 +381,127 @@ fn a_move_refuses_while_a_daemon_holds_the_legacy_lock_and_names_its_pid() {
     );
     assert!(legacy.join("depot.db").is_file(), "nothing moved");
     assert!(!home.database_path().exists(), "nothing moved into agni");
+    assert!(
+        !home.root().exists(),
+        "a refused move leaves no agni skeleton behind"
+    );
+}
+
+fn empty_database(path: &std::path::Path) {
+    std::fs::remove_file(path).expect("the stale database is removed");
+    let connection = Connection::open(path).expect("an empty database");
+    connection
+        .execute_batch(include_str!("fixtures/schema-v18.sql"))
+        .expect("v18 schema");
+}
+
+fn an_agni_database_with_one_project(home: &DepotHome) {
+    std::fs::create_dir_all(home.root()).expect("the agni home");
+    let connection = Connection::open(home.database_path()).expect("the agni database");
+    connection
+        .execute_batch(include_str!("fixtures/schema-v18.sql"))
+        .expect("v18 schema");
+    connection
+        .execute_batch(
+            "INSERT INTO projects (id, kind, slug, created_at) VALUES ('/work/agni', 'path', 'agni', 1700000000000);",
+        )
+        .expect("the agni project");
+}
+
+fn project_count(database: &std::path::Path) -> i64 {
+    let connection = Connection::open(database).expect("the database opens");
+    connection
+        .query_row("select count(*) from projects", [], |row| row.get(0))
+        .expect("the count")
+}
+
+#[test]
+fn a_move_that_stopped_between_the_wal_and_the_database_finishes_on_the_next_run() {
+    let (_temp, legacy, home) = a_legacy_home();
+    std::fs::create_dir_all(home.root()).expect("the partially moved home");
+    std::fs::write(home.root().join("agni.db-wal"), "orphan wal").expect("the orphan wal");
+
+    let migration = migrate_store(&home).expect("the interrupted move finishes");
+
+    assert_eq!(migration.moved_from.as_deref(), Some(legacy.as_path()));
+    assert!(
+        !home.root().join("agni.db-wal").exists(),
+        "the orphan wal is cleared before the database moves"
+    );
+    let store = Store::open(&home).expect("the moved store opens");
+    assert!(
+        store
+            .project(&ProjectId::new("/work/example"))
+            .expect("projects are read")
+            .is_some()
+    );
+}
+
+#[test]
+fn an_empty_agni_database_is_replaced_by_the_legacy_home() {
+    let (_temp, legacy, home) = a_legacy_home();
+    home.ensure().expect("the agni skeleton");
+    let connection = Connection::open(home.database_path()).expect("the empty agni database");
+    connection
+        .execute_batch(include_str!("fixtures/schema-v18.sql"))
+        .expect("v18 schema");
+    drop(connection);
+
+    let migration = migrate_store(&home).expect("an empty agni database is replaced");
+
+    assert_eq!(migration.moved_from.as_deref(), Some(legacy.as_path()));
+    assert!(!legacy.exists(), "the old home is gone once it has moved");
+    let store = Store::open(&home).expect("the moved store opens");
+    assert!(
+        store
+            .project(&ProjectId::new("/work/example"))
+            .expect("projects are read")
+            .is_some()
+    );
+}
+
+#[test]
+fn a_move_refuses_when_both_databases_hold_projects() {
+    let (_temp, legacy, home) = a_legacy_home();
+    an_agni_database_with_one_project(&home);
+
+    let error = migrate_store(&home).expect_err("two populated stores are never merged silently");
+    let message = error.to_string();
+
+    assert!(message.contains("already holds records"), "got {message}");
+    assert!(message.contains("merge them by hand"), "got {message}");
+    assert!(
+        legacy.join("depot.db").is_file(),
+        "the legacy store is untouched"
+    );
+    assert_eq!(
+        project_count(&home.database_path()),
+        1,
+        "the agni store is untouched"
+    );
+}
+
+#[test]
+fn an_empty_legacy_database_is_discarded_when_agni_holds_records() {
+    let (_temp, legacy, home) = a_legacy_home();
+    empty_database(&legacy.join("depot.db"));
+    an_agni_database_with_one_project(&home);
+
+    let migration =
+        migrate_store(&home).expect("the stray legacy database does not block the move");
+
+    assert_eq!(migration.moved_from.as_deref(), Some(legacy.as_path()));
+    assert!(!legacy.exists(), "the stray legacy home is cleared");
+    assert_eq!(
+        project_count(&home.database_path()),
+        1,
+        "agni keeps its records"
+    );
+    let store = Store::open(&home).expect("the store opens");
+    assert!(
+        store
+            .project(&ProjectId::new("/work/agni"))
+            .expect("projects are read")
+            .is_some()
+    );
 }

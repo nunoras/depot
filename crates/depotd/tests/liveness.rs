@@ -115,6 +115,13 @@ fn repeated_identical_polls_record_one_liveness_fact_and_a_change_records_anothe
         created_at: Timestamp::from_millis(0),
     };
     store.put_project(&project).expect("the project is stored");
+    store
+        .put_clone(&depotd::Clone {
+            project: project.id.clone(),
+            path: directory.clone(),
+            origin: None,
+        })
+        .expect("the clone is recorded");
 
     let daemon: Daemon<'_, LiveSessions, NoWorktrees, ShellValidation, _, NoEventHook> =
         Daemon::new(
@@ -169,7 +176,7 @@ fn running_task(project: &ProjectId, id: &str, session: &str, started_at: u64) -
         started_at: Timestamp::from_millis(started_at),
         finished_at: None,
         outcome: AttemptOutcome::InFlight,
-        rebase: false,
+        base_merge: false,
         last_seen_at: None,
     });
     task

@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::process::{Command, Output};
 
 use depot_core::{Question, Task, TaskId, TaskState, Timestamp};
-use depotd::{DepotHome, HOME_ENV, Store};
+use depotd::{DepotHome, HOME_ENV, LEGACY_HOME_ENV, Store};
 
 const DEPOT: &str = env!("CARGO_BIN_EXE_depot");
 
@@ -39,6 +39,7 @@ impl Cli {
         Command::new(DEPOT)
             .args(arguments)
             .env(HOME_ENV, &self.home)
+            .env_remove(LEGACY_HOME_ENV)
             .env_remove("DEPOT_TASK_ID")
             .env_remove("DEPOT_ATTEMPT_ID")
             .current_dir(&self.project)
@@ -182,6 +183,7 @@ fn project_list_says_so_when_nothing_is_registered() {
     let output = Command::new(DEPOT)
         .args(["project", "list"])
         .env(HOME_ENV, temp.path().join("depot-home"))
+        .env_remove(LEGACY_HOME_ENV)
         .env_remove("DEPOT_TASK_ID")
         .env_remove("DEPOT_ATTEMPT_ID")
         .current_dir(temp.path())
@@ -318,6 +320,7 @@ fn the_worker_context_may_not_restart_the_daemon() {
     let output = Command::new(DEPOT)
         .args(["daemon", "restart"])
         .env(HOME_ENV, &cli.home)
+        .env_remove(LEGACY_HOME_ENV)
         .env("DEPOT_TASK_ID", "t-1")
         .env("DEPOT_ATTEMPT_ID", "attempt-1")
         .current_dir(&cli.project)
@@ -343,6 +346,7 @@ fn the_worker_context_may_not_publish_an_artifact() {
     let output = Command::new(DEPOT)
         .args(["artifact", "add", file.to_str().expect("utf-8")])
         .env(HOME_ENV, &cli.home)
+        .env_remove(LEGACY_HOME_ENV)
         .env("DEPOT_TASK_ID", "t-1")
         .env("DEPOT_ATTEMPT_ID", "attempt-1")
         .current_dir(&cli.project)
@@ -370,6 +374,7 @@ fn a_qualified_task_id_works_from_any_directory() {
     let output = Command::new(DEPOT)
         .args(["task", "wait", "example/t-1"])
         .env(HOME_ENV, &cli.home)
+        .env_remove(LEGACY_HOME_ENV)
         .env_remove("DEPOT_TASK_ID")
         .env_remove("DEPOT_ATTEMPT_ID")
         .current_dir(cli._temp.path())

@@ -86,8 +86,8 @@ fn wait_for_takeover(
             return Err(Error::Home(format!(
                 "depotd pid {pid} did not take the instance lock within {}s; read {} and {}",
                 timeout.as_secs_f64(),
-                home.root().join(DAEMON_LOG_FILE_NAME).display(),
-                home.root().join(DAEMON_SCOPE_FILE_NAME).display()
+                home.run_path(DAEMON_LOG_FILE_NAME).display(),
+                home.run_path(DAEMON_SCOPE_FILE_NAME).display()
             )));
         }
         std::thread::sleep(TAKEOVER_POLL);
@@ -130,7 +130,7 @@ pub fn launch_spec(home: &DepotHome, program: PathBuf, projects: &[String]) -> L
         program,
         arguments,
         directory: home.root().to_path_buf(),
-        log: home.root().join(DAEMON_LOG_FILE_NAME),
+        log: home.run_path(DAEMON_LOG_FILE_NAME),
     }
 }
 
@@ -151,7 +151,7 @@ pub fn launch_detached(spec: &LaunchSpec) -> Result<u32> {
 }
 
 pub fn stop_requested(home: &DepotHome, pid: u32, started_at_millis: u64) -> Result<bool> {
-    let path = home.root().join(DAEMON_STOP_FILE_NAME);
+    let path = home.run_path(DAEMON_STOP_FILE_NAME);
     let Ok(bytes) = std::fs::read(&path) else {
         return Ok(false);
     };
@@ -162,7 +162,7 @@ pub fn stop_requested(home: &DepotHome, pid: u32, started_at_millis: u64) -> Res
 }
 
 pub fn clear_stop_request(home: &DepotHome) -> Result<()> {
-    let path = home.root().join(DAEMON_STOP_FILE_NAME);
+    let path = home.run_path(DAEMON_STOP_FILE_NAME);
     match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -174,7 +174,7 @@ fn stop_daemon(home: &DepotHome, scope: &DaemonScope, timeout: Duration) -> Resu
     if scope.pid == 0 {
         return Err(Error::Home(format!(
             "a process holds {} but the lock record names no pid: stop it by hand",
-            home.root().join(DAEMON_LOCK_FILE_NAME).display()
+            home.run_path(DAEMON_LOCK_FILE_NAME).display()
         )));
     }
     let request = StopRequest {
@@ -182,7 +182,7 @@ fn stop_daemon(home: &DepotHome, scope: &DaemonScope, timeout: Duration) -> Resu
         started_at_millis: scope.started_at_millis,
     };
     std::fs::write(
-        home.root().join(DAEMON_STOP_FILE_NAME),
+        home.run_path(DAEMON_STOP_FILE_NAME),
         serde_json::to_vec(&request).map_err(|error| Error::Io(error.into()))?,
     )?;
 
@@ -205,7 +205,7 @@ fn stop_daemon(home: &DepotHome, scope: &DaemonScope, timeout: Duration) -> Resu
 }
 
 fn lock_is_held(home: &DepotHome) -> bool {
-    let path = home.root().join(DAEMON_LOCK_FILE_NAME);
+    let path = home.run_path(DAEMON_LOCK_FILE_NAME);
     let Ok(file) = OpenOptions::new()
         .read(true)
         .write(true)

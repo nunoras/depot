@@ -1,7 +1,10 @@
 mod support;
 
 use depot_core::{Fact, FactKind, TaskId, TaskState, Timestamp};
-use depotd::{StatusSelection, Store, render_checklist, render_status, render_status_at};
+use depotd::{
+    DAEMON_SCOPE_FILE_NAME, StatusSelection, Store, render_checklist, render_status,
+    render_status_at,
+};
 
 #[test]
 fn status_shows_held_running_blocked_waiting_and_validated_tasks_distinctly() {
@@ -246,7 +249,7 @@ fn running_tasks_carry_attempt_age_and_observed_liveness() {
         started_at: depot_core::Timestamp::from_millis(1_000),
         finished_at: None,
         outcome: depot_core::AttemptOutcome::Unknown,
-        rebase: false,
+        base_merge: false,
     });
 
     let mut unseen = support::simple_task(&added.project.id, "t-unseen", TaskState::Running, 1_000);
@@ -258,7 +261,7 @@ fn running_tasks_carry_attempt_age_and_observed_liveness() {
         started_at: depot_core::Timestamp::from_millis(1_000),
         finished_at: None,
         outcome: depot_core::AttemptOutcome::Unknown,
-        rebase: false,
+        base_merge: false,
     });
 
     let mut alive = support::simple_task(&added.project.id, "t-alive", TaskState::Running, 1_000);
@@ -269,7 +272,7 @@ fn running_tasks_carry_attempt_age_and_observed_liveness() {
         started_at: depot_core::Timestamp::from_millis(1_000),
         finished_at: None,
         outcome: depot_core::AttemptOutcome::InFlight,
-        rebase: false,
+        base_merge: false,
         last_seen_at: Some(depot_core::Timestamp::from_millis(1_000 + 14 * 60 * 1000)),
     });
 
@@ -341,7 +344,7 @@ fn a_never_observed_session_still_reads_as_not_yet_seen() {
         started_at: depot_core::Timestamp::from_millis(1_000),
         finished_at: None,
         outcome: depot_core::AttemptOutcome::InFlight,
-        rebase: false,
+        base_merge: false,
         last_seen_at: None,
     });
     store.put_task(&task).expect("stored");
@@ -374,7 +377,7 @@ fn rendered_attempt_line(seen_age_millis: u64) -> String {
         started_at: depot_core::Timestamp::from_millis(1_000),
         finished_at: None,
         outcome: depot_core::AttemptOutcome::InFlight,
-        rebase: false,
+        base_merge: false,
         last_seen_at: Some(depot_core::Timestamp::from_millis(now - seen_age_millis)),
     });
     store.put_task(&task).expect("stored");
@@ -402,7 +405,7 @@ fn the_written_checklist_stays_free_of_observation_time() {
         started_at: depot_core::Timestamp::from_millis(1_000),
         finished_at: None,
         outcome: depot_core::AttemptOutcome::Unknown,
-        rebase: false,
+        base_merge: false,
     });
     store.put_task(&task).expect("stored");
 
@@ -482,7 +485,7 @@ fn status_treats_a_stale_heartbeat_as_no_coverage() {
     let lock = depotd::InstanceLock::acquire(&fixture.home).expect("lock");
     lock.record_scope(&[first.project.clone(), second.project.clone()])
         .expect("scope");
-    let path = fixture.home.root().join(depotd::DAEMON_SCOPE_FILE_NAME);
+    let path = fixture.home.run_path(DAEMON_SCOPE_FILE_NAME);
     let mut scope: depotd::DaemonScope =
         serde_json::from_slice(&std::fs::read(&path).expect("lock record")).expect("parsed scope");
     scope.heartbeat_millis -= 10 * 60 * 1000;
@@ -502,7 +505,7 @@ fn status_warns_when_the_running_daemon_was_built_from_another_commit() {
     lock.record_scope(std::slice::from_ref(&added.project))
         .expect("scope");
 
-    let path = fixture.home.root().join(depotd::DAEMON_SCOPE_FILE_NAME);
+    let path = fixture.home.run_path(DAEMON_SCOPE_FILE_NAME);
     let mut scope: depotd::DaemonScope =
         serde_json::from_slice(&std::fs::read(&path).expect("scope record")).expect("parsed scope");
     scope.build_id = "0ldbu11d".to_string();
@@ -545,7 +548,7 @@ fn refresh_heartbeat_moves_the_recorded_heartbeat_past_the_start() {
     std::thread::sleep(std::time::Duration::from_millis(30));
     lock.refresh_heartbeat().expect("refresh");
 
-    let path = fixture.home.root().join(depotd::DAEMON_SCOPE_FILE_NAME);
+    let path = fixture.home.run_path(DAEMON_SCOPE_FILE_NAME);
     let scope: depotd::DaemonScope =
         serde_json::from_slice(&std::fs::read(&path).expect("scope record")).expect("parsed scope");
     assert!(

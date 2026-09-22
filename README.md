@@ -71,7 +71,7 @@ treehouse status
 gh auth status
 ```
 
-3. Set up the depot home (`~/.depot/config.toml`):
+3. Set up the agni home (`~/.agni/config.toml`):
 
 ```toml
 concurrency = 1
@@ -88,13 +88,22 @@ effort = "high"
 account = ""
 ```
 
+The home is `~/.agni` on Linux and `%USERPROFILE%\.agni` on Windows, never `%APPDATA%`.
+Set `AGNI_HOME` to point depot at another directory, which is how the tests and the verify skill keep away from your real home.
+boxr reads `BOXR_HOME` and does not follow `AGNI_HOME` yet.
+If you already ran depot when it kept its home at `~/.depot`, `depot store migrate` moves that home into `~/.agni` for you; any other command refuses until it has run.
+
 4. Register a project:
 
 ```
 depot project add /path/to/your-project
 ```
 
-This creates the project home under `~/.depot/projects/<slug>/` and adds `.depot.toml` to the repo's `.git/info/exclude` so it stays machine-local.
+This creates the project home under `~/.agni/projects/<slug>/`, records the repository as a clone, and adds `.depot.toml` to the repo's `.git/info/exclude` so it stays machine-local.
+A project is identified by its `origin` remote reduced to lowercase host, owner and name, with the scheme, user, port, a trailing slash and `.git` dropped, so `git@github.com:O/R.git`, `https://github.com/o/r/` and `ssh://git@github.com/o/r` are one project.
+A second clone of a registered origin adds a clone rather than a second project, and a repository with no `origin` is local-only and never syncs.
+`depot project repoint <name> --origin <url>` follows a renamed origin, refused while a task is in flight and refused while a clone's git remote still says the old origin.
+A clone whose live `origin` no longer reduces to its project's identity is left alone: depot refuses to launch or submit from it while that project has work in flight.
 
 5. Configure the project (`.depot.toml` in the repo root; machine-local, never committed):
 
@@ -155,7 +164,7 @@ The daemon talks to five things, each behind a thin adapter:
 | profiles | the project's role-to-profile map |
 | dispatch | the Typesafe Choice API, for model-matched rule resolution |
 
-Everything depot owns lives in the depot home (`$DEPOT_HOME`, default `~/.depot`), including a SQLite database that holds projects, tasks, dependency edges, attempts, validation records, observed forge state and the event journal. Project data and machine-local settings never mix: `.depot.toml` stays out of version control, and `config.toml` stays in the depot home.
+Everything depot owns lives in one home (`$AGNI_HOME`, default `~/.agni`), the same home agni uses: `agni.db` holds projects, tasks, dependency edges, attempts, validation records, observed forge state and the event journal, `secrets/` holds one owner-only file per credential, `projects/<slug>/` holds each project's store, `ui/` belongs to agni's view state, and `run/` holds the files a running daemon owns (the lock, the scope record, pids and logs). Project data and machine-local settings never mix: `.depot.toml` stays out of version control, and `config.toml` stays in the home.
 
 ### Task lifecycle
 
@@ -181,7 +190,7 @@ When a task has no explicit `--role`, depot asks the Typesafe Choice API which o
 
 ### Artifacts
 
-`depot artifact add <file>` copies a regular file into `<depot home>/artifacts` and hands the copy to a publish command you configure in `config.toml`:
+`depot artifact add <file>` copies a regular file into `<agni home>/artifacts` and hands the copy to a publish command you configure in `config.toml`:
 
 ```toml
 [artifacts]

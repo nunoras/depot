@@ -10,7 +10,7 @@ fn configure(golden: &Golden, url: &str, rules: &str, key: bool) {
     settings.typesafe_base_url = url.into();
     golden.home.write_settings(&settings).unwrap();
     if key {
-        fake_typesafe::key(golden.home.root());
+        fake_typesafe::key(&golden.home.secrets_dir());
     }
 }
 

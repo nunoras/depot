@@ -25,8 +25,9 @@ use depotd::adapters::forge::GitHub;
 use depotd::adapters::sessions::{Boxr, Sessions};
 use depotd::adapters::worktrees::Treehouse;
 use depotd::{
-    Daemon, DepotHome, ForgeDelivery, HOME_ENV, InstanceLock, OnEventSettings, ProfileSettings,
-    Project, RecordedEvent, Settings, ShellValidation, Store,
+    DAEMON_SCOPE_FILE_NAME, Daemon, DepotHome, ForgeDelivery, HOME_ENV, InstanceLock,
+    LEGACY_HOME_ENV, OnEventSettings, ProfileSettings, Project, RecordedEvent, Settings,
+    ShellValidation, Store,
 };
 use depotd::{EventHook, NoEventHook, ShellEventHook};
 use fake_forge::FakeForge;
@@ -198,6 +199,7 @@ impl Golden {
                 repo.to_str().expect("the repository is utf-8"),
             ])
             .env(HOME_ENV, home.root())
+            .env_remove(LEGACY_HOME_ENV)
             .current_dir(&repo)
             .output()
             .expect("the depot binary runs");
@@ -328,6 +330,29 @@ impl Golden {
         .to_owned()
     }
 
+    pub fn repoint_to_github(&mut self) {
+        let origin = format!("git@github.com:{REPOSITORY}.git");
+        git::git(&self.repo, &["remote", "set-url", "origin", &origin]);
+        let output = self.depot(&["project", "repoint", SLUG, "--origin", &origin]);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "repointing the fixture failed: {}",
+            stderr(&output)
+        );
+        self.project = self
+            .store
+            .project(&depot_core::ProjectId::new(format!(
+                "github.com/{REPOSITORY}"
+            )))
+            .expect("the project is read")
+            .expect("the repointed project exists");
+    }
+
+    pub fn set_clone_remote(&self, origin: &str) {
+        git::git(&self.repo, &["remote", "set-url", "origin", origin]);
+    }
+
     pub fn set_auto_merge(&self, enabled: bool) {
         let path = self.repo.join(depotd::PROJECT_CONFIG_FILE_NAME);
         let text = fs::read_to_string(&path).expect("the project config is readable");
@@ -450,6 +475,7 @@ impl Golden {
         Command::new(DEPOT)
             .args(arguments)
             .env(HOME_ENV, self.home.root())
+            .env_remove(LEGACY_HOME_ENV)
             .env("PATH", with_program(&self.fakes.join("bin")))
             .env(self.boxr.directory_env().0, self.boxr.directory_env().1)
             .current_dir(&self.repo)
@@ -506,6 +532,14 @@ impl Golden {
         self.worker(&script(&[&format!(
             "depot submit --task {TASK} --project {SLUG}"
         )]))
+    }
+
+    pub fn worker_fast_forwards_and_submits(&self) -> Output {
+        self.worker(&script(&[
+            "git fetch origin",
+            "git merge --ff-only origin/main",
+            &format!("depot submit --task {TASK} --project {SLUG}"),
+        ]))
     }
 
     pub fn worker_submits_outside_the_lease(&self) -> Output {
@@ -570,6 +604,7 @@ impl Golden {
         command
             .current_dir(directory)
             .env(HOME_ENV, self.home.root())
+            .env_remove(LEGACY_HOME_ENV)
             .env("DEPOT_TASK_ID", TASK)
             .env("DEPOT_ATTEMPT_ID", LEASE)
             .env(
@@ -603,6 +638,14 @@ impl Golden {
         git::git(&self.lease, &["add", file]);
         git::git(&self.lease, &["commit", "-m", "the rework"]);
         git::head(&self.lease)
+    }
+
+    pub fn advance_base_conflicting(&self, file: &str, contents: &str) -> String {
+        fs::write(self.repo.join(file), contents).expect("the base file is written");
+        git::git(&self.repo, &["add", file]);
+        git::git(&self.repo, &["commit", "-m", "advance the base"]);
+        git::git(&self.repo, &["push", "origin", "main"]);
+        git::head(&self.repo)
     }
 
     pub fn checklist(&self) -> String {
@@ -686,6 +729,15 @@ impl Golden {
         );
     }
 
+    pub fn script_failing_checks(&self, commit: &str) {
+        self.forge.replace_route(
+            "GET",
+            &format!("/repos/{REPOSITORY}/commits/{commit}/check-runs"),
+            200,
+            &check_runs_with("failure"),
+        );
+    }
+
     pub fn script_pull_request_base(&self, commit: &str, base: &str) {
         self.forge.replace_route(
             "GET",
@@ -764,15 +816,19 @@ impl Golden {
 
     pub fn script_conflicting_pull_request(&self, commit: &str) {
         self.script_pull_request(commit);
+        self.script_conflicting_pull_request_at(commit, BASE);
+    }
+
+    pub fn script_conflicting_pull_request_at(&self, commit: &str, base: &str) {
         self.forge.replace_route(
             "GET",
             &format!("/repos/{REPOSITORY}/pulls/1"),
             200,
-            &pull_request(commit, BASE, "open", false, false),
+            &pull_request(commit, base, "open", false, false),
         );
     }
 
-    pub fn script_rebased_pull_request(&self, commit: &str) {
+    pub fn script_merged_pull_request(&self, commit: &str) {
         self.forge.route(
             "GET",
             &format!("/repos/{REPOSITORY}/commits/{commit}/check-runs"),
@@ -804,13 +860,18 @@ impl Golden {
             .count()
     }
 
-    pub fn worker_rebases_and_submits(&self) -> Output {
+    pub fn worker_merges_and_submits(&self) -> Output {
+        let merge = if cfg!(windows) {
+            "git merge origin/main"
+        } else {
+            "git merge origin/main || true"
+        };
         self.worker(&script(&[
             "git fetch origin",
-            "git rebase origin/main",
-            "printf 'the rebase\\n' > rebase.txt",
-            "git add rebase.txt",
-            "git commit -m \"rebase onto main\"",
+            merge,
+            "printf 'the resolved work\\n' > change.txt",
+            "git add change.txt",
+            "git commit --no-edit",
             &format!("depot submit --task {TASK} --project {SLUG}"),
         ]))
     }
@@ -865,7 +926,7 @@ pub fn validated_task(
             started_at: depot_core::Timestamp::from_millis(0),
             finished_at: Some(depot_core::Timestamp::from_millis(1)),
             outcome: depot_core::AttemptOutcome::Submitted,
-            rebase: false,
+            base_merge: false,
         }],
         questions: Vec::new(),
         validations: vec![depot_core::ValidationRecord {
@@ -909,7 +970,7 @@ pub fn settings() -> Settings {
 }
 
 fn hold_daemon_coverage(home: &DepotHome) {
-    let path = home.root().join(depotd::DAEMON_SCOPE_FILE_NAME);
+    let path = home.run_path(DAEMON_SCOPE_FILE_NAME);
     let mut scope: depotd::DaemonScope =
         serde_json::from_slice(&std::fs::read(&path).expect("the daemon scope record"))
             .expect("the daemon scope record parses");
@@ -1084,8 +1145,13 @@ fn quoted(path: &Path) -> String {
 }
 
 fn check_runs() -> String {
-    "{\"total_count\":1,\"check_runs\":[{\"status\":\"completed\",\"conclusion\":\"success\"}]}"
-        .to_string()
+    check_runs_with("success")
+}
+
+fn check_runs_with(conclusion: &str) -> String {
+    format!(
+        "{{\"total_count\":1,\"check_runs\":[{{\"status\":\"completed\",\"conclusion\":\"{conclusion}\"}}]}}"
+    )
 }
 
 fn pull_request(commit: &str, base: &str, state: &str, merged: bool, mergeable: bool) -> String {

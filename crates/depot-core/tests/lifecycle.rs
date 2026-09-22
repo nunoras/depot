@@ -72,7 +72,7 @@ fn attempt(profile: &str) -> Attempt {
         started_at: at(0),
         finished_at: None,
         outcome: AttemptOutcome::InFlight,
-        rebase: false,
+        base_merge: false,
     }
 }
 
@@ -217,6 +217,22 @@ fn validation_failed(task: &str, commit_id: &str, reason: &str) -> FactKind {
 
 fn submitted(task: &str, commit_id: &str) -> FactKind {
     FactKind::WorkerSubmitted {
+        task: task_id(task),
+        commit: commit(commit_id),
+        base: None,
+    }
+}
+
+fn committed_nothing(task: &str, commit_id: &str, reason: &str) -> FactKind {
+    FactKind::WorkerCommittedNothing {
+        task: task_id(task),
+        commit: commit(commit_id),
+        reason: reason.to_owned(),
+    }
+}
+
+fn baselined(task: &str, commit_id: &str) -> FactKind {
+    FactKind::WorktreeBaselined {
         task: task_id(task),
         commit: commit(commit_id),
     }
@@ -1813,6 +1829,32 @@ fn pull_request_checks_are_recorded_without_a_transition() {
                 .map(|(_, _, checks)| checks)
                 == Some(Checks::Passing)
         }),
+        case(
+            "a checks change refreshes a rework-pending task's link",
+            state(vec![with_pull_request(
+                task("t1", TaskState::ReworkPending),
+                42,
+                Checks::Failing,
+            )]),
+            vec![fact(
+                2_000,
+                FactKind::PullRequestChecksChanged {
+                    task: task_id("t1"),
+                    checks: Checks::Passing,
+                },
+            )],
+        )
+        .when(
+            "t1",
+            TaskState::ReworkPending,
+            vec![Action::RenderChecklist],
+        )
+        .checking(|state| {
+            subject(state, "t1")
+                .pull_request()
+                .map(|(_, _, checks)| checks)
+                == Some(Checks::Passing)
+        }),
     ]);
 }
 
@@ -1915,7 +1957,7 @@ fn worktree_acquired_rework_respects_state_and_cap() {
                 started_at: at(0),
                 finished_at: Some(at(0)),
                 session: None,
-                rebase: false,
+                base_merge: false,
             },
         )
     };
@@ -3088,10 +3130,10 @@ fn a_branch_behind_the_validated_commit_owes_the_push() {
 }
 
 #[test]
-fn a_merge_with_no_validated_revision_to_match_is_held_rather_than_landed() {
+fn a_merge_with_no_validated_revision_to_match_lands() {
     run(vec![
         case(
-            "a merged fact for a task with no passing validation is held for a person",
+            "a merged fact for a task with no passing validation lands it",
             state(vec![with_attempt(
                 with_pull_request(task("t1", TaskState::PrOpen), 42, Checks::Passing),
                 Attempt {
@@ -3112,37 +3154,34 @@ fn a_merge_with_no_validated_revision_to_match_is_held_rather_than_landed() {
         )
         .when(
             "t1",
-            TaskState::Failed,
-            vec![hold("t1"), Action::RenderChecklist],
+            TaskState::Landed,
+            vec![release("t1", "w1"), Action::RenderChecklist],
         )
-        .checking(|state| {
-            subject(state, "t1").validated_commit().is_none()
-                && subject(state, "t1")
-                    .attempts
-                    .last()
-                    .and_then(|attempt| attempt.worktree.clone())
-                    == Some(lease("w1"))
-        }),
+        .checking(|state| subject(state, "t1").validated_commit().is_none()),
     ]);
 }
 
 #[test]
-fn a_merge_of_an_unvalidated_revision_is_held_rather_than_landed() {
-    let mut task = with_pull_request(validated("t1", "c1"), 42, Checks::Passing);
-    task.state = TaskState::PrOpen;
-    task.branch_head = Some(commit("c1"));
+fn a_merge_lands_a_task_that_may_still_land() {
+    let attempted = |task: Task, outcome: AttemptOutcome, lease_id: Option<&str>| {
+        with_attempt(
+            task,
+            Attempt {
+                last_seen_at: None,
+                outcome,
+                worktree: lease_id.map(lease),
+                finished_at: Some(at(0)),
+                ..attempt(BUILD)
+            },
+        )
+    };
     run(vec![
         case(
-            "a merged head that is not the validated commit is held for a person",
-            state(vec![with_attempt(
-                task,
-                Attempt {
-                    last_seen_at: None,
-                    outcome: AttemptOutcome::Submitted,
-                    worktree: Some(lease("w1")),
-                    finished_at: Some(at(0)),
-                    ..attempt(BUILD)
-                },
+            "a merged head no member validated lands the open pull request",
+            state(vec![attempted(
+                pr_open("t1", "c1", 42),
+                AttemptOutcome::Submitted,
+                Some("w1"),
             )]),
             vec![fact(
                 1_000,
@@ -3154,21 +3193,71 @@ fn a_merge_of_an_unvalidated_revision_is_held_rather_than_landed() {
         )
         .when(
             "t1",
-            TaskState::Failed,
-            vec![hold("t1"), Action::RenderChecklist],
+            TaskState::Landed,
+            vec![release("t1", "w1"), Action::RenderChecklist],
+        ),
+        case(
+            "an unacknowledged failed task that still holds a pull request may still land",
+            state(vec![attempted(
+                {
+                    let mut task = pr_open("t1", "c1", 42);
+                    task.state = TaskState::Failed;
+                    task
+                },
+                AttemptOutcome::Stopped,
+                Some("w1"),
+            )]),
+            vec![fact(
+                2_000,
+                FactKind::PullRequestMerged {
+                    task: task_id("t1"),
+                    commit: commit("c1"),
+                },
+            )],
         )
-        .checking(|state| {
-            subject(state, "t1")
-                .attempts
-                .last()
-                .and_then(|attempt| attempt.worktree.clone())
-                == Some(lease("w1"))
-        }),
+        .when(
+            "t1",
+            TaskState::Landed,
+            vec![release("t1", "w1"), Action::RenderChecklist],
+        ),
+        case(
+            "an acknowledged failed task no longer lands on a merge",
+            state(vec![{
+                let mut task = pr_open("t1", "c1", 42);
+                task.state = TaskState::Failed;
+                task.acknowledged_at = Some(at(0));
+                task
+            }]),
+            vec![fact(
+                3_000,
+                FactKind::PullRequestMerged {
+                    task: task_id("t1"),
+                    commit: commit("c1"),
+                },
+            )],
+        )
+        .when("t1", TaskState::Failed, vec![]),
+        case(
+            "a rework pending task still lands on a merge",
+            state(vec![{
+                let mut task = pr_open("t1", "c1", 42);
+                task.state = TaskState::ReworkPending;
+                task
+            }]),
+            vec![fact(
+                4_000,
+                FactKind::PullRequestMerged {
+                    task: task_id("t1"),
+                    commit: commit("c1"),
+                },
+            )],
+        )
+        .when("t1", TaskState::Landed, vec![Action::RenderChecklist]),
     ]);
 }
 
 #[test]
-fn merge_only_lands_from_pr_open() {
+fn merge_only_lands_a_task_with_a_pull_request() {
     run(vec![
         case(
             "a validated task without a pull request ignores merge",
@@ -3191,6 +3280,125 @@ fn merge_only_lands_from_pr_open() {
                 .last()
                 .and_then(|attempt| attempt.worktree.clone())
                 == Some(lease("w1"))
+        }),
+    ]);
+}
+
+#[test]
+fn a_merged_pull_request_settles_the_rework_family() {
+    let rework_pending = |id: &str, original: Option<&str>, validated_commit: &str| {
+        let mut task = pr_open(id, validated_commit, 42);
+        task.state = TaskState::ReworkPending;
+        task.rework_of = original.map(task_id);
+        task.attempts.push(Attempt {
+            last_seen_at: None,
+            outcome: AttemptOutcome::Stopped,
+            worktree: None,
+            finished_at: Some(at(0)),
+            ..attempt(BUILD)
+        });
+        task
+    };
+    let rework = |id: &str, original: &str, outcome: AttemptOutcome, lease_id: Option<&str>| {
+        let mut task = with_pull_request(task(id, TaskState::Running), 42, Checks::Passing);
+        task.rework_of = Some(task_id(original));
+        with_attempt(
+            task,
+            Attempt {
+                last_seen_at: None,
+                outcome,
+                worktree: lease_id.map(lease),
+                ..attempt(BUILD)
+            },
+        )
+    };
+    run(vec![
+        case(
+            "a merged pull request lands the rework-pending original and cancels the rework",
+            state(vec![
+                rework_pending("t1", None, "c1"),
+                rework("t2", "t1", AttemptOutcome::InFlight, Some("w1")),
+            ]),
+            vec![fact(
+                1_000,
+                FactKind::PullRequestMerged {
+                    task: task_id("t1"),
+                    commit: commit("c1"),
+                },
+            )],
+        )
+        .when(
+            "t1",
+            TaskState::Landed,
+            vec![
+                Action::StopSession {
+                    task: task_id("t2"),
+                },
+                release("t2", "w1"),
+                Action::RenderChecklist,
+            ],
+        )
+        .checking(|state| subject(state, "t2").state == TaskState::Cancelled),
+        case(
+            "a merge the deepest rework validated lands the whole chain",
+            state(vec![
+                rework_pending("t1", None, "c1"),
+                rework_pending("t2", Some("t1"), "c2"),
+                rework("t3", "t2", AttemptOutcome::InFlight, Some("w1")),
+            ]),
+            vec![fact(
+                2_000,
+                FactKind::PullRequestMerged {
+                    task: task_id("t2"),
+                    commit: commit("c2"),
+                },
+            )],
+        )
+        .when(
+            "t2",
+            TaskState::Landed,
+            vec![
+                Action::StopSession {
+                    task: task_id("t3"),
+                },
+                release("t3", "w1"),
+                Action::RenderChecklist,
+            ],
+        )
+        .checking(|state| {
+            subject(state, "t1").state == TaskState::Landed
+                && subject(state, "t3").state == TaskState::Cancelled
+        }),
+        case(
+            "a merge no member of the family validated lands the whole family",
+            state(vec![
+                rework_pending("t1", None, "c1"),
+                rework_pending("t2", Some("t1"), "c2"),
+                rework("t3", "t2", AttemptOutcome::InFlight, Some("w1")),
+            ]),
+            vec![fact(
+                3_000,
+                FactKind::PullRequestMerged {
+                    task: task_id("t1"),
+                    commit: commit("c9"),
+                },
+            )],
+        )
+        .when(
+            "t1",
+            TaskState::Landed,
+            vec![
+                Action::StopSession {
+                    task: task_id("t3"),
+                },
+                release("t3", "w1"),
+                Action::RenderChecklist,
+            ],
+        )
+        .checking(|state| {
+            subject(state, "t1").state == TaskState::Landed
+                && subject(state, "t2").state == TaskState::Landed
+                && subject(state, "t3").state == TaskState::Landed
         }),
     ]);
 }
@@ -3417,6 +3625,52 @@ fn pull_request_closed_unmerged_stops_a_live_session() {
             ],
         )
         .checking(|state| holds(state, "t1", AttemptOutcome::Stopped)),
+        case(
+            "closing a rework's pull request cancels the whole chain",
+            state(vec![
+                {
+                    let mut original = pr_open("t1", "c1", 42);
+                    original.state = TaskState::ReworkPending;
+                    original
+                },
+                {
+                    let mut fix = with_pull_request(
+                        with_attempt(
+                            task("t2", TaskState::Running),
+                            Attempt {
+                                last_seen_at: None,
+                                outcome: AttemptOutcome::InFlight,
+                                worktree: Some(lease("w1")),
+                                ..attempt(BUILD)
+                            },
+                        ),
+                        42,
+                        Checks::Failing,
+                    );
+                    fix.rework_of = Some(task_id("t1"));
+                    fix
+                },
+            ]),
+            vec![fact(
+                2_000,
+                FactKind::PullRequestClosedUnmerged {
+                    task: task_id("t1"),
+                },
+            )],
+        )
+        .when(
+            "t1",
+            TaskState::Cancelled,
+            vec![
+                Action::StopSession {
+                    task: task_id("t2"),
+                },
+                release("t2", "w1"),
+                hold("t1"),
+                Action::RenderChecklist,
+            ],
+        )
+        .checking(|state| subject(state, "t2").state == TaskState::Cancelled),
     ]);
 }
 
@@ -4304,7 +4558,7 @@ fn rule_17_a_held_task_parks_its_branch_until_release() {
 }
 
 #[test]
-fn rule_17_a_conflicting_pull_request_is_rebased_serially_whatever_the_merge_policy() {
+fn rule_17_a_conflicting_pull_request_merges_the_base_serially_whatever_the_merge_policy() {
     const FIX: &str = "fix-profile";
     let fix_profiles = |mut state: ProjectState| {
         state.profiles.insert(Role::Fix, profile(FIX));
@@ -4347,7 +4601,7 @@ fn rule_17_a_conflicting_pull_request_is_rebased_serially_whatever_the_merge_pol
         task.state == TaskState::Running
             && task.attempts.len() == 2
             && task.attempts.last().is_some_and(|attempt| {
-                attempt.rebase && attempt.outcome == AttemptOutcome::InFlight
+                attempt.base_merge && attempt.outcome == AttemptOutcome::InFlight
             })
     }
 
@@ -4371,7 +4625,7 @@ fn rule_17_a_conflicting_pull_request_is_rebased_serially_whatever_the_merge_pol
                     == Some(&lease("w1"))
         }),
         case(
-            "a conflict schedules the same rebase when auto merge is off",
+            "a conflict schedules the same base merge when auto merge is off",
             manual(state(vec![open_with_lease()])),
             vec![fact(1_000, conflicting("t1"))],
         )
@@ -4401,13 +4655,13 @@ fn rule_17_a_conflicting_pull_request_is_rebased_serially_whatever_the_merge_pol
             started_at: at(0),
             finished_at: None,
             outcome: AttemptOutcome::InFlight,
-            rebase: true,
+            base_merge: true,
         });
         state
     };
     run(vec![
         case(
-            "a repeated conflict does not schedule a second rebase",
+            "a repeated conflict does not schedule a second base merge",
             repeating(state(vec![open_with_lease()])),
             vec![fact(2_000, conflicting("t1"))],
         )
@@ -4424,13 +4678,13 @@ fn rule_17_a_conflicting_pull_request_is_rebased_serially_whatever_the_merge_pol
         started_at: at(0),
         finished_at: None,
         outcome: AttemptOutcome::InFlight,
-        rebase: true,
+        base_merge: true,
     });
     sibling.state = TaskState::Running;
 
     run(vec![
         case(
-            "only one rebase is in flight per project",
+            "only one base merge is in flight per project",
             auto_merge(state(vec![sibling, open_with_lease()])),
             vec![fact(1_000, conflicting("t1"))],
         )
@@ -4445,7 +4699,7 @@ fn rule_17_a_conflicting_pull_request_is_rebased_serially_whatever_the_merge_pol
         .state = TaskState::ReworkPending;
     run(vec![
         case(
-            "a rework pending task is not rebased",
+            "a rework pending task is not given a base merge",
             manual(reworking),
             vec![fact(1_000, conflicting("t1"))],
         )
@@ -4460,7 +4714,7 @@ fn rule_17_a_conflicting_pull_request_is_rebased_serially_whatever_the_merge_pol
         .state = TaskState::Cancelled;
     run(vec![
         case(
-            "a closed task is not rebased",
+            "a closed task is not given a base merge",
             manual(closed),
             vec![fact(1_000, conflicting("t1"))],
         )
@@ -4471,7 +4725,7 @@ fn rule_17_a_conflicting_pull_request_is_rebased_serially_whatever_the_merge_pol
     spent_out.limits.max_attempts = 1;
     run(vec![
         case(
-            "a rebase past the attempt limit is refused",
+            "a base merge past the attempt limit is refused",
             manual(spent_out),
             vec![fact(1_000, conflicting("t1"))],
         )
@@ -4480,14 +4734,14 @@ fn rule_17_a_conflicting_pull_request_is_rebased_serially_whatever_the_merge_pol
 }
 
 #[test]
-fn a_manual_merge_policy_rebases_a_conflict_but_never_merges_it() {
+fn a_manual_merge_policy_merges_the_base_into_a_conflict_but_never_merges_the_pull_request() {
     let head = commit("c1");
     let mut state = state(vec![open_with_submitted_attempt()]);
     state.profiles.insert(Role::Fix, profile("fix-profile"));
     assert_eq!(
-        rebase_due(&state, subject(&state, "t1"), true),
+        base_merge_due(&state, subject(&state, "t1"), true),
         Some(profile("fix-profile")),
-        "a conflicting pull request is due for a rebase even with auto merge off"
+        "a conflicting pull request is due a base merge even with auto merge off"
     );
     assert!(
         !auto_merge_due(&state, subject(&state, "t1"), &head),
@@ -4550,35 +4804,35 @@ fn a_mergeability_observation_records_and_clears_the_conflict_base() {
 }
 
 #[test]
-fn rebase_due_resolves_the_fix_profile_only_for_conflicting_open_pull_requests() {
+fn base_merge_due_resolves_the_fix_profile_only_for_conflicting_open_pull_requests() {
     const FIX: &str = "fix-profile";
     let mut base_state = base();
     base_state.profiles.insert(Role::Fix, profile(FIX));
     base_state.merge_policy = MergePolicy::AfterChecks;
     let task = open_with_submitted_attempt();
     assert_eq!(
-        rebase_due(&base_state, &task, true),
+        base_merge_due(&base_state, &task, true),
         Some(profile(FIX)),
-        "a conflicting pull request is due for a rebase"
+        "a conflicting pull request is due a base merge"
     );
     assert_eq!(
-        rebase_due(&base_state, &task, false),
+        base_merge_due(&base_state, &task, false),
         None,
-        "a mergeable pull request is not due for a rebase"
+        "a mergeable pull request is not due a base merge"
     );
     let mut no_fix = base_state.clone();
     no_fix.profiles.clear();
     assert_eq!(
-        rebase_due(&no_fix, &task, true),
+        base_merge_due(&no_fix, &task, true),
         None,
-        "no fix profile means no rebase"
+        "no fix profile means no base merge"
     );
     let mut manual = base_state;
     manual.merge_policy = MergePolicy::Manual;
     assert_eq!(
-        rebase_due(&manual, &task, true),
+        base_merge_due(&manual, &task, true),
         Some(profile(FIX)),
-        "auto merge off still rebases a conflict"
+        "auto merge off still merges the base into a conflict"
     );
 }
 
@@ -4852,10 +5106,10 @@ fn rule_20_a_delivery_failure_holds_the_task_and_never_lands_it() {
 }
 
 #[test]
-fn rule_21_a_commit_already_on_the_base_lands_and_releases_its_worktree() {
+fn rule_21_a_commit_the_base_gained_after_submission_lands_and_releases_its_worktree() {
     run(vec![
         case(
-            "a validated commit already on the base lands and releases the lease",
+            "a validated commit the base gained after submission lands and releases the lease",
             state(vec![with_attempt(
                 validated("t1", "c1"),
                 Attempt {
@@ -4909,6 +5163,69 @@ fn rule_21_a_commit_already_on_the_base_lands_and_releases_its_worktree() {
             )],
         )
         .when("t1", TaskState::PrOpen, vec![]),
+    ]);
+}
+
+#[test]
+fn rule_22_a_worker_that_committed_nothing_fails_the_task() {
+    let committed_nothing_reason = "the worker committed nothing";
+    let already_on_base_reason =
+        "the submitted commit is already on the base branch and this attempt adds nothing over it";
+    run(vec![
+        case(
+            "an empty submission fails the validating task with a reason",
+            state(vec![validating("t1")]),
+            vec![fact(
+                1_000,
+                committed_nothing("t1", "c1", committed_nothing_reason),
+            )],
+        )
+        .when(
+            "t1",
+            TaskState::Failed,
+            vec![hold("t1"), Action::RenderChecklist],
+        )
+        .checking(|state| {
+            subject(state, "t1").failure.as_deref() == Some(committed_nothing_reason)
+        }),
+        case(
+            "a submission already on the submitted base fails with the reason that fits",
+            state(vec![validating("t1")]),
+            vec![fact(
+                1_500,
+                committed_nothing("t1", "c2", already_on_base_reason),
+            )],
+        )
+        .when(
+            "t1",
+            TaskState::Failed,
+            vec![hold("t1"), Action::RenderChecklist],
+        )
+        .checking(|state| subject(state, "t1").failure.as_deref() == Some(already_on_base_reason)),
+        case(
+            "a running task is not failed by an empty submission",
+            state(vec![running("t1")]),
+            vec![fact(
+                2_000,
+                committed_nothing("t1", "c1", committed_nothing_reason),
+            )],
+        )
+        .when("t1", TaskState::Running, vec![]),
+        case(
+            "a validated task is not failed by a late empty submission",
+            state(vec![validated("t1", "c1")]),
+            vec![fact(
+                3_000,
+                committed_nothing("t1", "c1", committed_nothing_reason),
+            )],
+        )
+        .when("t1", TaskState::Validated, vec![]),
+        case(
+            "a baseline alone changes nothing",
+            state(vec![running("t1")]),
+            vec![fact(4_000, baselined("t1", "c1"))],
+        )
+        .when("t1", TaskState::Running, vec![]),
     ]);
 }
 

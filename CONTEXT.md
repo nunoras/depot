@@ -11,11 +11,6 @@ A repository with no origin is a local-only project whose preferences never leav
 A single home holds many projects, and no project's records leak into another's.
 _Avoid_: workspace, repo
 
-**Clone**:
-Where a project's repository lives on one machine.
-It is a machine fact, so two clones of the same origin are two places for one project, not two projects.
-_Avoid_: project path, checkout
-
 **Task**:
 One unit of work, with a role and a state and its own history of attempts, questions and validations.
 _Avoid_: job, ticket, issue
@@ -44,6 +39,26 @@ _Avoid_: blocker, parent
 The pooled worktree an attempt runs in.
 A lease holding unlanded work is never reset or removed.
 _Avoid_: checkout
+
+**Identity**:
+A project's `origin` remote reduced to lowercase host, owner and name, with the scheme, user, port, a trailing slash and `.git` dropped.
+It is what names a project, so every URL form of one remote is one project.
+_Avoid_: key
+
+**Clone**:
+One working copy of a project's repository on this machine, holding the path depot found it at and the origin that path actually carries.
+A project may have several clones, and depot runs a task from one of them.
+_Avoid_: checkout, copy
+
+**Local-only**:
+A repository with no usable `origin`, so its path is its identity.
+It is recorded with a clone and never syncs a branch or opens a pull request.
+_Avoid_: offline, unlinked
+
+**Repoint**:
+The `depot project repoint <name> --origin <url>` command that follows a renamed origin, rekeying the project to the new identity and keeping its history.
+It is refused while a task is in flight, and it refuses a clone whose git remote still says the old origin.
+_Avoid_: rename, migrate
 
 ## Configuration
 

@@ -143,9 +143,22 @@ pub fn encode_payload(kind: &FactKind) -> String {
                 ),
             ),
         ]),
-        FactKind::WorkerSubmitted { task, commit } => object(vec![
+        FactKind::WorkerSubmitted { task, commit, base } => object(vec![
             ("task", quoted(task.as_str())),
             ("commit", quoted(commit.as_str())),
+            (
+                "base",
+                optional(base.as_ref().map(|commit| quoted(commit.as_str()))),
+            ),
+        ]),
+        FactKind::WorkerCommittedNothing {
+            task,
+            commit,
+            reason,
+        } => object(vec![
+            ("task", quoted(task.as_str())),
+            ("commit", quoted(commit.as_str())),
+            ("reason", quoted(reason)),
         ]),
         FactKind::ValidationStarted { task, commit } => object(vec![
             ("task", quoted(task.as_str())),
@@ -216,6 +229,10 @@ pub fn encode_payload(kind: &FactKind) -> String {
                 ),
             ),
         ]),
+        FactKind::WorktreeBaselined { task, commit } => object(vec![
+            ("task", quoted(task.as_str())),
+            ("commit", quoted(commit.as_str())),
+        ]),
         FactKind::WorktreeReleased { task, lease } => object(vec![
             ("task", quoted(task.as_str())),
             ("lease", quoted(lease.as_str())),
@@ -246,7 +263,8 @@ pub fn encode_payload(kind: &FactKind) -> String {
             ("task", quoted(task.as_str())),
             ("checks", quoted(checks_name(*checks))),
         ]),
-        FactKind::PullRequestMerged { task, commit } => object(vec![
+        FactKind::PullRequestMerged { task, commit }
+        | FactKind::StaleMergeObserved { task, commit } => object(vec![
             ("task", quoted(task.as_str())),
             ("commit", quoted(commit.as_str())),
         ]),

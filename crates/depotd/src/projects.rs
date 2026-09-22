@@ -9,7 +9,7 @@ use crate::config::PROJECT_CONFIG_FILE_NAME;
 use crate::daemon::{daemon_build_mismatch, daemon_scope_covers};
 use crate::error::{Error, Result};
 use crate::home::{DepotHome, ProjectHome, slug_for};
-use crate::project::{LocationKind, Project};
+use crate::project::{Clone, LocationKind, Project};
 use crate::store::Store;
 use crate::vocabulary::role_name;
 
@@ -17,6 +17,9 @@ use crate::vocabulary::role_name;
 pub struct Added {
     pub project: Project,
     pub created: bool,
+    pub clone_added: bool,
+    pub clone_path: Option<PathBuf>,
+    pub local_only: bool,
     pub ignored_config: bool,
     pub home: ProjectHome,
 }
@@ -30,30 +33,44 @@ pub fn add_project(home: &DepotHome, target: &str) -> Result<Added> {
         .as_deref()
         .map(ignore_project_config)
         .unwrap_or(false);
-    let existing = store.project(&resolved.id)?;
+    let existing = store.project(&resolved.identity)?;
     let project = match existing {
         Some(project) => project,
         None => Project {
-            id: resolved.id.clone(),
+            id: resolved.identity.clone(),
             kind: resolved.kind,
-            slug: unique_slug(&store.taken_slugs()?, &slug_for(resolved.id.as_str())),
+            slug: unique_slug(&store.taken_slugs()?, &slug_for(&resolved.slug_source)),
             created_at: now(),
         },
     };
 
-    let state = store.project_state(&project)?;
-    ensure_profiles_resolve(home, &store, &project)?;
-    let checklist = render_checklist(&state, false);
     let project_home = home.project_home(&project.slug);
     let created_home = !project_home.root().exists();
 
+    let mut made_project = false;
     let created = match (|| {
+        let created = store.put_project(&project)?;
+        made_project = created;
+        let clone_added = match &resolved.directory {
+            Some(directory) => store.put_clone(&Clone {
+                project: project.id.clone(),
+                path: directory.clone(),
+                origin: resolved.origin.clone(),
+            })?,
+            None => false,
+        };
+        let state = store.project_state(&project)?;
+        ensure_profiles_resolve(home, &store, &project)?;
+        let checklist = render_checklist(&state, false);
         project_home.ensure()?;
         std::fs::write(project_home.checklist_path(), &checklist)?;
-        store.put_project(&project)
+        Ok((created, clone_added))
     })() {
-        Ok(created) => created,
+        Ok((created, clone_added)) => (created, clone_added),
         Err(error) => {
+            if made_project {
+                let _ = store.remove_project(&project.id);
+            }
             if created_home {
                 let _ = std::fs::remove_dir_all(project_home.root());
             }
@@ -63,7 +80,10 @@ pub fn add_project(home: &DepotHome, target: &str) -> Result<Added> {
 
     Ok(Added {
         project,
-        created,
+        created: created.0,
+        clone_added: created.1,
+        clone_path: resolved.directory,
+        local_only: resolved.local_only,
         ignored_config,
         home: project_home,
     })
@@ -74,6 +94,53 @@ pub enum StatusSelection {
     All,
     Project(String),
     CurrentDirectory,
+}
+
+pub fn repoint_project(home: &DepotHome, selection: Option<&str>, origin: &str) -> Result<Project> {
+    let store = Store::open(home)?;
+    let project = select_project(&store, selection)?;
+    if store.project_has_in_flight(&project.id)? {
+        return Err(Error::Project(format!(
+            "project `{}` has a task in flight; stop it before changing its origin",
+            project.slug
+        )));
+    }
+    let origin = origin.trim();
+    let identity = crate::identity::identity_for_origin(origin)
+        .ok_or_else(|| Error::Project(format!("`{origin}` is not a usable remote origin")))?;
+    let new_id = ProjectId::new(identity.clone());
+    if new_id != project.id
+        && let Some(existing) = store.project(&new_id)?
+    {
+        return Err(Error::Project(format!(
+            "origin `{origin}` already identifies project `{}`",
+            existing.slug
+        )));
+    }
+    let clones = store.clones_for_project(&project.id)?;
+    for clone in &clones {
+        let live = crate::identity::read_origin(&clone.path);
+        let live_identity = live
+            .as_deref()
+            .and_then(crate::identity::identity_for_origin);
+        if live_identity.as_deref() != Some(new_id.as_str()) {
+            return Err(Error::Project(format!(
+                "the clone at `{}` has origin `{}`, which is not `{new_id}`; run `git remote set-url origin {origin}` there first",
+                clone.path.display(),
+                live.as_deref().unwrap_or("no origin"),
+            )));
+        }
+    }
+    if new_id != project.id {
+        store.rekey_project(&project.id, &new_id)?;
+    }
+    for clone in &clones {
+        let live = crate::identity::read_origin(&clone.path);
+        store.set_clone_origin(&clone.path, live.as_deref())?;
+    }
+    store
+        .project(&new_id)?
+        .ok_or_else(|| Error::NotFound(format!("no project matches `{identity}`")))
 }
 
 pub fn select_project(store: &Store, name: Option<&str>) -> Result<Project> {
@@ -156,11 +223,22 @@ pub fn render_projects(home: &DepotHome) -> Result<String> {
             out.push('\n');
         }
         out.push_str(&format!("{}\n", project.slug));
-        let location = match project.kind {
-            LocationKind::Path => "path",
-            LocationKind::Url => "url",
-        };
-        out.push_str(&format!("  {location}: {}\n", project.id));
+        out.push_str(&format!("  identity: {}\n", project.id));
+        let clones = store.clones_for_project(&project.id)?;
+        if clones.is_empty() {
+            out.push_str("  url: no local clone\n");
+        }
+        for clone in clones {
+            match &clone.origin {
+                Some(origin) => {
+                    out.push_str(&format!("  path: {} ({origin})\n", clone.path.display()))
+                }
+                None => out.push_str(&format!(
+                    "  path: {} (local-only, no origin)\n",
+                    clone.path.display()
+                )),
+            }
+        }
         let profiles = store.project_config(project)?.profiles()?;
         if profiles.is_empty() {
             out.push_str("  profiles: none are mapped in .depot.toml\n");
@@ -255,18 +333,26 @@ pub fn needs_daemon(states: impl IntoIterator<Item = TaskState>) -> bool {
 }
 
 struct Resolved {
-    id: ProjectId,
+    identity: ProjectId,
     kind: LocationKind,
     directory: Option<PathBuf>,
+    origin: Option<String>,
+    slug_source: String,
+    local_only: bool,
 }
 
 fn resolve_target(target: &str) -> Result<Resolved> {
     let target = target.trim();
     if is_url(target) {
+        let identity = depot_core::remote_identity(target)
+            .ok_or_else(|| Error::Project(format!("`{target}` is not a usable remote origin")))?;
         return Ok(Resolved {
-            id: ProjectId::new(normalize_url(target)),
+            identity: ProjectId::new(identity.clone()),
             kind: LocationKind::Url,
             directory: None,
+            origin: Some(identity.clone()),
+            slug_source: identity,
+            local_only: false,
         });
     }
 
@@ -279,10 +365,17 @@ fn resolve_target(target: &str) -> Result<Resolved> {
             canonical.display()
         )));
     }
+    let origin = crate::identity::read_origin(&canonical);
+    let local_only = origin.is_none();
+    let identity = crate::identity::identity_for(&canonical, origin.as_deref());
+    let slug_source = canonical.to_string_lossy().to_string();
     Ok(Resolved {
-        id: ProjectId::new(canonical.to_string_lossy().to_string()),
+        identity: ProjectId::new(identity),
         kind: LocationKind::Path,
         directory: Some(canonical),
+        origin,
+        slug_source,
+        local_only,
     })
 }
 
@@ -331,7 +424,10 @@ fn match_project(store: &Store, name: &str) -> Result<Option<Project>> {
     let Ok(canonical) = std::fs::canonicalize(name) else {
         return Ok(None);
     };
-    store.project(&ProjectId::new(canonical.to_string_lossy().to_string()))
+    if let Some(clone) = store.clone_for_path(&canonical)? {
+        return store.project(&clone.project);
+    }
+    Ok(None)
 }
 
 fn project_for_directory(store: &Store, directory: &Path) -> Result<Option<Project>> {
@@ -346,15 +442,17 @@ fn project_for_directory(store: &Store, directory: &Path) -> Result<Option<Proje
         return Ok(Some(project.clone()));
     }
 
-    let mut matching: Vec<&Project> = projects
-        .iter()
-        .filter(|project| {
-            project.kind == LocationKind::Path
-                && directory.starts_with(Path::new(project.id.as_str()))
-        })
-        .collect();
-    matching.sort_by_key(|project| std::cmp::Reverse(project.id.as_str().len()));
-    Ok(matching.first().map(|project| (*project).clone()))
+    let mut matching: Vec<(&Project, usize)> = Vec::new();
+    for project in &projects {
+        for clone in store.clones_for_project(&project.id)? {
+            let clone_path = std::fs::canonicalize(&clone.path).unwrap_or(clone.path);
+            if directory.starts_with(&clone_path) {
+                matching.push((project, clone_path.to_string_lossy().len()));
+            }
+        }
+    }
+    matching.sort_by_key(|(_, length)| std::cmp::Reverse(*length));
+    Ok(matching.first().map(|(project, _)| (*project).clone()))
 }
 
 fn unmatched_directory_message(projects: &[Project]) -> String {
@@ -380,10 +478,4 @@ fn is_url(target: &str) -> bool {
         Some((host, rest)) => host.contains('@') && !host.contains('/') && !rest.is_empty(),
         None => false,
     }
-}
-
-fn normalize_url(url: &str) -> String {
-    let url = url.trim();
-    let url = url.strip_suffix('/').unwrap_or(url);
-    url.strip_suffix(".git").unwrap_or(url).to_string()
 }

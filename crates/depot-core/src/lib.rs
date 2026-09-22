@@ -7,12 +7,14 @@ pub use dispatch::{
 pub use event::{BlockingEvent, blocking_event};
 mod event;
 mod fact;
+mod identity;
 mod model;
 mod reduce;
 
 pub use action::{Action, Baseline};
 pub use branch::delivery_branch;
 pub use fact::{Fact, FactKind, Liveness};
+pub use identity::remote_identity;
 pub use model::{
     Answer, AnsweredBy, Artifact, ArtifactKind, Attempt, AttemptOutcome, Checks, CommitId,
     CoordinatorSession, Dependency, Limits, Link, MergePolicy, ProfileId, ProjectId, ProjectState,
@@ -20,6 +22,6 @@ pub use model::{
     TurnDeferral, ValidationRecord, WorktreeLease,
 };
 pub use reduce::{
-    auto_merge_due, dependency_satisfied, publication_blocked, rebase_due, reduce,
+    auto_merge_due, base_merge_due, dependency_satisfied, publication_blocked, reduce,
     worktree_baseline,
 };

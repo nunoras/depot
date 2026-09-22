@@ -123,6 +123,7 @@ fn need_for(tag: FactTag, task: Option<&Task>) -> Need {
         },
         FactTag::ValidationFinished
         | FactTag::ValidationFailed
+        | FactTag::WorkerCommittedNothing
         | FactTag::WorkerLivenessChanged
         | FactTag::WorkerSessionFailed
         | FactTag::WorkerTurnUnresolved
@@ -134,6 +135,7 @@ fn need_for(tag: FactTag, task: Option<&Task>) -> Need {
         | FactTag::RetryExhausted
         | FactTag::ProviderRateLimited
         | FactTag::PullRequestMerged
+        | FactTag::StaleMergeObserved
         | FactTag::PullRequestClosedUnmerged => match state {
             Some(TaskState::Failed) | Some(TaskState::Cancelled) => Need::User,
             _ => Need::Nothing,
@@ -166,6 +168,7 @@ fn need_for(tag: FactTag, task: Option<&Task>) -> Need {
         | FactTag::WorkerSubmitted
         | FactTag::ValidationStarted
         | FactTag::WorktreeAcquired
+        | FactTag::WorktreeBaselined
         | FactTag::WorktreeReleased
         | FactTag::BranchPushed
         | FactTag::PullRequestOpened
@@ -266,10 +269,18 @@ fn headline(tag: FactTag, event: &RecordedEvent, task: Option<&Task>) -> Result<
             let reason = payload_field(&event.payload, "reason")?;
             format!("the validation could not run: {}", one_line(&reason))
         }
+        FactTag::WorkerCommittedNothing => {
+            let reason = payload_field(&event.payload, "reason")?;
+            one_line(&reason)
+        }
         FactTag::WorktreeAcquired => match lease(task) {
             Some(lease) => format!("worktree lease `{lease}` acquired"),
             None => "a worktree was acquired".to_string(),
         },
+        FactTag::WorktreeBaselined => {
+            let commit = payload_field(&event.payload, "commit")?;
+            format!("worktree baselined at `{commit}`")
+        }
         FactTag::WorktreeReleased => {
             let lease = payload_field(&event.payload, "lease")?;
             format!("worktree lease `{lease}` returned to the pool")
@@ -292,6 +303,9 @@ fn headline(tag: FactTag, event: &RecordedEvent, task: Option<&Task>) -> Result<
         },
         FactTag::PullRequestChecksChanged => "pull request checks changed".to_string(),
         FactTag::PullRequestMerged => "the pull request merged".to_string(),
+        FactTag::StaleMergeObserved => {
+            "the pull request had already merged when the daemon restarted".to_string()
+        }
         FactTag::PullRequestClosedUnmerged => "the pull request closed unmerged".to_string(),
         FactTag::PullRequestMergeRefused => {
             let reason = payload_field(&event.payload, "reason")?;
@@ -334,7 +348,7 @@ fn headline(tag: FactTag, event: &RecordedEvent, task: Option<&Task>) -> Result<
             format!("the describe step failed: {}", one_line(&reason))
         }
         FactTag::RebaseScheduled => {
-            "a conflicting pull request was scheduled for a rebase".to_string()
+            "a conflicting pull request was scheduled to merge the base branch".to_string()
         }
         FactTag::RunDurationExceeded => "ran past its run duration".to_string(),
         FactTag::RetryExhausted => "ran out of retries".to_string(),

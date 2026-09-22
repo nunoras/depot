@@ -760,7 +760,8 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             }
         }
 
-        FactKind::PullRequestMerged { task, commit } => {
+        FactKind::PullRequestMerged { task, commit }
+        | FactKind::StaleMergeObserved { task, commit } => {
             let tracked = next.tasks.get(task).is_some_and(Task::may_still_land);
             if let Some(task) = next.tasks.get_mut(task) {
                 let cleared_refusal = task.merge_refused.take().is_some();

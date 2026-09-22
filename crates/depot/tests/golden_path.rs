@@ -3,8 +3,8 @@ mod dispatch;
 mod support;
 
 use depot_core::{
-    AttemptOutcome, Checks, CommitId, Dependency, ProfileId, SessionId, TaskId, TaskState,
-    Timestamp, ValidationRecord, WorktreeLease,
+    AttemptOutcome, Checks, CommitId, Dependency, Fact, FactKind, ProfileId, SessionId, TaskId,
+    TaskState, Timestamp, ValidationRecord, WorktreeLease,
 };
 use depotd::InstanceLock;
 use depotd::evidence::MANAGED_MARKER;
@@ -469,6 +469,21 @@ fn a_stale_failed_row_is_settled_by_the_next_poll() {
         later, commit,
         "the merged head is a later commit than the validated one"
     );
+
+    golden
+        .store
+        .apply_fact(
+            &golden.project,
+            &format!("{MERGED}:{TASK}:{later}"),
+            &Fact {
+                at: Timestamp::from_millis(0),
+                kind: FactKind::PullRequestMerged {
+                    task: TaskId::new(TASK),
+                    commit: CommitId::new(later.clone()),
+                },
+            },
+        )
+        .expect("the merge journaled before the row failed is stored");
 
     let mut stale = golden.task();
     stale.state = TaskState::Failed;

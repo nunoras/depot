@@ -2456,13 +2456,13 @@ where
             }
             self.record(
                 &event_key(&[
-                    "pull_request_merged",
+                    "stale_merge_observed",
                     task.id.as_str(),
                     observed.commit.as_str(),
                 ]),
                 Fact {
                     at: now(),
-                    kind: FactKind::PullRequestMerged {
+                    kind: FactKind::StaleMergeObserved {
                         task: task.id.clone(),
                         commit: observed.commit,
                     },

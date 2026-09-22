@@ -246,7 +246,7 @@ pub fn encode_payload(kind: &FactKind) -> String {
             ("task", quoted(task.as_str())),
             ("checks", quoted(checks_name(*checks))),
         ]),
-        FactKind::PullRequestMerged { task, commit } => object(vec![
+        FactKind::PullRequestMerged { task, commit } | FactKind::StaleMergeObserved { task, commit } => object(vec![
             ("task", quoted(task.as_str())),
             ("commit", quoted(commit.as_str())),
         ]),

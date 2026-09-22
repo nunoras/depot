@@ -1,4 +1,5 @@
 use std::cell::Cell;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{File, OpenOptions};
 
 use fs2::FileExt;
@@ -2378,22 +2379,31 @@ where
 
     fn reconcile_forge(&self) -> Result<()> {
         let state = self.store.project_state(&self.project)?;
+        let mut polled: BTreeMap<u64, Option<ObservedPullRequest>> = BTreeMap::new();
+        let mut settled: BTreeSet<u64> = BTreeSet::new();
         let mut observed_open: Vec<(TaskId, u64, ObservedPullRequest)> = Vec::new();
         for task in state.tasks.values() {
-            if !matches!(task.state, TaskState::PrOpen | TaskState::ReworkPending) {
+            if !task.state.tracks_pull_request() {
                 continue;
             }
             let Some((number, _, recorded)) = task.pull_request() else {
                 continue;
             };
-            let observed = match self
-                .project_repo()
-                .and_then(|repo| self.delivery.observe_pull_request(task, &repo))
-            {
-                Ok(observed) => observed,
-                Err(error) => {
-                    log("forge_unavailable", &error.to_string());
-                    continue;
+            let observed = match polled.get(&number) {
+                Some(observed) => observed.clone(),
+                None => {
+                    let observed = match self
+                        .project_repo()
+                        .and_then(|repo| self.delivery.observe_pull_request(task, &repo))
+                    {
+                        Ok(observed) => observed,
+                        Err(error) => {
+                            log("forge_unavailable", &error.to_string());
+                            None
+                        }
+                    };
+                    polled.insert(number, observed.clone());
+                    observed
                 }
             };
             let Some(observed) = observed else {
@@ -2402,6 +2412,9 @@ where
             let at = now();
             match observed.state {
                 PrState::Merged => {
+                    if !settled.insert(number) {
+                        continue;
+                    }
                     self.record(
                         &event_key(&[
                             "pull_request_merged",
@@ -2418,6 +2431,9 @@ where
                     )?;
                 }
                 PrState::Closed => {
+                    if !settled.insert(number) {
+                        continue;
+                    }
                     self.record(
                         &event_key(&["pull_request_closed_unmerged", task.id.as_str()]),
                         Fact {

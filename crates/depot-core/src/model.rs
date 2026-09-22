@@ -105,6 +105,10 @@ impl TaskState {
                 | TaskState::Cancelled
         )
     }
+
+    pub fn tracks_pull_request(self) -> bool {
+        matches!(self, TaskState::PrOpen | TaskState::ReworkPending)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

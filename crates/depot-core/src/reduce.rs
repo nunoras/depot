@@ -725,7 +725,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
 
         FactKind::PullRequestChecksChanged { task, checks } => {
             if let Some(task) = next.tasks.get_mut(task)
-                && matches!(task.state, TaskState::PrOpen | TaskState::ReworkPending)
+                && task.state.tracks_pull_request()
             {
                 let mut updated = false;
                 for link in task.links.iter_mut() {
@@ -746,9 +746,10 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
         }
 
         FactKind::PullRequestMerged { task, commit } => {
-            let tracked = next.tasks.get(task).is_some_and(|task| {
-                matches!(task.state, TaskState::PrOpen | TaskState::ReworkPending)
-            });
+            let tracked = next
+                .tasks
+                .get(task)
+                .is_some_and(|task| task.state.tracks_pull_request());
             if let Some(task) = next.tasks.get_mut(task) {
                 let cleared_refusal = task.merge_refused.take().is_some();
                 let cleared_conflict = task.conflict_base.take().is_some();

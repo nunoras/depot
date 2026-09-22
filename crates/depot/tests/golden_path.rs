@@ -4355,6 +4355,28 @@ fn project_repoint_changes_the_identity_keeps_history_and_refuses_while_a_task_i
     );
 
     golden.depot_ok(&["task", "stop", TASK, "--project", SLUG]);
+    let stale = golden.depot(&[
+        "project",
+        "repoint",
+        SLUG,
+        "--origin",
+        "git@github.com:nunoras/depot.git",
+    ]);
+    assert_eq!(stale.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&stale.stderr).contains("git remote set-url"),
+        "a repoint whose clone still says the old origin is refused, got {}",
+        String::from_utf8_lossy(&stale.stderr)
+    );
+    git::git(
+        &golden.repo,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "git@github.com:nunoras/depot.git",
+        ],
+    );
     let repointed = golden.depot_ok(&[
         "project",
         "repoint",

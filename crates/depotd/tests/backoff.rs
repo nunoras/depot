@@ -114,6 +114,16 @@ fn registered_project(home: &DepotHome, name: &str) -> Project {
     }
 }
 
+fn record_clone(store: &Store, project: &Project) {
+    store
+        .put_clone(&depotd::Clone {
+            project: project.id.clone(),
+            path: std::path::PathBuf::from(project.id.as_str()),
+            origin: None,
+        })
+        .expect("the clone is recorded");
+}
+
 fn stopped_task(project: &ProjectId, id: &str, session: &str) -> Task {
     let mut task = support::simple_task(project, id, TaskState::Cancelled, 0);
     task.attempts.push(Attempt {
@@ -135,6 +145,7 @@ fn an_idle_daemon_polls_a_stopped_session_once_and_never_touches_the_pool() {
     let store = Store::open(&fixture.home).expect("the store opens");
     let project = registered_project(&fixture.home, "example");
     store.put_project(&project).expect("the project is stored");
+    record_clone(&store, &project);
     store
         .put_task(&stopped_task(&project.id, "t-1", "s-1"))
         .expect("the stopped task is stored");
@@ -197,6 +208,7 @@ fn an_idle_daemon_reads_the_pool_once_while_a_release_is_held_back() {
     let store = Store::open(&fixture.home).expect("the store opens");
     let project = registered_project(&fixture.home, "example");
     store.put_project(&project).expect("the project is stored");
+    record_clone(&store, &project);
 
     let held = WorktreeLease::new("l-held");
     let due = WorktreeLease::new("l-due");

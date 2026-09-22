@@ -102,7 +102,8 @@ depot project add /path/to/your-project
 This creates the project home under `~/.agni/projects/<slug>/`, records the repository as a clone, and adds `.depot.toml` to the repo's `.git/info/exclude` so it stays machine-local.
 A project is identified by its `origin` remote reduced to lowercase host, owner and name, with the scheme, user, port, a trailing slash and `.git` dropped, so `git@github.com:O/R.git`, `https://github.com/o/r/` and `ssh://git@github.com/o/r` are one project.
 A second clone of a registered origin adds a clone rather than a second project, and a repository with no `origin` is local-only and never syncs.
-`depot project repoint <name> --origin <url>` follows a renamed origin, refused while a task is in flight.
+`depot project repoint <name> --origin <url>` follows a renamed origin, refused while a task is in flight and refused while a clone's git remote still says the old origin.
+A clone whose live `origin` no longer reduces to its project's identity is left alone: depot refuses to launch or submit from it while that project has work in flight.
 
 5. Configure the project (`.depot.toml` in the repo root; machine-local, never committed):
 

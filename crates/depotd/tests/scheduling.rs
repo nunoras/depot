@@ -160,6 +160,13 @@ fn register_project(store: &Store, home: &DepotHome, name: &str, config: &str) -
         created_at: Timestamp::from_millis(0),
     };
     store.put_project(&project).expect("the project is stored");
+    store
+        .put_clone(&depotd::Clone {
+            project: project.id.clone(),
+            path: directory.clone(),
+            origin: None,
+        })
+        .expect("the clone is recorded");
     project
 }
 

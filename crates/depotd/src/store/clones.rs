@@ -37,15 +37,32 @@ const TASK_ID_COLUMNS: &[(&str, &str)] = &[
 
 impl Store {
     pub fn put_clone(&self, clone: &Clone) -> Result<bool> {
-        let inserted = self.connection().execute(
-            "INSERT OR IGNORE INTO clones (path, project_id, origin) VALUES (?1, ?2, ?3)",
+        if let Some(existing) = self.clone_for_path(&clone.path)? {
+            if existing.project != clone.project {
+                let owner = self
+                    .project(&existing.project)?
+                    .map(|project| project.slug)
+                    .unwrap_or_else(|| existing.project.to_string());
+                return Err(Error::Project(format!(
+                    "`{}` is already a clone of project `{owner}` (`{}`); run `depot project repoint {owner} --origin <url>` to follow a renamed origin there",
+                    clone.path.display(),
+                    existing.project,
+                )));
+            }
+            if existing.origin != clone.origin {
+                self.set_clone_origin(&clone.path, clone.origin.as_deref())?;
+            }
+            return Ok(false);
+        }
+        self.connection().execute(
+            "INSERT INTO clones (path, project_id, origin) VALUES (?1, ?2, ?3)",
             params![
                 clone.path.to_string_lossy(),
                 clone.project.as_str(),
                 clone.origin,
             ],
         )?;
-        Ok(inserted > 0)
+        Ok(true)
     }
 
     pub fn clones_for_project(&self, project: &ProjectId) -> Result<Vec<Clone>> {
@@ -74,13 +91,40 @@ impl Store {
     }
 
     pub fn project_path(&self, project: &Project) -> Result<Option<PathBuf>> {
-        if let Some(clone) = self.clone_for_project(&project.id)? {
-            return Ok(Some(clone.path));
+        Ok(self.clone_for_project(&project.id)?.map(|clone| clone.path))
+    }
+
+    pub(crate) fn local_clone(&self, project: &Project) -> Result<Clone> {
+        self.clone_for_project(&project.id)?
+            .ok_or_else(|| Error::Project(format!("project `{}` has no local clone", project.slug)))
+    }
+
+    pub fn ensure_clone_origin(&self, project: &Project) -> Result<()> {
+        if !self.project_has_in_flight(&project.id)? {
+            return Ok(());
         }
-        Ok(match project.kind {
-            LocationKind::Path => Some(PathBuf::from(project.id.as_str())),
-            LocationKind::Url => None,
-        })
+        let clone = self.local_clone(project)?;
+        if clone
+            .origin
+            .as_deref()
+            .and_then(depot_core::remote_identity)
+            .is_none()
+        {
+            return Ok(());
+        }
+        let live = crate::identity::read_origin(&clone.path);
+        let live_identity = live.as_deref().and_then(depot_core::remote_identity);
+        if live_identity.as_deref() == Some(project.id.as_str()) {
+            return Ok(());
+        }
+        Err(Error::Project(format!(
+            "clone `{}` has origin `{}` (identity `{}`) but project `{}` is `{}`; they disagree while a task is in flight, so depot will not act on this clone",
+            clone.path.display(),
+            live.as_deref().unwrap_or("no origin"),
+            live_identity.as_deref().unwrap_or("none"),
+            project.slug,
+            project.id,
+        )))
     }
 
     pub fn meta(&self, key: &str) -> Result<Option<String>> {
@@ -124,9 +168,11 @@ impl Store {
     fn target_identity(&self, project: &Project) -> Result<String> {
         Ok(match project.kind {
             LocationKind::Path => {
-                let path = PathBuf::from(project.id.as_str());
-                let origin = crate::identity::read_origin(&path);
-                crate::identity::identity_for(&path, origin.as_deref())
+                match crate::identity::read_origin(Path::new(project.id.as_str())) {
+                    Some(origin) => crate::identity::identity_for_origin(&origin)
+                        .unwrap_or_else(|| project.id.to_string()),
+                    None => project.id.to_string(),
+                }
             }
             LocationKind::Url => depot_core::remote_identity(project.id.as_str())
                 .unwrap_or_else(|| project.id.to_string()),
@@ -201,7 +247,7 @@ impl Store {
         Ok(())
     }
 
-    pub fn set_clone_origin(&self, path: &Path, origin: &str) -> Result<()> {
+    pub fn set_clone_origin(&self, path: &Path, origin: Option<&str>) -> Result<()> {
         self.connection().execute(
             "UPDATE clones SET origin = ?1 WHERE path = ?2",
             params![origin, path.to_string_lossy()],

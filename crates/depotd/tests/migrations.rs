@@ -684,6 +684,41 @@ fn the_migration_merges_two_paths_with_one_origin_and_keeps_both_sets_of_tasks()
 }
 
 #[test]
+fn the_migration_keeps_a_local_only_project_at_the_id_it_was_registered_with() {
+    let fixture = support::fixture();
+    let base = fixture.temp.path().join("repos");
+    std::fs::create_dir_all(&base).expect("the repository directory");
+    let registered = format!("{}/.", base.display());
+    std::fs::create_dir_all(fixture.home.root()).expect("the home directory");
+    let connection = Connection::open(fixture.home.database_path()).expect("the database");
+    connection
+        .execute_batch(include_str!("fixtures/schema-v18.sql"))
+        .expect("v18 schema");
+    connection
+        .execute(
+            "INSERT INTO projects (id, kind, slug, created_at) VALUES (?1, 'path', 'example', 1700000000000)",
+            [registered.as_str()],
+        )
+        .expect("the legacy project");
+    drop(connection);
+
+    let store = Store::open_migrating(&fixture.home).expect("the store migrates");
+
+    assert_eq!(store.projects().expect("projects are read").len(), 1);
+    let project = store
+        .project(&ProjectId::new(registered.clone()))
+        .expect("projects are read")
+        .expect("a local-only project keeps the id it was registered with");
+    assert_eq!(project.slug, "example");
+    let clone = store
+        .clone_for_project(&project.id)
+        .expect("clones are read")
+        .expect("the local-only clone is recorded");
+    assert_eq!(clone.path, std::path::PathBuf::from(&registered));
+    assert_eq!(clone.origin, None);
+}
+
+#[test]
 fn the_migration_refuses_to_merge_two_paths_with_one_origin_when_both_have_tasks_in_flight() {
     let fixture = support::fixture();
     let base = fixture.temp.path().join("repos");

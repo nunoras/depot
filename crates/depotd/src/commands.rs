@@ -474,6 +474,7 @@ fn leased_worktree_path(
     project: &Project,
     task: &Task,
 ) -> Result<PathBuf> {
+    store.ensure_clone_origin(project)?;
     let repo = store.project_path(project)?.ok_or_else(|| {
         Error::Project(format!(
             "project `{}` has no local clone to submit from",

@@ -1019,6 +1019,7 @@ where
         if self.launch_is_pending(&task)? {
             return self.surface_unresolved_turn(&task, "a previous launch intent never completed");
         }
+        self.store.ensure_clone_origin(&self.project)?;
         let task_record = self.task(&task)?;
         let worktree = match self.lease_for(&task_record) {
             Ok(worktree) => worktree,

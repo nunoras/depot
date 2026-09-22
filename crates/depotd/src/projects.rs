@@ -109,21 +109,34 @@ pub fn repoint_project(home: &DepotHome, selection: Option<&str>, origin: &str) 
     let identity = crate::identity::identity_for_origin(origin)
         .ok_or_else(|| Error::Project(format!("`{origin}` is not a usable remote origin")))?;
     let new_id = ProjectId::new(identity.clone());
-    if new_id != project.id {
-        if let Some(existing) = store.project(&new_id)? {
+    if new_id != project.id
+        && let Some(existing) = store.project(&new_id)?
+    {
+        return Err(Error::Project(format!(
+            "origin `{origin}` already identifies project `{}`",
+            existing.slug
+        )));
+    }
+    let clones = store.clones_for_project(&project.id)?;
+    for clone in &clones {
+        let live = crate::identity::read_origin(&clone.path);
+        let live_identity = live
+            .as_deref()
+            .and_then(crate::identity::identity_for_origin);
+        if live_identity.as_deref() != Some(new_id.as_str()) {
             return Err(Error::Project(format!(
-                "origin `{origin}` already identifies project `{}`",
-                existing.slug
+                "the clone at `{}` has origin `{}`, which is not `{new_id}`; run `git remote set-url origin {origin}` there first",
+                clone.path.display(),
+                live.as_deref().unwrap_or("no origin"),
             )));
         }
-        for clone in store.clones_for_project(&project.id)? {
-            store.set_clone_origin(&clone.path, origin)?;
-        }
+    }
+    if new_id != project.id {
         store.rekey_project(&project.id, &new_id)?;
-    } else {
-        for clone in store.clones_for_project(&project.id)? {
-            store.set_clone_origin(&clone.path, origin)?;
-        }
+    }
+    for clone in &clones {
+        let live = crate::identity::read_origin(&clone.path);
+        store.set_clone_origin(&clone.path, live.as_deref())?;
     }
     store
         .project(&new_id)?
@@ -414,7 +427,7 @@ fn match_project(store: &Store, name: &str) -> Result<Option<Project>> {
     if let Some(clone) = store.clone_for_path(&canonical)? {
         return store.project(&clone.project);
     }
-    store.project(&ProjectId::new(canonical.to_string_lossy().to_string()))
+    Ok(None)
 }
 
 fn project_for_directory(store: &Store, directory: &Path) -> Result<Option<Project>> {
@@ -435,12 +448,6 @@ fn project_for_directory(store: &Store, directory: &Path) -> Result<Option<Proje
             let clone_path = std::fs::canonicalize(&clone.path).unwrap_or(clone.path);
             if directory.starts_with(&clone_path) {
                 matching.push((project, clone_path.to_string_lossy().len()));
-            }
-        }
-        if project.kind == LocationKind::Path {
-            let path = Path::new(project.id.as_str());
-            if directory.starts_with(path) {
-                matching.push((project, path.to_string_lossy().len()));
             }
         }
     }

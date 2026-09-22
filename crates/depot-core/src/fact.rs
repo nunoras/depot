@@ -120,6 +120,12 @@ pub enum FactKind {
     WorkerSubmitted {
         task: TaskId,
         commit: CommitId,
+        base: Option<CommitId>,
+    },
+    WorkerCommittedNothing {
+        task: TaskId,
+        commit: CommitId,
+        reason: String,
     },
     ValidationStarted {
         task: TaskId,
@@ -149,6 +155,10 @@ pub enum FactKind {
         lease: WorktreeLease,
         baseline: crate::action::Baseline,
         included: Vec<Dependency>,
+    },
+    WorktreeBaselined {
+        task: TaskId,
+        commit: CommitId,
     },
     WorktreeReleased {
         task: TaskId,
@@ -191,6 +201,10 @@ pub enum FactKind {
         checks: Checks,
     },
     PullRequestMerged {
+        task: TaskId,
+        commit: CommitId,
+    },
+    StaleMergeObserved {
         task: TaskId,
         commit: CommitId,
     },

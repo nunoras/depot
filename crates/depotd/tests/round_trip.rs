@@ -236,6 +236,7 @@ fn the_event_journal_records_a_fact_once_and_replays_it_as_a_duplicate() {
         kind: depot_core::FactKind::WorkerSubmitted {
             task: TaskId::new("t-1"),
             commit: depot_core::CommitId::new("aaa111"),
+            base: None,
         },
     };
     let key = event_key(&["t-1", "worker_submitted", "aaa111"]);
@@ -275,6 +276,7 @@ fn event_keys_are_isolated_per_project() {
         kind: depot_core::FactKind::WorkerSubmitted {
             task: TaskId::new("t-1"),
             commit: depot_core::CommitId::new("aaa111"),
+            base: None,
         },
     };
     let second_fact = depot_core::Fact {
@@ -282,6 +284,7 @@ fn event_keys_are_isolated_per_project() {
         kind: depot_core::FactKind::WorkerSubmitted {
             task: TaskId::new("t-1"),
             commit: depot_core::CommitId::new("aaa111"),
+            base: None,
         },
     };
 

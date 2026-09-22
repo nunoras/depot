@@ -107,6 +107,10 @@ impl TaskState {
                 | TaskState::Cancelled
         )
     }
+
+    pub fn tracks_pull_request(self) -> bool {
+        matches!(self, TaskState::PrOpen | TaskState::ReworkPending)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -321,6 +325,14 @@ impl Task {
         match self.state {
             TaskState::Cancelled | TaskState::Landed => true,
             TaskState::Failed => self.acknowledged_at.is_some(),
+            _ => false,
+        }
+    }
+
+    pub fn may_still_land(&self) -> bool {
+        match self.state {
+            TaskState::PrOpen | TaskState::ReworkPending => true,
+            TaskState::Failed => self.acknowledged_at.is_none(),
             _ => false,
         }
     }

@@ -190,6 +190,7 @@ fn the_inbox_payload_names_the_task_state_and_the_owner_of_each_fact() {
         FactKind::WorkerSubmitted {
             task: TaskId::new("t-1"),
             commit: CommitId::new("abc123"),
+            base: None,
         },
     );
     apply(
@@ -251,6 +252,7 @@ fn a_failed_validation_reaches_the_user_from_the_inbox() {
         FactKind::WorkerSubmitted {
             task: TaskId::new("t-1"),
             commit: CommitId::new("abc123"),
+            base: None,
         },
     );
     apply(
@@ -305,6 +307,7 @@ fn a_describe_failure_reaches_the_user_from_the_inbox() {
         FactKind::WorkerSubmitted {
             task: TaskId::new("t-1"),
             commit: CommitId::new("abc123"),
+            base: None,
         },
     );
     apply(
@@ -426,7 +429,7 @@ fn a_question_answered_since_the_fact_was_recorded_needs_nobody() {
 }
 
 #[test]
-fn a_merge_that_held_the_task_reaches_the_user_from_the_inbox() {
+fn a_merge_of_a_revision_depot_never_validated_needs_nobody() {
     let fixture = support::fixture();
     let added = support::register_with_config(&fixture, "example", BUILD_ONLY);
     let store = Store::open(&fixture.home).expect("store");
@@ -490,22 +493,16 @@ fn a_merge_that_held_the_task_reaches_the_user_from_the_inbox() {
             .expect("t-2")
             .expect("t-2 exists")
             .state,
-        TaskState::Failed
+        TaskState::Landed
     );
 
     let payload = read_inbox(&fixture.home, Some("example")).expect("inbox");
 
-    let user = section(&payload, "For the user");
+    let user_absent = !payload.contains("For the user") && !payload.contains("For you");
+    assert!(user_absent, "a landing needs nobody, got\n{payload}");
+    let no_action = section(&payload, "No action");
     assert!(
-        user.contains("`example/t-2`"),
-        "a merge of a revision depot never validated needs a person, got\n{payload}"
-    );
-    assert!(
-        !user.contains("`example/t-1`"),
-        "a landing needs nobody, got\n{payload}"
-    );
-    assert!(
-        section(&payload, "No action").contains("`example/t-1`"),
+        no_action.contains("`example/t-1`") && no_action.contains("`example/t-2`"),
         "a landing is the daemon's own work, got\n{payload}"
     );
 }
@@ -745,6 +742,7 @@ fn a_delivery_failure_reaches_the_user_and_a_landing_on_base_needs_nobody() {
         FactKind::WorkerSubmitted {
             task: TaskId::new("t-1"),
             commit: CommitId::new("abc123"),
+            base: None,
         },
     );
     apply(
@@ -790,6 +788,7 @@ fn a_delivery_failure_reaches_the_user_and_a_landing_on_base_needs_nobody() {
         FactKind::WorkerSubmitted {
             task: TaskId::new("t-2"),
             commit: CommitId::new("def456"),
+            base: None,
         },
     );
     apply(

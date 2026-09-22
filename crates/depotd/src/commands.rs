@@ -182,11 +182,13 @@ pub fn submit_task(
     }
     let commit = CommitId::new(git_in(&worktree, &["rev-parse", "HEAD"])?);
     check_descends_from_base(&store, &project, &current, &worktree, &commit)?;
+    let base = submission_base(&store, &project, &worktree)?;
     let fact = Fact {
         at: now(),
         kind: FactKind::WorkerSubmitted {
             task: id.clone(),
             commit: commit.clone(),
+            base,
         },
     };
     apply(
@@ -489,6 +491,14 @@ fn leased_worktree_path(
             .map_err(|error| Error::Project(error.to_string()))?
             .path,
     )
+}
+
+fn submission_base(store: &Store, project: &Project, worktree: &Path) -> Result<Option<CommitId>> {
+    let base = store.project_config(project)?.pull_request.base.clone();
+    let remote = format!("refs/remotes/origin/{base}");
+    Ok(git_in(worktree, &["rev-parse", "--verify", &remote])
+        .ok()
+        .map(CommitId::new))
 }
 
 fn check_descends_from_base(

@@ -175,11 +175,18 @@ fn render_task(
     }
 
     if let Some((number, url, checks)) = task.pull_request() {
-        out.push_str(&format!(
-            "  - pull request: [#{number}]({}) - checks {}\n",
-            one_line(url),
-            checks_name(checks)
-        ));
+        if task.state.tracks_pull_request() {
+            out.push_str(&format!(
+                "  - pull request: [#{number}]({}) - checks {}\n",
+                one_line(url),
+                checks_name(checks)
+            ));
+        } else {
+            out.push_str(&format!(
+                "  - pull request: [#{number}]({})\n",
+                one_line(url)
+            ));
+        }
     }
 
     if let Some(base) = &task.conflict_base {

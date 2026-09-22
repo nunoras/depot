@@ -799,10 +799,15 @@ impl Golden {
     }
 
     pub fn worker_merges_and_submits(&self) -> Output {
+        let merge = if cfg!(windows) {
+            "git merge origin/main"
+        } else {
+            "git merge origin/main || true"
+        };
         self.worker(&script(&[
             "git fetch origin",
-            "git merge origin/main || true",
-            "printf 'the resolved work\n' > change.txt",
+            merge,
+            "printf 'the resolved work\\n' > change.txt",
             "git add change.txt",
             "git commit --no-edit",
             &format!("depot submit --task {TASK} --project {SLUG}"),

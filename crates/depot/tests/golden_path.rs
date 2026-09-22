@@ -3679,6 +3679,17 @@ fn a_gate_committed_on_the_base_is_the_gate_validation_runs() {
 #[test]
 fn a_worker_that_loosens_the_gate_is_held_for_the_user_before_validation() {
     let golden = Golden::new(Validation::Passing);
+    let log = golden.temp.path().join("hook.log");
+    let command = append_stdin_as_a_line_to(&log);
+    golden
+        .home
+        .write_settings(&support::settings_with_on_event(Some(
+            depotd::OnEventSettings {
+                command,
+                events: Some(vec!["failed".to_string()]),
+            },
+        )))
+        .expect("the settings are written");
     let daemon = golden.daemon();
     golden.propose();
     daemon.tick().expect("the daemon launches the worker");
@@ -3696,7 +3707,14 @@ fn a_worker_that_loosens_the_gate_is_held_for_the_user_before_validation() {
         .expect("the daemon holds the change before running validation");
 
     let held = golden.task();
-    assert_eq!(held.state, TaskState::Held);
+    assert_eq!(held.state, TaskState::Failed);
+    assert!(
+        held.failure
+            .as_deref()
+            .is_some_and(|reason| reason.contains(".agni/project.toml")),
+        "the failure names the file: {:?}",
+        held.failure
+    );
     assert!(
         golden
             .history(TASK)
@@ -3710,16 +3728,80 @@ fn a_worker_that_loosens_the_gate_is_held_for_the_user_before_validation() {
             .contains(&"validation_finished".to_string()),
         "a held change never reaches validation"
     );
+
+    let events = hook_events(&log);
+    assert_eq!(events.len(), 1, "the hold fires one event: {events:?}");
+    assert_eq!(events[0]["event"], "failed");
+
     let checklist = golden.checklist();
-    assert!(
-        checklist.contains("Needs you - held for a project file change"),
-        "{checklist}"
-    );
     assert!(checklist.contains(".agni/project.toml"), "{checklist}");
 
     let inbox = golden.depot_ok(&["inbox", "--project", SLUG]);
     assert!(inbox.contains("## For the user"), "{inbox}");
     assert!(inbox.contains(".agni/project.toml"), "{inbox}");
+
+    assert_eq!(
+        golden.depot_ok(&["task", "acknowledge", TASK, "--project", SLUG]),
+        format!("acknowledged {TASK}\n")
+    );
+    daemon
+        .tick()
+        .expect("the daemon reconciles the owed release");
+    assert_eq!(
+        calls_to(&golden.treehouse.calls(), "return").len(),
+        1,
+        "acknowledging the hold returns the worktree once"
+    );
+    assert!(golden.task().release_pending.is_empty());
+}
+
+#[test]
+fn a_hand_landed_branch_settles_a_task_held_for_a_project_file_change() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    let submitted = golden.worker_edits_project_file_and_submits(
+        "base_branch = \"main\"\n\n[validation]\ncommand = \"exit 0\"\n",
+    );
+    assert_eq!(submitted.status.code(), Some(0));
+    daemon
+        .tick()
+        .expect("the daemon holds the change before running validation");
+    assert_eq!(golden.task().state, TaskState::Failed);
+
+    let commit = golden.head();
+    let mut linked = golden.task();
+    linked.links.push(depot_core::Link::PullRequest {
+        number: 1,
+        url: format!("https://forge.test/{REPOSITORY}/pull/1"),
+        checks: Checks::None,
+    });
+    golden
+        .store
+        .put_task(&linked)
+        .expect("the held row a user opened a pull request for is stored");
+
+    golden.script_merge(&commit);
+    let restarted = golden.daemon();
+    restarted
+        .recover()
+        .expect("the daemon starts against the store");
+    restarted
+        .tick()
+        .expect("the first poll settles the row the user landed by hand");
+
+    assert_eq!(
+        golden.task().state,
+        TaskState::Landed,
+        "a held task whose branch a user landed by hand still lands"
+    );
+    assert!(
+        golden.history(TASK).contains(&MERGED.to_string())
+            || golden.history(TASK).contains(&"stale_merge_observed".to_string()),
+        "the merge settles the row: {:?}",
+        golden.history(TASK)
+    );
 }
 
 #[test]

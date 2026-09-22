@@ -144,7 +144,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             let retryable = next.tasks.get(task).is_some_and(|task| {
                 matches!(
                     task.state,
-                    TaskState::Held | TaskState::Failed | TaskState::Cancelled
+                    TaskState::Failed | TaskState::Cancelled
                 )
             });
             if retryable && let Some(task) = next.tasks.get_mut(task) {
@@ -525,7 +525,8 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                 .is_some_and(|task| task.state == TaskState::Validating);
             if holding {
                 if let Some(task) = next.tasks.get_mut(task) {
-                    task.state = TaskState::Held;
+                    task.state = TaskState::Failed;
+                    task.retry = None;
                     task.failure = Some(crate::project_file::project_file_hold_reason(files));
                     task.updated_at = fact.at;
                 }

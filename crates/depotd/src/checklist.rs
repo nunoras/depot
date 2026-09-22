@@ -8,15 +8,10 @@ use crate::vocabulary::{checks_name, role_name};
 
 pub const UNOBSERVED_AFTER_MILLIS: u64 = 5 * 60 * 1000;
 
-const SECTIONS: [(TaskState, &str, bool); 12] = [
+const SECTIONS: [(TaskState, &str, bool); 11] = [
     (
         TaskState::WaitingOnQuestion,
         "Needs you - waiting on an answer",
-        false,
-    ),
-    (
-        TaskState::Held,
-        "Needs you - held for a project file change",
         false,
     ),
     (TaskState::Running, "Running", false),
@@ -346,7 +341,6 @@ fn waiting_on(state: &ProjectState, task: &Task) -> String {
             Some(question) => format!("an answer to \"{}\"", one_line(&question.text)),
             None => "an answer".to_string(),
         },
-        TaskState::Held => "a person to review the project file change".to_string(),
         TaskState::Validating => "validation".to_string(),
         TaskState::Validated => {
             if task.hold_pr {

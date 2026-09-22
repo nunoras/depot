@@ -5246,7 +5246,7 @@ fn rule_23_a_task_whose_branch_edits_the_project_file_is_held_before_validation(
         )
         .when(
             "t1",
-            TaskState::Held,
+            TaskState::Failed,
             vec![hold("t1"), Action::RenderChecklist],
         )
         .checking(|state| {
@@ -5269,8 +5269,8 @@ fn rule_23_a_task_whose_branch_edits_the_project_file_is_held_before_validation(
         )
         .when("t1", TaskState::Running, vec![]),
         case(
-            "a held task ignores a second project file change",
-            state(vec![task("t1", TaskState::Held)]),
+            "a failed task ignores a second project file change",
+            state(vec![task("t1", TaskState::Failed)]),
             vec![fact(
                 3_000,
                 FactKind::ProjectFileChanged {
@@ -5280,7 +5280,7 @@ fn rule_23_a_task_whose_branch_edits_the_project_file_is_held_before_validation(
                 },
             )],
         )
-        .when("t1", TaskState::Held, vec![]),
+        .when("t1", TaskState::Failed, vec![]),
     ]);
 
     assert_eq!(
@@ -5309,7 +5309,6 @@ fn a_wait_settles_on_the_states_it_was_asked_for() {
         (TaskState::Validated, false),
         (TaskState::PrOpen, true),
         (TaskState::ReworkPending, false),
-        (TaskState::Held, true),
         (TaskState::Landed, true),
         (TaskState::Failed, true),
         (TaskState::Cancelled, true),

@@ -259,10 +259,7 @@ fn headline(tag: FactTag, event: &RecordedEvent, task: Option<&Task>) -> Result<
         FactTag::ValidationStarted => "validation started".to_string(),
         FactTag::ProjectFileChanged => {
             let files = payload_array(&event.payload, "files")?;
-            format!(
-                "the change edits project files a person must review and merge: {}",
-                one_line(&files.join(", "))
-            )
+            depot_core::project_file_hold_reason(&files)
         }
         FactTag::ValidationFinished => match task.and_then(|task| task.validations.last()) {
             Some(record) => format!(

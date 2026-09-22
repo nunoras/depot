@@ -252,7 +252,7 @@ pub fn retry_task(home: &DepotHome, selection: Option<&str>, id: &str) -> Result
     let current = task(&store, &project, &id)?;
     if !matches!(
         current.state,
-        TaskState::Held | TaskState::Failed | TaskState::Cancelled
+        TaskState::Failed | TaskState::Cancelled
     ) {
         return Err(transition_refused(&current, "retried"));
     }

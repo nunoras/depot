@@ -2110,7 +2110,7 @@ fn a_pull_request_branch_that_lags_the_validated_commit_is_pushed_forward() {
 }
 
 #[test]
-fn a_fix_role_push_overwrites_a_force_pushed_remote_branch() {
+fn a_fix_role_push_never_overwrites_a_force_pushed_remote_branch() {
     let golden = Golden::new(Validation::Passing);
     golden.map_role("fix", Some(PROFILE));
     let daemon = golden.daemon();
@@ -2166,17 +2166,23 @@ fn a_fix_role_push_overwrites_a_force_pushed_remote_branch() {
 
     daemon
         .tick()
-        .expect("the fix-role push overwrites the force-pushed remote branch");
+        .expect("a rejected fix-role push is recorded, not fatal");
 
-    assert_eq!(golden.task().state, TaskState::PrOpen);
-    assert_eq!(
+    let failed = golden.task();
+    assert_eq!(failed.state, TaskState::Failed);
+    assert_eq!(failed.branch_head, Some(CommitId::new(commit.clone())));
+    assert!(
+        golden.history(TASK).contains(&PUSH_FAILED.to_string()),
+        "the rejection is on the journal"
+    );
+    assert_ne!(
         git::git(
             &golden.origin,
             &["rev-parse", &format!("refs/heads/{fix_branch}")]
         )
         .trim(),
         reworked,
-        "the branch lands on the commit depot validated"
+        "a fix-role push never replaces the branch at the forge"
     );
 }
 
@@ -2516,36 +2522,44 @@ fn hook_events(log: &std::path::Path) -> Vec<serde_json::Value> {
 }
 
 #[test]
-fn a_conflicting_pull_request_is_rebased_by_a_fix_worker_and_lands() {
+fn a_conflicting_pull_request_is_resolved_by_a_fix_worker_and_lands() {
     let golden = Golden::new(Validation::Passing);
     let daemon = golden.daemon();
-    golden.set_auto_merge(true);
     golden.script_merge_endpoint();
     golden.script_delete_branch_endpoint();
     golden.propose();
     daemon.tick().expect("the daemon launches the worker");
     golden.worker_commits_and_submits();
     let commit = golden.head();
-    golden.script_conflicting_pull_request(&commit);
+    golden.script_pull_request(&commit);
     daemon
         .tick()
-        .expect("the daemon validates, opens the pull request and schedules the rebase");
+        .expect("the daemon validates, pushes and opens the pull request");
+    assert_eq!(golden.task().state, TaskState::PrOpen);
+
+    let base = golden.advance_base_conflicting("change.txt", "the base moved\n");
+    golden.script_conflicting_pull_request_at(&commit, &base);
+    golden.set_auto_merge(true);
+    daemon
+        .tick()
+        .expect("the daemon observes the conflict and schedules the fix turn");
 
     let rebasing = golden.task();
     assert_eq!(rebasing.state, TaskState::Running);
+    assert_eq!(rebasing.conflict_base, Some(CommitId::new(base)));
     assert!(golden.history(TASK).contains(&REBASE_SCHEDULED.to_string()));
     assert_eq!(
         golden.task().attempts.len(),
         2,
-        "the rebase is a second attempt on the same task"
+        "the fix turn is a second attempt on the same task"
     );
     assert!(
         golden
             .task()
             .attempts
             .last()
-            .is_some_and(|attempt| attempt.rebase),
-        "the second attempt is marked as a rebase"
+            .is_some_and(|attempt| attempt.base_merge),
+        "the second attempt is marked as a fix turn"
     );
     assert_eq!(
         golden.merge_requests(),
@@ -2553,24 +2567,24 @@ fn a_conflicting_pull_request_is_rebased_by_a_fix_worker_and_lands() {
         "a conflicting pull request is not merged"
     );
 
-    let output = golden.worker_rebases_and_submits();
+    let output = golden.worker_merges_and_submits();
     assert_eq!(
         output.status.code(),
         Some(0),
-        "the fix worker rebases and submits: {}",
+        "the fix worker merges the base and submits: {}",
         support::stderr(&output)
     );
-    let rebased = golden.head();
-    golden.script_rebased_pull_request(&rebased);
+    let merged = golden.head();
+    golden.script_merged_pull_request(&merged);
     daemon
         .tick()
-        .expect("the daemon validates the rebased commit, merges and deletes the branch");
+        .expect("the daemon validates the merged commit, merges and deletes the branch");
 
     let landed = golden.task();
     assert_eq!(landed.state, TaskState::Landed);
     assert!(
         golden.history(TASK).contains(&MERGED.to_string()),
-        "the rebased pull request lands"
+        "the merged pull request lands"
     );
     assert_eq!(golden.merge_requests(), 1);
     assert_eq!(
@@ -2581,7 +2595,7 @@ fn a_conflicting_pull_request_is_rebased_by_a_fix_worker_and_lands() {
     assert_eq!(
         calls_to(&golden.treehouse.calls(), "return").len(),
         1,
-        "landing the rebase returns the worktree"
+        "landing the fix turn returns the worktree"
     );
 
     let history = golden.status_history();
@@ -2590,6 +2604,77 @@ fn a_conflicting_pull_request_is_rebased_by_a_fix_worker_and_lands() {
     assert!(!default.contains("## Landed"), "{default}");
     assert!(default.contains("1 landed"), "{default}");
     assert_eq!(default, golden.checklist());
+}
+
+#[test]
+fn a_stale_conflict_against_an_older_base_never_launches_a_fix_turn() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_submits();
+    let commit = golden.head();
+    golden.script_pull_request(&commit);
+    daemon
+        .tick()
+        .expect("the daemon validates, pushes and opens the pull request");
+    assert_eq!(golden.task().state, TaskState::PrOpen);
+
+    let mut task = golden.task();
+    task.conflict_base = Some(CommitId::new(BASE));
+    golden
+        .store
+        .put_task(&task)
+        .expect("the stale conflict is recorded");
+    golden.script_conflicting_pull_request(&commit);
+
+    daemon
+        .tick()
+        .expect("the daemon re-evaluates the conflict against the fresh base");
+
+    let settled = golden.task();
+    assert_eq!(settled.state, TaskState::PrOpen);
+    assert!(
+        settled.conflict_base.is_none(),
+        "a branch that already contains the base clears the stale conflict"
+    );
+    assert_eq!(
+        settled.attempts.len(),
+        1,
+        "a branch that merges clean never gets a fix turn"
+    );
+    assert!(!golden.history(TASK).contains(&REBASE_SCHEDULED.to_string()));
+}
+
+#[test]
+fn an_unverifiable_conflict_never_launches_a_fix_turn() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_submits();
+    let commit = golden.head();
+    golden.script_pull_request(&commit);
+    daemon
+        .tick()
+        .expect("the daemon validates, pushes and opens the pull request");
+    assert_eq!(golden.task().state, TaskState::PrOpen);
+
+    golden.free_lease();
+    golden.script_conflicting_pull_request(&commit);
+
+    daemon
+        .tick()
+        .expect("the daemon cannot check the conflict and schedules nothing");
+
+    let settled = golden.task();
+    assert_eq!(settled.state, TaskState::PrOpen);
+    assert_eq!(
+        settled.attempts.len(),
+        1,
+        "an unverifiable conflict never gets a fix turn"
+    );
+    assert!(!golden.history(TASK).contains(&REBASE_SCHEDULED.to_string()));
 }
 
 #[test]

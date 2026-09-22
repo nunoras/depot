@@ -20,6 +20,6 @@ pub use model::{
     TurnDeferral, ValidationRecord, WorktreeLease,
 };
 pub use reduce::{
-    auto_merge_due, dependency_satisfied, publication_blocked, rebase_due, reduce,
+    auto_merge_due, base_merge_due, dependency_satisfied, publication_blocked, reduce,
     worktree_baseline,
 };

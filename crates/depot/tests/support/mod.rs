@@ -605,6 +605,14 @@ impl Golden {
         git::head(&self.lease)
     }
 
+    pub fn advance_base_conflicting(&self, file: &str, contents: &str) -> String {
+        fs::write(self.repo.join(file), contents).expect("the base file is written");
+        git::git(&self.repo, &["add", file]);
+        git::git(&self.repo, &["commit", "-m", "advance the base"]);
+        git::git(&self.repo, &["push", "origin", "main"]);
+        git::head(&self.repo)
+    }
+
     pub fn checklist(&self) -> String {
         fs::read_to_string(self.home.project_home(&self.project.slug).checklist_path())
             .expect("the checklist is written by depot")
@@ -764,15 +772,19 @@ impl Golden {
 
     pub fn script_conflicting_pull_request(&self, commit: &str) {
         self.script_pull_request(commit);
+        self.script_conflicting_pull_request_at(commit, BASE);
+    }
+
+    pub fn script_conflicting_pull_request_at(&self, commit: &str, base: &str) {
         self.forge.replace_route(
             "GET",
             &format!("/repos/{REPOSITORY}/pulls/1"),
             200,
-            &pull_request(commit, BASE, "open", false, false),
+            &pull_request(commit, base, "open", false, false),
         );
     }
 
-    pub fn script_rebased_pull_request(&self, commit: &str) {
+    pub fn script_merged_pull_request(&self, commit: &str) {
         self.forge.route(
             "GET",
             &format!("/repos/{REPOSITORY}/commits/{commit}/check-runs"),
@@ -804,13 +816,18 @@ impl Golden {
             .count()
     }
 
-    pub fn worker_rebases_and_submits(&self) -> Output {
+    pub fn worker_merges_and_submits(&self) -> Output {
+        let merge = if cfg!(windows) {
+            "git merge origin/main"
+        } else {
+            "git merge origin/main || true"
+        };
         self.worker(&script(&[
             "git fetch origin",
-            "git rebase origin/main",
-            "printf 'the rebase\\n' > rebase.txt",
-            "git add rebase.txt",
-            "git commit -m \"rebase onto main\"",
+            merge,
+            "printf 'the resolved work\\n' > change.txt",
+            "git add change.txt",
+            "git commit --no-edit",
             &format!("depot submit --task {TASK} --project {SLUG}"),
         ]))
     }
@@ -865,7 +882,7 @@ pub fn validated_task(
             started_at: depot_core::Timestamp::from_millis(0),
             finished_at: Some(depot_core::Timestamp::from_millis(1)),
             outcome: depot_core::AttemptOutcome::Submitted,
-            rebase: false,
+            base_merge: false,
         }],
         questions: Vec::new(),
         validations: vec![depot_core::ValidationRecord {

@@ -277,7 +277,7 @@ fn a_brief_for_a_build_task_names_its_worktree_as_the_output_destination() {
         started_at: at(1_000),
         finished_at: None,
         outcome: depot_core::AttemptOutcome::InFlight,
-        rebase: false,
+        base_merge: false,
     });
 
     let brief = context.brief(&task).expect("brief");
@@ -287,6 +287,42 @@ fn a_brief_for_a_build_task_names_its_worktree_as_the_output_destination() {
         "a build brief names the worktree it commits into, got\n{brief}"
     );
     assert!(brief.contains("Nothing pinned"));
+}
+
+#[test]
+fn a_conflict_brief_tells_the_worker_to_merge_and_never_rebase() {
+    let fixture = support::fixture();
+    let (_store, context) = context(&fixture, "example");
+    let mut task = support::simple_task(
+        &context.project.id,
+        "t-1",
+        depot_core::TaskState::Running,
+        1_000,
+    );
+    task.role = depot_core::Role::Fix;
+    task.attempts.push(depot_core::Attempt {
+        last_seen_at: None,
+        session: Some(SessionId::new("s1")),
+        profile: depot_core::ProfileId::new("glm-5.3"),
+        worktree: Some(depot_core::WorktreeLease::new("lease-7")),
+        started_at: at(1_000),
+        finished_at: None,
+        outcome: depot_core::AttemptOutcome::InFlight,
+        base_merge: true,
+    });
+
+    let brief = context.conflict_brief(&task).expect("brief");
+
+    for expected in [
+        "merge it into the delivery branch",
+        "never rebase",
+        "never force push",
+    ] {
+        assert!(
+            brief.contains(expected),
+            "a conflict brief must say `{expected}`, got\n{brief}"
+        );
+    }
 }
 
 #[test]

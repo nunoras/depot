@@ -323,11 +323,11 @@ impl<F: Forge> Delivery for ForgeDelivery<F> {
             )));
         }
         let branch = delivery_branch(worktree, task)?;
-        let mut args = vec!["push".to_owned(), "origin".to_owned()];
-        if task.role == Role::Fix {
-            args.push("--force-with-lease".to_owned());
-        }
-        args.push(format!("HEAD:refs/heads/{branch}"));
+        let args = [
+            "push".to_owned(),
+            "origin".to_owned(),
+            format!("HEAD:refs/heads/{branch}"),
+        ];
         let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         git_output(worktree, &arg_refs)?;
         Ok(())
@@ -1030,11 +1030,11 @@ where
         }
         let config = self.store.project_config(&self.project)?;
         let settings = self.store.home().load_settings()?;
-        let rebase = task_record
+        let base_merge = task_record
             .attempts
             .last()
-            .is_some_and(|attempt| attempt.rebase);
-        let spec = if rebase {
+            .is_some_and(|attempt| attempt.base_merge);
+        let spec = if base_merge {
             settings.profile_spec(profile.clone())?
         } else if let Some(pinned) = &task_record.dispatch_profile {
             if &profile != pinned && !settings.profile_fallbacks().contains(&profile) {
@@ -1063,8 +1063,8 @@ where
             }
         };
         let context = self.store.coordinator_context(&self.project)?;
-        let brief = if rebase {
-            context.rebase_brief(&task_record)?
+        let brief = if base_merge {
+            context.conflict_brief(&task_record)?
         } else {
             context.brief(&task_record)?
         };
@@ -2437,7 +2437,7 @@ where
                     continue;
                 }
             };
-            let Some(observed) = observed else {
+            let Some(mut observed) = observed else {
                 continue;
             };
             let at = now();
@@ -2487,6 +2487,18 @@ where
                             },
                         )?;
                     }
+                    if observed.mergeable == Some(false) {
+                        match self.mergeability_against_fresh_base(task, &observed.commit) {
+                            Ok((base, mergeable)) => {
+                                observed.base = base;
+                                observed.mergeable = Some(mergeable);
+                            }
+                            Err(error) => {
+                                log("mergeability_check_failed", &error.to_string());
+                                observed.mergeable = None;
+                            }
+                        }
+                    }
                     if let Some(mergeable) = observed.mergeable {
                         let conflicting_base = (!mergeable).then(|| observed.base.clone());
                         if task.conflict_base != conflicting_base {
@@ -2518,7 +2530,7 @@ where
             }
         }
         self.file_review_tasks()?;
-        self.schedule_rebases(&observed_open)?;
+        self.schedule_base_merges(&observed_open)?;
         self.auto_merge(observed_open)
     }
 
@@ -2595,7 +2607,23 @@ where
         Ok(())
     }
 
-    fn schedule_rebases(&self, observed_open: &[(TaskId, u64, ObservedPullRequest)]) -> Result<()> {
+    fn mergeability_against_fresh_base(
+        &self,
+        task: &Task,
+        commit: &CommitId,
+    ) -> Result<(CommitId, bool)> {
+        let worktree = self.lease_for(task)?.path;
+        let base = self.store.project_config(&self.project)?.pull_request.base;
+        let fresh = fetch_base(&worktree, &base)?;
+        let scratch = ScratchWorktree::add(&worktree, commit)?;
+        let mergeable = merge_base(scratch.path(), &base)?.is_none();
+        Ok((fresh, mergeable))
+    }
+
+    fn schedule_base_merges(
+        &self,
+        observed_open: &[(TaskId, u64, ObservedPullRequest)],
+    ) -> Result<()> {
         let conflicting: Vec<&(TaskId, u64, ObservedPullRequest)> = observed_open
             .iter()
             .filter(|(_, _, observed)| observed.mergeable == Some(false))
@@ -2608,7 +2636,7 @@ where
             let Some(task) = state.tasks.get(id) else {
                 continue;
             };
-            let Some(profile) = depot_core::rebase_due(&state, task, true) else {
+            let Some(profile) = depot_core::base_merge_due(&state, task, true) else {
                 continue;
             };
             self.record(

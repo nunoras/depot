@@ -2519,6 +2519,7 @@ fn a_conflicting_pull_request_is_resolved_by_a_fix_worker_and_lands() {
 
     let base = golden.advance_base_conflicting("change.txt", "the base moved\n");
     golden.script_conflicting_pull_request_at(&commit, &base);
+    golden.set_auto_merge(true);
     daemon
         .tick()
         .expect("the daemon observes the conflict and schedules the fix turn");
@@ -2555,7 +2556,6 @@ fn a_conflicting_pull_request_is_resolved_by_a_fix_worker_and_lands() {
     );
     let merged = golden.head();
     golden.script_rebased_pull_request(&merged);
-    golden.set_auto_merge(true);
     daemon
         .tick()
         .expect("the daemon validates the merged commit, merges and deletes the branch");

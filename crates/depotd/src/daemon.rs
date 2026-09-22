@@ -2472,7 +2472,6 @@ where
     fn reconcile_stale_merges(&self) -> Result<()> {
         let state = self.store.project_state(&self.project)?;
         let mut polled: BTreeMap<u64, Option<ObservedPullRequest>> = BTreeMap::new();
-        let mut settled: BTreeSet<u64> = BTreeSet::new();
         for task in state.tasks.values() {
             if task.state != TaskState::Failed || task.acknowledged_at.is_some() {
                 continue;
@@ -2483,7 +2482,7 @@ where
             let Some(observed) = self.observe_shared(task, number, &mut polled) else {
                 continue;
             };
-            if observed.state != PrState::Merged || !settled.insert(number) {
+            if observed.state != PrState::Merged {
                 continue;
             }
             self.record(

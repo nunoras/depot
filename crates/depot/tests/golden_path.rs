@@ -508,6 +508,65 @@ fn a_stale_failed_row_is_settled_by_the_next_poll() {
     );
 }
 
+#[test]
+fn two_failed_rows_sharing_a_pull_request_number_both_settle_on_one_restart() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_submits();
+    let commit = golden.head();
+    golden.script_pull_request(&commit);
+    daemon
+        .tick()
+        .expect("the daemon validates the commit and opens the pull request");
+
+    let later = golden.commit_in_lease("later.txt", "a later revision on the same branch");
+    assert_ne!(
+        later, commit,
+        "the merged head is a later commit than the validated one"
+    );
+
+    let mut first = golden.task();
+    first.state = TaskState::Failed;
+    golden
+        .store
+        .put_task(&first)
+        .expect("the first failed row is stored");
+
+    let mut second = golden.task();
+    second.id = TaskId::new(TASK_TWO);
+    second.state = TaskState::Failed;
+    second.attempts.clear();
+    second.release_pending.clear();
+    golden
+        .store
+        .put_task(&second)
+        .expect("a second failed row on the same pull request is stored");
+
+    golden.script_merge(&later);
+    let restarted = golden.daemon();
+    restarted
+        .recover()
+        .expect("the daemon starts against the store");
+
+    assert_eq!(
+        golden.task().state,
+        TaskState::Landed,
+        "the first failed row lands on the restart"
+    );
+    assert_eq!(
+        golden
+            .store
+            .task(&golden.project.id, &TaskId::new(TASK_TWO))
+            .expect("the second task is read")
+            .expect("the second task exists")
+            .state,
+        TaskState::Landed,
+        "a second failed row that shares the pull request number lands on the same restart"
+    );
+}
+
 fn check_run_calls(golden: &Golden) -> usize {
     golden
         .forge

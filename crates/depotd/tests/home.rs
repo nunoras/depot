@@ -4,8 +4,9 @@ use std::collections::BTreeSet;
 
 use depotd::{
     ARCHIVE_DIR_NAME, CHECKLIST_FILE_NAME, CONTEXT_DOCUMENT_FILE_NAME, DATABASE_FILE_NAME,
-    DOCUMENTS_DIR_NAME, DepotHome, MEDIA_DIR_NAME, PROJECTS_DIR_NAME, SCRATCH_DIR_NAME,
-    SETTINGS_FILE_NAME, Settings, Store, add_project, slug_for,
+    DOCUMENTS_DIR_NAME, DepotHome, MEDIA_DIR_NAME, PROJECTS_DIR_NAME, RUN_DIR_NAME,
+    SCRATCH_DIR_NAME, SECRETS_DIR_NAME, SETTINGS_FILE_NAME, Settings, Store, UI_DIR_NAME,
+    add_project, slug_for,
 };
 
 #[test]
@@ -29,6 +30,29 @@ fn the_depot_home_holds_the_machine_local_config_and_the_database() {
         fixture.home.projects_dir().file_name().unwrap(),
         PROJECTS_DIR_NAME
     );
+}
+
+#[test]
+fn a_fresh_home_lays_out_agni_with_secrets_ui_and_run() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let home = DepotHome::at(temp.path().join(".agni"));
+
+    home.ensure().expect("home");
+
+    assert_eq!(DATABASE_FILE_NAME, "agni.db");
+    assert_eq!(
+        home.database_path().file_name().unwrap(),
+        DATABASE_FILE_NAME
+    );
+    for (directory, name) in [
+        (home.secrets_dir(), SECRETS_DIR_NAME),
+        (home.ui_dir(), UI_DIR_NAME),
+        (home.run_dir(), RUN_DIR_NAME),
+        (home.projects_dir(), PROJECTS_DIR_NAME),
+    ] {
+        assert!(directory.is_dir(), "{} is missing", directory.display());
+        assert_eq!(directory.file_name().unwrap(), name);
+    }
 }
 
 #[test]

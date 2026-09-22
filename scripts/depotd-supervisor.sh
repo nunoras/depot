@@ -15,21 +15,21 @@ USAGE
   depotd-supervisor.sh help            print this message
 
 ENVIRONMENT
-  DEPOT_HOME              depot home; defaults to $HOME/.depot
+  AGNI_HOME               agni home; defaults to $HOME/.agni
   DEPOTD                  daemon program; defaults to depotd
   DEPOTD_LOG_MAX_BYTES    rotation cap in bytes; defaults to 10485760 (10 MiB)
   DEPOTD_LOG_BACKUPS      kept backups; defaults to 3
 
-The log is $DEPOT_HOME/depotd.log, rotated to depotd.log.1 through depotd.log.3.
+The log is $AGNI_HOME/run/depotd.log, rotated to depotd.log.1 through depotd.log.3.
 `depot daemon restart` writes its own log to the same file and never rotates it.
 EOF
 }
 
-depot_home() {
-  if [ -n "${DEPOT_HOME:-}" ]; then
-    printf '%s' "$DEPOT_HOME"
+agni_home() {
+  if [ -n "${AGNI_HOME:-}" ]; then
+    printf '%s' "$AGNI_HOME"
   else
-    printf '%s' "$HOME/.depot"
+    printf '%s' "$HOME/.agni"
   fi
 }
 
@@ -50,7 +50,7 @@ rotate_file() {
 }
 
 run() {
-  log=$(depot_home)/depotd.log
+  log=$(agni_home)/run/depotd.log
   mkdir -p "$(dirname "$log")"
   while :; do
     rotate_file "$log"

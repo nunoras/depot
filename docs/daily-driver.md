@@ -23,7 +23,7 @@ gh auth status
 
 ## Machine-local settings
 
-`$DEPOT_HOME/config.toml` (default `~/.depot/config.toml`) holds profiles and concurrency.
+`$AGNI_HOME/config.toml` (default `~/.agni/config.toml`) holds profiles and concurrency.
 Account may be empty when the harness has no isolated profiles (pi uses the host credentials).
 
 ```toml
@@ -70,7 +70,7 @@ boxr --harness pi --model xai/grok-4.5 --effort off --kind plan --detach "$(cat 
 You are the depot coordinator for boxr.
 Begin every turn with: depot inbox --project boxr
 Then: depot status --project boxr
-Policy and kickoff live under the project home in ~/.depot/projects/boxr once you need them; prefer depot doc write for durable notes.
+Policy and kickoff live under the project home in ~/.agni/projects/boxr once you need them; prefer depot doc write for durable notes.
 EOF
 )"
 ```

@@ -5,11 +5,18 @@ use std::path::{Path, PathBuf};
 use crate::error::{Error, Result};
 use crate::settings::Settings;
 
-pub const HOME_ENV: &str = "DEPOT_HOME";
+pub const HOME_ENV: &str = "AGNI_HOME";
+pub const LEGACY_HOME_ENV: &str = "DEPOT_HOME";
+pub const HOME_DIR_NAME: &str = ".agni";
+pub const LEGACY_HOME_DIR_NAME: &str = ".depot";
 pub const SETTINGS_FILE_NAME: &str = "config.toml";
-pub const DATABASE_FILE_NAME: &str = "depot.db";
+pub const DATABASE_FILE_NAME: &str = "agni.db";
+pub const LEGACY_DATABASE_FILE_NAME: &str = "depot.db";
 pub const PROJECTS_DIR_NAME: &str = "projects";
 pub const ARTIFACTS_DIR_NAME: &str = "artifacts";
+pub const SECRETS_DIR_NAME: &str = "secrets";
+pub const UI_DIR_NAME: &str = "ui";
+pub const RUN_DIR_NAME: &str = "run";
 pub const CHECKLIST_FILE_NAME: &str = "checklist.md";
 pub const ARCHIVE_DIR_NAME: &str = "archive";
 pub const DOCUMENTS_DIR_NAME: &str = "docs";
@@ -30,15 +37,51 @@ impl DepotHome {
     }
 
     pub fn resolve() -> Result<Self> {
+        let home = Self::resolve_unchecked()?;
+        home.refuse_unmoved()?;
+        Ok(home)
+    }
+
+    pub fn resolve_for_migrate() -> Result<Self> {
+        Self::resolve_unchecked()
+    }
+
+    fn resolve_unchecked() -> Result<Self> {
+        if env::var_os(LEGACY_HOME_ENV).is_some_and(|value| !value.is_empty()) {
+            return Err(Error::Home(format!(
+                "{LEGACY_HOME_ENV} is no longer read; set {HOME_ENV} instead"
+            )));
+        }
         if let Some(root) = env::var_os(HOME_ENV).filter(|value| !value.is_empty()) {
             return Ok(Self::at(PathBuf::from(root)));
         }
         let base = user_home_dir().ok_or_else(|| {
             Error::Home(format!(
-                "cannot locate the depot home: set {HOME_ENV} to the directory depot should use"
+                "cannot locate the agni home: set {HOME_ENV} to the directory depot should use"
             ))
         })?;
-        Ok(Self::at(base.join(".depot")))
+        Ok(Self::at(base.join(HOME_DIR_NAME)))
+    }
+
+    fn refuse_unmoved(&self) -> Result<()> {
+        let Some(legacy) = self.legacy_sibling() else {
+            return Ok(());
+        };
+        if !legacy.root().join(LEGACY_DATABASE_FILE_NAME).exists() {
+            return Ok(());
+        }
+        Err(Error::Home(format!(
+            "the old depot home {} has not been moved into the agni home {}; run `depot store migrate` to move it",
+            legacy.root().display(),
+            self.root().display()
+        )))
+    }
+
+    pub fn legacy_sibling(&self) -> Option<Self> {
+        if self.root.file_name()? != HOME_DIR_NAME {
+            return None;
+        }
+        Some(Self::at(self.root.parent()?.join(LEGACY_HOME_DIR_NAME)))
     }
 
     pub fn root(&self) -> &Path {
@@ -61,6 +104,22 @@ impl DepotHome {
         self.root.join(ARTIFACTS_DIR_NAME)
     }
 
+    pub fn secrets_dir(&self) -> PathBuf {
+        self.root.join(SECRETS_DIR_NAME)
+    }
+
+    pub fn ui_dir(&self) -> PathBuf {
+        self.root.join(UI_DIR_NAME)
+    }
+
+    pub fn run_dir(&self) -> PathBuf {
+        self.root.join(RUN_DIR_NAME)
+    }
+
+    pub fn run_path(&self, name: &str) -> PathBuf {
+        self.run_dir().join(name)
+    }
+
     pub fn project_root(&self, slug: &str) -> PathBuf {
         self.projects_dir().join(slug)
     }
@@ -70,8 +129,15 @@ impl DepotHome {
     }
 
     pub fn ensure(&self) -> Result<()> {
-        std::fs::create_dir_all(self.projects_dir())?;
-        std::fs::create_dir_all(self.artifacts_dir())?;
+        for directory in [
+            self.projects_dir(),
+            self.artifacts_dir(),
+            self.secrets_dir(),
+            self.ui_dir(),
+            self.run_dir(),
+        ] {
+            std::fs::create_dir_all(directory)?;
+        }
         if !self.config_path().exists() {
             self.write_settings(&Settings::default())?;
         }

@@ -25,8 +25,9 @@ use depotd::adapters::forge::GitHub;
 use depotd::adapters::sessions::{Boxr, Sessions};
 use depotd::adapters::worktrees::Treehouse;
 use depotd::{
-    Daemon, DepotHome, ForgeDelivery, HOME_ENV, InstanceLock, OnEventSettings, ProfileSettings,
-    Project, RecordedEvent, Settings, ShellValidation, Store,
+    DAEMON_SCOPE_FILE_NAME, Daemon, DepotHome, ForgeDelivery, HOME_ENV, InstanceLock,
+    LEGACY_HOME_ENV, OnEventSettings, ProfileSettings, Project, RecordedEvent, Settings,
+    ShellValidation, Store,
 };
 use depotd::{EventHook, NoEventHook, ShellEventHook};
 use fake_forge::FakeForge;
@@ -198,6 +199,7 @@ impl Golden {
                 repo.to_str().expect("the repository is utf-8"),
             ])
             .env(HOME_ENV, home.root())
+            .env_remove(LEGACY_HOME_ENV)
             .current_dir(&repo)
             .output()
             .expect("the depot binary runs");
@@ -328,6 +330,29 @@ impl Golden {
         .to_owned()
     }
 
+    pub fn repoint_to_github(&mut self) {
+        let origin = format!("git@github.com:{REPOSITORY}.git");
+        git::git(&self.repo, &["remote", "set-url", "origin", &origin]);
+        let output = self.depot(&["project", "repoint", SLUG, "--origin", &origin]);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "repointing the fixture failed: {}",
+            stderr(&output)
+        );
+        self.project = self
+            .store
+            .project(&depot_core::ProjectId::new(format!(
+                "github.com/{REPOSITORY}"
+            )))
+            .expect("the project is read")
+            .expect("the repointed project exists");
+    }
+
+    pub fn set_clone_remote(&self, origin: &str) {
+        git::git(&self.repo, &["remote", "set-url", "origin", origin]);
+    }
+
     pub fn set_auto_merge(&self, enabled: bool) {
         let path = self.repo.join(depotd::PROJECT_CONFIG_FILE_NAME);
         let text = fs::read_to_string(&path).expect("the project config is readable");
@@ -450,6 +475,7 @@ impl Golden {
         Command::new(DEPOT)
             .args(arguments)
             .env(HOME_ENV, self.home.root())
+            .env_remove(LEGACY_HOME_ENV)
             .env("PATH", with_program(&self.fakes.join("bin")))
             .env(self.boxr.directory_env().0, self.boxr.directory_env().1)
             .current_dir(&self.repo)
@@ -578,6 +604,7 @@ impl Golden {
         command
             .current_dir(directory)
             .env(HOME_ENV, self.home.root())
+            .env_remove(LEGACY_HOME_ENV)
             .env("DEPOT_TASK_ID", TASK)
             .env("DEPOT_ATTEMPT_ID", LEASE)
             .env(
@@ -943,7 +970,7 @@ pub fn settings() -> Settings {
 }
 
 fn hold_daemon_coverage(home: &DepotHome) {
-    let path = home.root().join(depotd::DAEMON_SCOPE_FILE_NAME);
+    let path = home.run_path(DAEMON_SCOPE_FILE_NAME);
     let mut scope: depotd::DaemonScope =
         serde_json::from_slice(&std::fs::read(&path).expect("the daemon scope record"))
             .expect("the daemon scope record parses");

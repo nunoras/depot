@@ -179,9 +179,21 @@ const MIGRATIONS: &[&str] = &[
     "ALTER TABLE tasks ADD COLUMN release_pending TEXT;",
     "ALTER TABLE tasks ADD COLUMN release_held TEXT;",
     "ALTER TABLE tasks ADD COLUMN turn_deferral TEXT;",
+    "CREATE TABLE clones (
+    path       TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    origin     TEXT
+);
+CREATE INDEX clones_by_project ON clones (project_id);
+CREATE TABLE meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);",
 ];
 
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
+
+pub const REKEY_MARKER: &str = "identity_rekey";
 
 pub fn current(conn: &Connection) -> Result<i64> {
     Ok(conn.query_row("PRAGMA user_version", [], |row| row.get(0))?)

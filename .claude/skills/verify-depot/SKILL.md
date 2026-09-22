@@ -1,6 +1,6 @@
 ---
 name: verify-depot
-description: Use when proving depot works the way a user drives it, through the real `depot` CLI and `depotd` daemon built from this checkout, instead of the fakes in `crates/depot/tests/golden_path.rs`. Covers `depot project add`, the task lifecycle (`task add --role`, approve, stop, acknowledge, retry, the Typesafe refusal, the worker-context guard), `depot status` and `depot inbox` including `status --tui`, `depot doc write`, and `depotd` start, instance lock, heartbeat and restart recovery. All of it runs in a throwaway depot home and spends no model quota. Run it after changing the CLI, the store, the checklist, the TUI or the daemon loop, and before a release.
+description: Use when proving depot works the way a user drives it, through the real `depot` CLI and `depotd` daemon built from this checkout, instead of the fakes in `crates/depot/tests/golden_path.rs`. Covers `depot project add`, the task lifecycle (`task add --role`, approve, stop, acknowledge, retry, the Typesafe refusal, the worker-context guard), `depot status` and `depot inbox` including `status --tui`, `depot doc write`, and `depotd` start, instance lock, heartbeat and restart recovery. All of it runs in a throwaway agni home and spends no model quota. Run it after changing the CLI, the store, the checklist, the TUI or the daemon loop, and before a release.
 ---
 
 # verify-depot
@@ -8,23 +8,23 @@ description: Use when proving depot works the way a user drives it, through the 
 ## What this proves
 
 `golden_path.rs` drives the daemon tick by tick with a fake boxr, a fake forge and a fake Typesafe, so it proves the rules and never proves the shipped binaries behave for a user.
-This skill builds `depot` and `depotd` from the checkout, runs them as a user would in a throwaway depot home against a throwaway git project, and saves every command, exit code, stdout and stderr as evidence.
+This skill builds `depot` and `depotd` from the checkout, runs them as a user would in a throwaway agni home against a throwaway git project, and saves every command, exit code, stdout and stderr as evidence.
 
 ## Isolation
 
-Another depot may be live on this machine against `~/.depot`.
+Another depot may be live on this machine against `~/.depot` or `~/.agni`.
 This skill never reads or writes it.
 
 - Every run makes a throwaway directory `${TMPDIR:-/tmp}/depot-verify.XXXXXX` and points every home depot touches into it:
-  - `DEPOT_HOME=<throwaway>/home`, so the store, `config.toml`, `depotd.lock` and project stores stay inside.
+  - `AGNI_HOME=<throwaway>/home`, so `agni.db`, `config.toml`, `secrets/`, `run/` and the project stores stay inside.
   - `BOXR_HOME=<throwaway>/boxr`, so the real boxr ledger is never touched.
   - `TREEHOUSE_ROOT=<throwaway>/pool`, so a lease would land inside, not in `~/.treehouse`.
   - `GH_CONFIG_DIR=<throwaway>/gh`, with `GH_TOKEN` and `GITHUB_TOKEN` unset, so `gh auth token` finds nothing and `depotd` can never pick up the real GitHub token.
-- The daemon gets a placeholder `github-token` file in the throwaway home, so any forge call it made would fail auth instead of writing to GitHub.
+- The daemon gets a placeholder `secrets/github-token` file in the throwaway home, so any forge call it made would fail auth instead of writing to GitHub.
 - No `typesafe-key` exists in the throwaway home, so dispatch without `--role` is refused before any network call.
 - The fixture project is a local repo whose `origin` is a local bare repo in the throwaway.
   Nothing pushes to GitHub.
-- The driver refuses to run when `DEPOT_HOME` is already set, when `DEPOT_TASK_ID` or `DEPOT_ATTEMPT_ID` is set, or when the throwaway or the evidence root would land inside `~/.depot` or `~/.treehouse`.
+- The driver refuses to run when `AGNI_HOME` or `DEPOT_HOME` is already set, when `DEPOT_TASK_ID` or `DEPOT_ATTEMPT_ID` is set, or when the throwaway or the evidence root would land inside `~/.agni`, `~/.depot` or `~/.treehouse`.
 - The daemon feature refuses to start `depotd` if any task is past held, because an approved task makes the daemon lease a worktree and launch a real paid worker.
 - Processes are stopped by the pid the driver started, after checking `/proc/<pid>/cmdline` is this checkout's `depotd`.
   Nothing is killed by name.
@@ -40,7 +40,7 @@ cargo build --bin depot --bin depotd
 ```
 
 The driver puts `target/debug` first on `PATH`, so `depot` is the build under test, never `~/.cargo/bin/depot`.
-For the daemon, ready means `depotd.lock` in the throwaway home names the pid the driver started.
+For the daemon, ready means `run/depotd.scope.json` in the throwaway home names the pid the driver started.
 
 ## The loop
 
@@ -73,7 +73,7 @@ Exit 2 is a guard refusal or a usage error.
 
 ## Evidence
 
-Evidence lives in `~/.depot-verify/runs/<UTC stamp>-<feature>/`, outside the repo, the throwaway and `~/.depot`, so it survives cleanup.
+Evidence lives in `~/.depot-verify/runs/<UTC stamp>-<feature>/`, outside the repo, the throwaway, `~/.agni` and `~/.depot`, so it survives cleanup.
 
 - `meta.txt`: doctor facts, the throwaway paths, every daemon pid, and whether the throwaway was removed.
 - `transcript.txt`: every command in order with its exit code, stdout (`out|`) and stderr (`err|`).
@@ -88,7 +88,7 @@ Evidence lives in `~/.depot-verify/runs/<UTC stamp>-<feature>/`, outside the rep
 Proof standards:
 
 - Drive the CLI and the daemon binary a user runs.
-  Never write to `depot.db` or the checklist by hand, and never call internal functions.
+  Never write to `agni.db` or the checklist by hand, and never call internal functions.
 - Capture the command and the resulting state.
   A `stopped t-1` line alone is not proof; the journal row and the checklist section are.
 - Check side effects next to the output: `.git/info/exclude`, the project store tree, the docs files, the lock file, the journal, and the absence of any boxr session or treehouse lease.
@@ -135,8 +135,7 @@ It never touches the evidence.
 - `depot task stop` after `depot task retry` prints `stopped` and exits 0 but journals nothing: the `task_cancelled:<id>` event key is not attempt-scoped, so the second cancel collides with the first and is dropped.
   The task stays running, and a daemon will launch it.
   Do not rely on stop-after-retry to cancel.
-- `depotd` never refreshes its lock heartbeat: `InstanceLock` opens `depotd.lock` write-only, so `refresh_heartbeat` cannot read it back and silently does nothing.
-  The `daemon` feature fails on that check at `e09a536`, after every other daemon check has passed.
+- `depotd` writes its pid and heartbeat to `run/depotd.scope.json`; `run/depotd.lock` stays empty.
 - `depotd --help` prints its usage on stderr prefixed `depotd:` and exits 1.
 - A project's store name is its slug, taken from the directory name, so the fixture store is `<throwaway>/home/projects/verify-demo`.
 - `depot doc write <name>` writes `docs/<name>` literally.

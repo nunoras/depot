@@ -4761,3 +4761,410 @@ fn one_tick_spends_one_rung_of_the_deferral_ladder() {
         "one tick spends one rung, however many paths reach the same deferred turn"
     );
 }
+
+fn origin_repo(base: &std::path::Path, name: &str, origin: &str) -> std::path::PathBuf {
+    let repo = base.join(name);
+    std::fs::create_dir_all(&repo).expect("the repository directory");
+    git::git(&repo, &["init", "--initial-branch=main"]);
+    git::git(&repo, &["remote", "add", "origin", origin]);
+    repo
+}
+
+fn plain_repo(base: &std::path::Path, name: &str) -> std::path::PathBuf {
+    let repo = base.join(name);
+    std::fs::create_dir_all(&repo).expect("the repository directory");
+    git::git(&repo, &["init", "--initial-branch=main"]);
+    repo
+}
+
+fn run_depot(home: &depotd::DepotHome, arguments: &[&str]) -> std::process::Output {
+    std::process::Command::new(env!("CARGO_BIN_EXE_depot"))
+        .args(arguments)
+        .env(depotd::HOME_ENV, home.root())
+        .env_remove(depotd::LEGACY_HOME_ENV)
+        .env_remove("DEPOT_TASK_ID")
+        .env_remove("DEPOT_ATTEMPT_ID")
+        .output()
+        .expect("the depot binary runs")
+}
+
+#[test]
+fn the_three_forms_of_one_origin_register_as_one_project_with_three_clones() {
+    let temp = tempfile::tempdir().expect("a temporary directory");
+    let home = depotd::DepotHome::at(temp.path().join("agni"));
+    home.ensure().expect("the agni home");
+    let base = temp.path().join("repos");
+    let first = origin_repo(&base, "first", "git@github.com:O/R.git");
+    let second = origin_repo(&base, "second", "https://github.com/o/r/");
+    let third = origin_repo(&base, "third", "ssh://git@github.com/o/r");
+
+    for (index, repo) in [&first, &second, &third].into_iter().enumerate() {
+        let output = run_depot(&home, &["project", "add", repo.to_str().expect("utf-8")]);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if index > 0 {
+            assert!(
+                String::from_utf8_lossy(&output.stdout).contains("added clone"),
+                "a second clone must print that it added a clone, got {}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+        }
+    }
+
+    let store = depotd::Store::open(&home).expect("the store opens");
+    let projects = store.projects().expect("the projects are read");
+    assert_eq!(projects.len(), 1, "one origin is one project");
+    assert_eq!(projects[0].id.as_str(), "github.com/o/r");
+    assert_eq!(
+        store
+            .clones_for_project(&projects[0].id)
+            .expect("the clones are read")
+            .len(),
+        3
+    );
+}
+
+#[test]
+fn a_repository_without_an_origin_registers_as_local_only_and_says_so() {
+    let temp = tempfile::tempdir().expect("a temporary directory");
+    let home = depotd::DepotHome::at(temp.path().join("agni"));
+    home.ensure().expect("the agni home");
+    let base = temp.path().join("repos");
+    let repo = plain_repo(&base, "scratch");
+
+    let output = run_depot(&home, &["project", "add", repo.to_str().expect("utf-8")]);
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("local-only"),
+        "a repository without an origin must say it is local-only, got {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    let store = depotd::Store::open(&home).expect("the store opens");
+    let projects = store.projects().expect("the projects are read");
+    assert_eq!(projects.len(), 1);
+    let canonical = std::fs::canonicalize(&repo).expect("the repository canonicalises");
+    assert_eq!(projects[0].id.as_str(), canonical.to_string_lossy());
+    let clone = store
+        .clone_for_project(&projects[0].id)
+        .expect("the clone is read")
+        .expect("a clone is recorded");
+    assert_eq!(clone.origin, None, "a local-only clone has no origin");
+}
+
+#[test]
+fn project_repoint_changes_the_identity_keeps_history_and_refuses_while_a_task_is_in_flight() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    assert_eq!(golden.task().state, TaskState::Running);
+
+    let refused = golden.depot(&[
+        "project",
+        "repoint",
+        SLUG,
+        "--origin",
+        "git@github.com:nunoras/depot.git",
+    ]);
+    assert_eq!(refused.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("in flight"),
+        "a repoint under a running task must be refused, got {}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+
+    golden.depot_ok(&["task", "stop", TASK, "--project", SLUG]);
+    let stale = golden.depot(&[
+        "project",
+        "repoint",
+        SLUG,
+        "--origin",
+        "https://github.com/nunoras/depot",
+    ]);
+    assert_eq!(stale.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&stale.stderr).contains("git remote set-url"),
+        "a repoint whose clone still says the old origin is refused, got {}",
+        String::from_utf8_lossy(&stale.stderr)
+    );
+    git::git(
+        &golden.repo,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "git@github.com:nunoras/depot.git",
+        ],
+    );
+    let repointed = golden.depot_ok(&[
+        "project",
+        "repoint",
+        SLUG,
+        "--origin",
+        "https://github.com/nunoras/depot",
+    ]);
+    assert!(
+        repointed.contains("github.com/nunoras/depot"),
+        "{repointed}"
+    );
+
+    let store = depotd::Store::open(&golden.home).expect("the store opens");
+    let project = store
+        .project(&depot_core::ProjectId::new("github.com/nunoras/depot"))
+        .expect("the project is read")
+        .expect("the rekeyed project exists");
+    assert_eq!(project.slug, SLUG);
+    let clone = store
+        .clone_for_project(&project.id)
+        .expect("the clone is read")
+        .expect("the clone is recorded");
+    assert_eq!(
+        clone.origin.as_deref(),
+        Some("git@github.com:nunoras/depot.git"),
+        "repoint records the clone's live origin, not the typed one"
+    );
+    assert!(
+        store
+            .task(&project.id, &TaskId::new(TASK))
+            .expect("the task is read")
+            .is_some(),
+        "repointing keeps the task history"
+    );
+}
+
+#[test]
+fn re_adding_a_clone_under_another_url_form_of_the_same_origin_updates_it() {
+    let temp = tempfile::tempdir().expect("a temporary directory");
+    let home = depotd::DepotHome::at(temp.path().join("agni"));
+    home.ensure().expect("the agni home");
+    let repo = origin_repo(&temp.path().join("repos"), "repo", "git@github.com:o/r.git");
+
+    let first = run_depot(&home, &["project", "add", repo.to_str().expect("utf-8")]);
+    assert_eq!(
+        first.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&first.stdout).contains("github.com/o/r"),
+        "{}",
+        String::from_utf8_lossy(&first.stdout)
+    );
+
+    git::git(
+        &repo,
+        &["remote", "set-url", "origin", "https://github.com/o/r"],
+    );
+    let second = run_depot(&home, &["project", "add", repo.to_str().expect("utf-8")]);
+    assert_eq!(
+        second.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    let printed = String::from_utf8_lossy(&second.stdout);
+    assert!(
+        printed.contains("already registered github.com/o/r"),
+        "the second add must not fork the project: {printed}"
+    );
+    assert!(
+        !printed.contains("added clone"),
+        "the same path is not a second clone: {printed}"
+    );
+
+    let store = depotd::Store::open(&home).expect("the store opens");
+    let projects = store.projects().expect("the projects are read");
+    assert_eq!(projects.len(), 1, "one origin stays one project");
+    let clones = store
+        .clones_for_project(&projects[0].id)
+        .expect("the clones are read");
+    assert_eq!(clones.len(), 1, "the same path stays one clone");
+    assert_eq!(
+        clones[0].origin.as_deref(),
+        Some("https://github.com/o/r"),
+        "the recorded origin follows the clone's live remote"
+    );
+}
+
+#[test]
+fn a_clone_whose_origin_moved_is_refused_when_the_daemon_acts_on_it() {
+    let mut golden = Golden::new(Validation::Passing);
+    golden.repoint_to_github();
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    assert_eq!(golden.task().state, TaskState::Running);
+
+    golden.worker_commits_and_submits();
+    assert_eq!(golden.task().state, TaskState::Validating);
+
+    golden.set_clone_remote("git@github.com:nunoras/other.git");
+    daemon
+        .tick()
+        .expect("a refused validation does not stop the tick");
+
+    let held = golden.task();
+    assert_eq!(
+        held.state,
+        TaskState::Failed,
+        "the task is held when the clone no longer matches its project"
+    );
+    let inbox = golden.depot_ok(&["inbox", "--project", SLUG]);
+    assert!(inbox.contains("github.com/nunoras/depot"), "{inbox}");
+    assert!(inbox.contains("github.com/nunoras/other"), "{inbox}");
+}
+
+#[test]
+fn a_submit_from_a_clone_whose_origin_moved_is_refused() {
+    let mut golden = Golden::new(Validation::Passing);
+    golden.repoint_to_github();
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    assert_eq!(golden.task().state, TaskState::Running);
+
+    golden.set_clone_remote("git@github.com:nunoras/other.git");
+    let refused = golden.worker_commits_and_submits();
+    assert_eq!(
+        refused.status.code(),
+        Some(1),
+        "the submit is refused: {}",
+        String::from_utf8_lossy(&refused.stdout)
+    );
+    let message = String::from_utf8_lossy(&refused.stderr);
+    assert!(message.contains("github.com/nunoras/depot"), "{message}");
+    assert!(message.contains("github.com/nunoras/other"), "{message}");
+    assert_eq!(
+        golden.task().state,
+        TaskState::Running,
+        "a refused submit leaves the task where it was"
+    );
+}
+
+#[test]
+fn a_clone_whose_origin_moved_does_not_stop_the_lease_pass_for_a_sibling() {
+    let mut golden = Golden::new(Validation::Passing);
+    golden.repoint_to_github();
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    assert_eq!(golden.task().state, TaskState::Running);
+
+    let mut owed = validated_task(&golden.project.id, TASK_TWO, LEASE_TWO, &golden.head());
+    owed.state = TaskState::Cancelled;
+    owed.release_pending = vec![WorktreeLease::new(LEASE_TWO)];
+    golden
+        .store
+        .put_task(&owed)
+        .expect("the terminal task that still owes its lease is recorded");
+
+    golden.set_clone_remote("git@github.com:nunoras/other.git");
+    daemon
+        .tick()
+        .expect("a moved clone does not stop the lease pass of an in-flight sibling");
+
+    let sibling = golden
+        .store
+        .task(&golden.project.id, &TaskId::new(TASK_TWO))
+        .expect("the sibling is read")
+        .expect("the sibling exists");
+    assert!(
+        sibling
+            .release_pending
+            .contains(&WorktreeLease::new(LEASE_TWO)),
+        "the lease stays owed: {:?}",
+        sibling.release_pending
+    );
+    let hold = sibling
+        .release_held
+        .get(&WorktreeLease::new(LEASE_TWO))
+        .expect("the refusal is recorded as a held release");
+    assert!(
+        hold.reason.contains("github.com/nunoras/depot"),
+        "{}",
+        hold.reason
+    );
+    assert!(
+        hold.reason.contains("github.com/nunoras/other"),
+        "{}",
+        hold.reason
+    );
+
+    let inbox = golden.depot_ok(&["inbox", "--project", SLUG]);
+    assert!(inbox.contains("is held, not returned"), "{inbox}");
+    assert!(inbox.contains("github.com/nunoras/other"), "{inbox}");
+
+    daemon.tick().expect("later ticks stay alive");
+    assert_eq!(
+        golden.task().state,
+        TaskState::Running,
+        "the in-flight task is untouched"
+    );
+}
+
+#[test]
+fn a_clone_whose_origin_moved_does_not_stop_a_merge_release() {
+    let mut golden = Golden::new(Validation::Passing);
+    golden.repoint_to_github();
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    assert_eq!(golden.task().state, TaskState::Running);
+
+    let commit = golden.head();
+    let mut merged = validated_task(&golden.project.id, TASK_TWO, LEASE_TWO, &commit);
+    merged.state = TaskState::PrOpen;
+    golden
+        .store
+        .put_task(&merged)
+        .expect("the open pull request is recorded");
+
+    golden.set_clone_remote("git@github.com:nunoras/other.git");
+    daemon
+        .record(
+            &format!("pull_request_merged:{}:{commit}", TASK_TWO),
+            Fact {
+                at: Timestamp::from_millis(2),
+                kind: FactKind::PullRequestMerged {
+                    task: TaskId::new(TASK_TWO),
+                    commit: CommitId::new(commit.clone()),
+                },
+            },
+        )
+        .expect("a moved clone does not stop the merge action");
+
+    let landed = golden
+        .store
+        .task(&golden.project.id, &TaskId::new(TASK_TWO))
+        .expect("the merged task is read")
+        .expect("the merged task exists");
+    assert_eq!(landed.state, TaskState::Landed);
+    let hold = landed
+        .release_held
+        .get(&WorktreeLease::new(LEASE_TWO))
+        .expect("the refused release is recorded as held");
+    assert!(
+        hold.reason.contains("github.com/nunoras/other"),
+        "{}",
+        hold.reason
+    );
+
+    daemon.tick().expect("later ticks stay alive");
+    assert_eq!(
+        golden.task().state,
+        TaskState::Running,
+        "the in-flight task is untouched"
+    );
+}

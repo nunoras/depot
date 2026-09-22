@@ -15,7 +15,7 @@ pub fn judge(
     id: &TaskId,
     request: &TaskRequest,
 ) -> Result<(DispatchResolution, Fact)> {
-    let key = read_key(store.home().root())?;
+    let key = read_key(&store.home().secrets_dir())?;
     let config = store.project_config(project)?;
     let raw_dispatch = config.dispatch.clone().ok_or_else(|| {
         Error::Config(

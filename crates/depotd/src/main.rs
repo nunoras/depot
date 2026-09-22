@@ -46,7 +46,7 @@ fn run() -> depotd::Result<()> {
             "no projects are registered; add one with `depot project add`".to_string(),
         ));
     }
-    let credentials = resolve_credentials(&Program::new("gh"), home.root())
+    let credentials = resolve_credentials(&Program::new("gh"), &home.secrets_dir())
         .map_err(|error| depotd::Error::Project(error.to_string()))?;
     let sessions = Boxr::new(Program::new("boxr"));
     sessions

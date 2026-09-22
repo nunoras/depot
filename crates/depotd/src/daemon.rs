@@ -24,7 +24,7 @@ use crate::error::{Error, Result};
 use crate::evidence::{self, EvidenceArtifact, EvidenceRunner, ResolvedArtifact, ShellEvidence};
 use crate::factcodec::payload_field;
 use crate::home::DepotHome;
-use crate::project::{LocationKind, Project};
+use crate::project::Project;
 use crate::store::{EventOutcome, RecordedEvent, Store, event_key};
 use crate::vocabulary::{FactTag, checks_name, fact_tag, fact_tag_name};
 
@@ -117,7 +117,7 @@ impl InstanceLock {
 
     pub fn acquire(home: &DepotHome) -> Result<Self> {
         home.ensure()?;
-        let path = home.root().join(DAEMON_LOCK_FILE_NAME);
+        let path = home.run_path(DAEMON_LOCK_FILE_NAME);
         let file = OpenOptions::new()
             .write(true)
             .create(true)
@@ -132,7 +132,7 @@ impl InstanceLock {
         })?;
         Ok(Self {
             _file: file,
-            scope_path: home.root().join(DAEMON_SCOPE_FILE_NAME),
+            scope_path: home.run_path(DAEMON_SCOPE_FILE_NAME),
         })
     }
 }
@@ -158,7 +158,7 @@ fn lock_held_message(home: &DepotHome, path: &Path, scope: Option<&DaemonScope>)
 }
 
 pub fn daemon_scope(home: &DepotHome) -> Option<DaemonScope> {
-    let bytes = std::fs::read(home.root().join(DAEMON_SCOPE_FILE_NAME)).ok()?;
+    let bytes = std::fs::read(home.run_path(DAEMON_SCOPE_FILE_NAME)).ok()?;
     serde_json::from_slice(&bytes).ok()
 }
 
@@ -1674,7 +1674,13 @@ where
     }
 
     fn release(&self, task: TaskId, lease: WorktreeLease) -> Result<()> {
-        let repo = self.repository()?;
+        let repo = match self.repository() {
+            Ok(repo) => repo,
+            Err(error) => {
+                log_project_error(&self.project.slug, &error);
+                return self.record_release_held(&task, &lease, &error.to_string());
+            }
+        };
         let pool = self
             .worktrees
             .pool(&repo)
@@ -1771,7 +1777,21 @@ where
         {
             return Ok(());
         }
-        let repo = self.repository()?;
+        let repo = match self.repository() {
+            Ok(repo) => repo,
+            Err(error) => {
+                log_project_error(&self.project.slug, &error);
+                for task in owed {
+                    for lease in task.release_pending.clone() {
+                        if !self.lease_is_due(task, &lease) {
+                            continue;
+                        }
+                        self.record_release_held(&task.id, &lease, &error.to_string())?;
+                    }
+                }
+                return Ok(());
+            }
+        };
         let pool = match self.worktrees.pool(&repo) {
             Ok(pool) => pool,
             Err(error) => {
@@ -3006,12 +3026,13 @@ where
     }
 
     fn repository(&self) -> Result<std::path::PathBuf> {
-        match self.project.kind {
-            LocationKind::Path => Ok(self.project.id.as_str().into()),
-            LocationKind::Url => Err(Error::Project(
-                "a URL project has no local repository to run".to_string(),
-            )),
-        }
+        self.store.ensure_clone_origin(&self.project)?;
+        self.store.project_path(&self.project)?.ok_or_else(|| {
+            Error::Project(format!(
+                "project `{}` has no local clone to run",
+                self.project.slug
+            ))
+        })
     }
 
     fn project_repo(&self) -> Result<RepoSlug> {

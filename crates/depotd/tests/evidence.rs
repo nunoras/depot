@@ -184,6 +184,13 @@ fn register(config: &str) -> Fixture {
         created_at: Timestamp::from_millis(0),
     };
     store.put_project(&project).expect("the project is stored");
+    store
+        .put_clone(&depotd::Clone {
+            project: project.id.clone(),
+            path: directory.clone(),
+            origin: None,
+        })
+        .expect("the clone is recorded");
     Fixture {
         temp,
         store,

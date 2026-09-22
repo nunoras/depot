@@ -1,9 +1,9 @@
 mod apply;
+mod clones;
 mod coordinators;
 mod migrations;
 mod tasks;
 
-use std::path::Path;
 use std::time::Duration;
 
 use depot_core::{Fact, Limits, ProjectId, ProjectState, Timestamp};
@@ -48,6 +48,7 @@ impl Store {
             migrations::check(store.connection())?;
         } else {
             migrations::migrate(store.connection())?;
+            store.rekey_projects()?;
         }
         Ok(store)
     }
@@ -55,6 +56,7 @@ impl Store {
     pub fn open_migrating(home: &DepotHome) -> Result<Self> {
         let store = Self::connect(home)?;
         migrations::migrate(store.connection())?;
+        store.rekey_projects()?;
         Ok(store)
     }
 
@@ -113,6 +115,12 @@ impl Store {
         )
     }
 
+    pub fn remove_project(&self, id: &ProjectId) -> Result<()> {
+        self.connection()
+            .execute("DELETE FROM projects WHERE id = ?1", params![id.as_str()])?;
+        Ok(())
+    }
+
     pub fn projects(&self) -> Result<Vec<Project>> {
         let mut statement = self
             .connection
@@ -134,9 +142,9 @@ impl Store {
     }
 
     pub fn project_config(&self, project: &Project) -> Result<ProjectConfig> {
-        match project.kind {
-            LocationKind::Path => ProjectConfig::load(Path::new(project.id.as_str())),
-            LocationKind::Url => Ok(ProjectConfig::default()),
+        match self.project_path(project)? {
+            Some(path) => ProjectConfig::load(&path),
+            None => Ok(ProjectConfig::default()),
         }
     }
 
@@ -279,6 +287,7 @@ pub fn migrate_store(home: &DepotHome) -> Result<Migration> {
     let store = Store::connect(home)?;
     let from = migrations::current(store.connection())?;
     migrations::migrate(store.connection())?;
+    store.rekey_projects()?;
     Ok(Migration {
         from,
         to: SCHEMA_VERSION,

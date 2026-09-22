@@ -7,6 +7,7 @@ pub use dispatch::{
 pub use event::{BlockingEvent, blocking_event};
 mod event;
 mod fact;
+mod identity;
 mod model;
 mod project_file;
 mod reduce;
@@ -14,6 +15,7 @@ mod reduce;
 pub use action::{Action, Baseline};
 pub use branch::delivery_branch;
 pub use fact::{Fact, FactKind, Liveness};
+pub use identity::remote_identity;
 pub use model::{
     Answer, AnsweredBy, Artifact, ArtifactKind, Attempt, AttemptOutcome, Checks, CommitId,
     CoordinatorSession, Dependency, Limits, Link, MergePolicy, ProfileId, ProjectId, ProjectState,

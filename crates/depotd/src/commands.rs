@@ -12,7 +12,7 @@ use crate::documents::write_document;
 use crate::error::{Error, Result};
 use crate::home::DepotHome;
 use crate::inbox::{inbox_entries, render_inbox};
-use crate::project::{LocationKind, Project};
+use crate::project::Project;
 use crate::projects::{resolve_task, select_project};
 use crate::store::{Store, event_key};
 use crate::vocabulary::{ROLE_NAMES, answered_by_from_name, role_from_name, role_name, state_name};
@@ -168,7 +168,7 @@ pub fn submit_task(
     if current.state != TaskState::Running {
         return Err(transition_refused(&current, "submitted"));
     }
-    let worktree = leased_worktree_path(worktrees, &project, &current)?;
+    let worktree = leased_worktree_path(&store, worktrees, &project, &current)?;
     let worktree = std::fs::canonicalize(&worktree).map_err(Error::Io)?;
     let here = std::env::current_dir()
         .map_err(Error::Io)
@@ -474,18 +474,18 @@ fn transition_refused(task: &Task, action: &str) -> Error {
 }
 
 fn leased_worktree_path(
+    store: &Store,
     worktrees: &impl Worktrees,
     project: &Project,
     task: &Task,
 ) -> Result<PathBuf> {
-    let repo = match project.kind {
-        LocationKind::Path => PathBuf::from(project.id.as_str()),
-        LocationKind::Url => {
-            return Err(Error::Project(
-                "a URL project has no local repository to submit from".to_string(),
-            ));
-        }
-    };
+    store.ensure_clone_origin(project)?;
+    let repo = store.project_path(project)?.ok_or_else(|| {
+        Error::Project(format!(
+            "project `{}` has no local clone to submit from",
+            project.slug
+        ))
+    })?;
     Ok(
         crate::adapters::worktrees::resolve_lease(worktrees, &repo, task)
             .map_err(|error| Error::Project(error.to_string()))?

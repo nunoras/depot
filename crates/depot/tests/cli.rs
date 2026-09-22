@@ -226,7 +226,7 @@ fn a_project_can_be_registered_by_url() {
     let store = Store::open(&cli.depot_home()).expect("store");
     let projects = store.projects().expect("projects");
     assert_eq!(projects.len(), 1);
-    assert_eq!(projects[0].id.as_str(), "https://github.com/nunoras/depot");
+    assert_eq!(projects[0].id.as_str(), "github.com/nunoras/depot");
 }
 
 #[test]

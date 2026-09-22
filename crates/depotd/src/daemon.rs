@@ -2551,18 +2551,34 @@ where
 
     fn reconcile_evidence(&self) -> Result<()> {
         let state = self.store.project_state(&self.project)?;
-        let capturing = state.tasks.values().any(|task| {
-            task.state == TaskState::PrOpen
-                && !depot_core::publication_blocked(&state, &task.id)
-                && task.validated_commit().is_some()
-                && task.pull_request().is_some()
-        });
-        if !capturing {
+        let mut pending = false;
+        for task in state.tasks.values() {
+            if task.state != TaskState::PrOpen || depot_core::publication_blocked(&state, &task.id)
+            {
+                continue;
+            }
+            let Some(commit) = task.validated_commit() else {
+                continue;
+            };
+            if task.pull_request().is_none() {
+                continue;
+            }
+            if !self.evidence_recorded(&task.id, commit)? {
+                pending = true;
+                break;
+            }
+        }
+        if !pending {
             return Ok(());
         }
         let Ok(repo_path) = self.repository() else {
             return Ok(());
         };
+        if let Ok(file) = crate::project_file::ProjectFile::read_local(&repo_path)
+            && !file.evidence_configured()
+        {
+            return Ok(());
+        }
         let file = match crate::project_file::ProjectFile::read_for_base(&repo_path) {
             Ok(file) => file,
             Err(error) => {
@@ -2572,13 +2588,7 @@ where
         };
         let evidence = file.evidence.clone();
         let base = file.base_branch.clone();
-        if evidence
-            .command
-            .as_deref()
-            .map(str::trim)
-            .filter(|command| !command.is_empty())
-            .is_none()
-        {
+        if !file.evidence_configured() {
             return Ok(());
         }
         let Ok(repo) = self.project_repo() else {

@@ -61,27 +61,57 @@ impl ProjectFile {
     pub fn read_for_base(repo: &Path) -> Result<Self> {
         let default = default_branch(repo)?;
         fetch_branch(repo, &default)?;
-        let at_default = Self::at_ref(repo, &format!("refs/remotes/origin/{default}"))?
-            .ok_or_else(|| Error::Config(Self::missing_message()))?;
-        let base = at_default.base_branch.trim().to_owned();
+        let file = Self::must_at_ref(repo, &default)?;
+        let base = file.base_branch_name(&default)?;
+        if base == default {
+            return Ok(file);
+        }
+        fetch_branch(repo, &base)?;
+        Self::agreeing_base(repo, &default, &base)
+    }
+
+    pub fn read_local(repo: &Path) -> Result<Self> {
+        let default = symbolic_default(repo)?;
+        let file = Self::must_at_ref(repo, &default)?;
+        let base = file.base_branch_name(&default)?;
+        if base == default {
+            return Ok(file);
+        }
+        Self::agreeing_base(repo, &default, &base)
+    }
+
+    pub fn evidence_configured(&self) -> bool {
+        self.evidence
+            .command
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|command| !command.is_empty())
+    }
+
+    fn must_at_ref(repo: &Path, branch: &str) -> Result<Self> {
+        Self::at_ref(repo, &format!("refs/remotes/origin/{branch}"))?
+            .ok_or_else(|| Error::Config(Self::missing_message()))
+    }
+
+    fn base_branch_name(&self, default: &str) -> Result<String> {
+        let base = self.base_branch.trim().to_owned();
         if base.is_empty() {
             return Err(Error::Config(format!(
                 "`{PROJECT_FILE_PATH}` at `origin/{default}` names no base_branch"
             )));
         }
-        if base == default {
-            return Ok(at_default);
-        }
-        fetch_branch(repo, &base)?;
-        let at_base = Self::at_ref(repo, &format!("refs/remotes/origin/{base}"))?
-            .ok_or_else(|| Error::Config(Self::missing_message()))?;
-        let named = at_base.base_branch.trim().to_owned();
+        Ok(base)
+    }
+
+    fn agreeing_base(repo: &Path, default: &str, base: &str) -> Result<Self> {
+        let file = Self::must_at_ref(repo, base)?;
+        let named = file.base_branch.trim();
         if named != base {
             return Err(Error::Config(format!(
                 "`{PROJECT_FILE_PATH}` names base_branch `{named}` on `origin/{base}` but `{base}` on `origin/{default}`; refusing to follow the disagreement"
             )));
         }
-        Ok(at_base)
+        Ok(file)
     }
 
     fn at_ref(repo: &Path, reference: &str) -> Result<Option<Self>> {

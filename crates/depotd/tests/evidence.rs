@@ -192,6 +192,8 @@ fn register(machine_config: &str, project_file: &str) -> Fixture {
         ],
     );
     git(&directory, &["push", "origin", "main"]);
+    git(&directory, &["fetch", "origin"]);
+    git(&directory, &["remote", "set-head", "origin", "-a"]);
     let project = Project {
         id: ProjectId::new(directory.display().to_string()),
         kind: LocationKind::Path,
@@ -234,6 +236,14 @@ fn git(directory: &std::path::Path, args: &[&str]) {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+fn fetch_head(fixture: &Fixture) -> std::path::PathBuf {
+    fixture.temp.path().join("acme-widget/.git/FETCH_HEAD")
+}
+
+fn clear_fetch_head(fixture: &Fixture) {
+    let _ = std::fs::remove_file(fetch_head(fixture));
 }
 
 fn open_pull_request_routes(forge: &FakeForge, commit: &str) {
@@ -676,6 +686,46 @@ fn an_empty_manifest_is_a_proof_section_saying_nothing_was_captured() {
         .expect("the task is read")
         .expect("the task exists");
     assert_eq!(task.state, depot_core::TaskState::PrOpen);
+}
+
+#[test]
+fn an_unrecorded_evidence_run_fetches_once_and_a_recorded_one_fetches_no_more() {
+    let fixture = register(MACHINE_CONFIG, EVIDENCE_PROJECT_FILE);
+    drive_to_pr_open(&fixture, "aaa111");
+    clear_fetch_head(&fixture);
+
+    let daemon = daemon(
+        &fixture,
+        evidence_with("https://img.example/shot.png\tlogin screen\n"),
+    );
+    daemon.tick().expect("the first tick runs");
+    assert!(
+        fetch_head(&fixture).exists(),
+        "an unrecorded evidence run reads the project file from a fresh fetch"
+    );
+
+    clear_fetch_head(&fixture);
+    daemon.tick().expect("the second tick runs");
+    assert!(
+        !fetch_head(&fixture).exists(),
+        "a recorded evidence run fetches no more"
+    );
+}
+
+#[test]
+fn an_open_pull_request_without_evidence_configured_fetches_nothing() {
+    let fixture = register(MACHINE_CONFIG, "base_branch = \"main\"\n");
+    drive_to_pr_open(&fixture, "aaa111");
+    clear_fetch_head(&fixture);
+
+    let daemon = daemon(&fixture, FakeEvidence::default());
+    daemon.tick().expect("the first tick runs");
+    daemon.tick().expect("the second tick runs");
+
+    assert!(
+        !fetch_head(&fixture).exists(),
+        "an open pull request without evidence configured never fetches"
+    );
 }
 
 #[test]

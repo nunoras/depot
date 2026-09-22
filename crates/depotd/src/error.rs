@@ -31,6 +31,10 @@ impl Error {
     pub fn is_project(&self) -> bool {
         matches!(self, Error::Project(_))
     }
+
+    pub fn is_task_fatal(&self) -> bool {
+        matches!(self, Error::Config(_) | Error::Template(_))
+    }
 }
 
 impl fmt::Display for Error {

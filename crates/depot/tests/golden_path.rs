@@ -1215,16 +1215,15 @@ fn a_restart_with_a_launch_intent_surfaces_it_rather_than_launching_again() {
 }
 
 #[test]
-fn a_configuration_error_before_a_launch_leaves_the_task_launchable() {
+fn a_configuration_error_before_a_launch_holds_the_task_with_its_reason() {
     let golden = Golden::new(Validation::Passing);
     let daemon = golden.daemon();
     golden.propose();
     golden.map_build_role(None);
 
-    assert!(
-        daemon.tick().is_err(),
-        "the daemon reports the configuration problem"
-    );
+    daemon
+        .tick()
+        .expect("a configuration problem holds the task instead of stopping the daemon");
     assert!(
         !golden.history(TASK).contains(&LAUNCH_REQUESTED.to_string()),
         "nothing was launched, so the journal holds no launch intent"
@@ -1232,7 +1231,15 @@ fn a_configuration_error_before_a_launch_leaves_the_task_launchable() {
     assert!(golden.boxr.calls_to("--harness").is_empty());
 
     let blocked = golden.task();
-    assert_eq!(blocked.state, TaskState::Running);
+    assert_eq!(blocked.state, TaskState::Failed);
+    assert!(
+        blocked
+            .failure
+            .as_deref()
+            .is_some_and(|reason| reason.contains("profile")),
+        "the task names the configuration problem: {:?}",
+        blocked.failure
+    );
     assert_eq!(blocked.attempts[0].session, None);
     assert_eq!(
         blocked.attempts[0].worktree,
@@ -1240,15 +1247,18 @@ fn a_configuration_error_before_a_launch_leaves_the_task_launchable() {
     );
 
     golden.map_build_role(Some(PROFILE));
+    golden.depot_ok(&["task", "retry", TASK, "--project", SLUG]);
     daemon
         .tick()
-        .expect("the daemon launches once the configuration is right");
+        .expect("the retried task launches once the configuration is right");
 
     let launched = golden.task();
     assert_eq!(launched.state, TaskState::Running);
-    assert_eq!(launched.attempts.len(), 1, "no replacement attempt");
     assert_eq!(
-        launched.attempts[0].session,
+        launched
+            .attempts
+            .last()
+            .and_then(|attempt| attempt.session.clone()),
         Some(SessionId::new(SESSION)),
         "the configuration is read again and the worker launches"
     );
@@ -1271,8 +1281,8 @@ fn a_configuration_error_before_a_launch_leaves_the_task_launchable() {
 
     let inbox = golden.depot_ok(&["inbox", "--project", SLUG]);
     assert!(
-        !inbox.contains("a worker turn could not be resolved"),
-        "no worker may have been launched, got\n{inbox}"
+        inbox.contains("no profile is configured for the role build"),
+        "the hold names the configuration problem, got\n{inbox}"
     );
 }
 

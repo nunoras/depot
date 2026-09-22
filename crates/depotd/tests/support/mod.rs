@@ -7,7 +7,8 @@ use std::time::Duration;
 use depot_core::{
     Answer, AnsweredBy, Artifact, ArtifactKind, Attempt, AttemptOutcome, Checks, CommitId,
     Dependency, Limits, Link, ProfileId, ProjectId, ProjectState, Question, ReleaseHold, Retry,
-    Role, SessionId, Task, TaskId, TaskState, Timestamp, ValidationRecord, WorktreeLease,
+    Role, SessionId, Task, TaskId, TaskState, Timestamp, TurnDeferral, ValidationRecord,
+    WorktreeLease,
 };
 use depotd::{Added, DepotHome, ProfileSettings, Settings, add_project};
 use tempfile::TempDir;
@@ -138,7 +139,7 @@ pub fn full_task(project: &ProjectId, id: &str) -> Task {
                 started_at: Timestamp::from_millis(1_700_000_000_000),
                 finished_at: Some(Timestamp::from_millis(1_700_000_060_000)),
                 outcome: AttemptOutcome::Failed,
-                rebase: false,
+                base_merge: false,
             },
             Attempt {
                 last_seen_at: None,
@@ -148,7 +149,7 @@ pub fn full_task(project: &ProjectId, id: &str) -> Task {
                 started_at: Timestamp::from_millis(1_700_000_120_000),
                 finished_at: None,
                 outcome: AttemptOutcome::Unknown,
-                rebase: false,
+                base_merge: false,
             },
         ],
         questions: vec![
@@ -210,6 +211,10 @@ pub fn full_task(project: &ProjectId, id: &str) -> Task {
                 at: Timestamp::from_millis(1_700_000_030_000),
             },
         )]),
+        turn_deferral: Some(TurnDeferral {
+            count: 2,
+            reason: "the worktree pool is exhausted".to_string(),
+        }),
         retry: Some(Retry {
             profile: ProfileId::new("sonnet"),
             not_before: Timestamp::from_millis(1_700_000_120_000),

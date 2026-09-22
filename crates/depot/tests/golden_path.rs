@@ -931,7 +931,9 @@ fn a_restart_with_a_worktree_intent_completes_it_from_the_pool() {
     golden.reject_worktree_acquire();
     golden.propose();
 
-    assert!(daemon.tick().is_err(), "the acquire is interrupted");
+    daemon
+        .tick()
+        .expect("a failing acquire is deferred rather than fatal");
     assert!(
         golden
             .history(TASK)
@@ -964,7 +966,9 @@ fn a_restart_without_a_leased_worktree_retries_the_acquire() {
     golden.free_lease();
     golden.propose();
 
-    assert!(daemon.tick().is_err(), "the acquire is interrupted");
+    daemon
+        .tick()
+        .expect("a failing acquire is deferred rather than fatal");
     assert_eq!(calls_to(&golden.treehouse.calls(), "get").len(), 1);
 
     golden.allow_worktree_acquire();
@@ -1031,7 +1035,6 @@ fn a_redirect_queued_mid_turn_reaches_the_worker_at_the_next_turn() {
     );
 
     golden.boxr.report_running();
-    eprintln!("PHASE midturn");
     daemon
         .tick()
         .expect("a running worker is not interrupted mid-turn");
@@ -1331,7 +1334,9 @@ fn a_restart_with_a_launch_intent_surfaces_it_rather_than_launching_again() {
         .respond("--harness", "", "launch interrupted", 1);
     golden.propose();
 
-    assert!(daemon.tick().is_err(), "the launch is interrupted");
+    daemon
+        .tick()
+        .expect("a failing launch is deferred rather than fatal");
     assert!(golden.history(TASK).contains(&LAUNCH_REQUESTED.to_string()));
     assert!(!golden.history(TASK).contains(&TURN_STARTED.to_string()));
 
@@ -1368,16 +1373,15 @@ fn a_restart_with_a_launch_intent_surfaces_it_rather_than_launching_again() {
 }
 
 #[test]
-fn a_configuration_error_before_a_launch_leaves_the_task_launchable() {
+fn a_configuration_error_before_a_launch_holds_the_task_with_its_reason() {
     let golden = Golden::new(Validation::Passing);
     let daemon = golden.daemon();
     golden.propose();
     golden.map_build_role(None);
 
-    assert!(
-        daemon.tick().is_err(),
-        "the daemon reports the configuration problem"
-    );
+    daemon
+        .tick()
+        .expect("a configuration problem holds the task instead of stopping the daemon");
     assert!(
         !golden.history(TASK).contains(&LAUNCH_REQUESTED.to_string()),
         "nothing was launched, so the journal holds no launch intent"
@@ -1385,7 +1389,15 @@ fn a_configuration_error_before_a_launch_leaves_the_task_launchable() {
     assert!(golden.boxr.calls_to("--harness").is_empty());
 
     let blocked = golden.task();
-    assert_eq!(blocked.state, TaskState::Running);
+    assert_eq!(blocked.state, TaskState::Failed);
+    assert!(
+        blocked
+            .failure
+            .as_deref()
+            .is_some_and(|reason| reason.contains("profile")),
+        "the task names the configuration problem: {:?}",
+        blocked.failure
+    );
     assert_eq!(blocked.attempts[0].session, None);
     assert_eq!(
         blocked.attempts[0].worktree,
@@ -1393,15 +1405,18 @@ fn a_configuration_error_before_a_launch_leaves_the_task_launchable() {
     );
 
     golden.map_build_role(Some(PROFILE));
+    golden.depot_ok(&["task", "retry", TASK, "--project", SLUG]);
     daemon
         .tick()
-        .expect("the daemon launches once the configuration is right");
+        .expect("the retried task launches once the configuration is right");
 
     let launched = golden.task();
     assert_eq!(launched.state, TaskState::Running);
-    assert_eq!(launched.attempts.len(), 1, "no replacement attempt");
     assert_eq!(
-        launched.attempts[0].session,
+        launched
+            .attempts
+            .last()
+            .and_then(|attempt| attempt.session.clone()),
         Some(SessionId::new(SESSION)),
         "the configuration is read again and the worker launches"
     );
@@ -1424,8 +1439,8 @@ fn a_configuration_error_before_a_launch_leaves_the_task_launchable() {
 
     let inbox = golden.depot_ok(&["inbox", "--project", SLUG]);
     assert!(
-        !inbox.contains("a worker turn could not be resolved"),
-        "no worker may have been launched, got\n{inbox}"
+        inbox.contains("no profile is configured for the role build"),
+        "the hold names the configuration problem, got\n{inbox}"
     );
 }
 
@@ -1881,10 +1896,9 @@ fn a_pending_acquire_that_takes_the_owed_lease_back_does_not_return_it() {
     golden.depot_ok(&["task", "stop", TASK, "--project", SLUG]);
     golden.depot_ok(&["task", "retry", TASK, "--project", SLUG]);
     golden.reject_worktree_acquire();
-    assert!(
-        daemon.tick().is_err(),
-        "a saturated pool aborts the tick before the release pass"
-    );
+    daemon
+        .tick()
+        .expect("a saturated pool defers the acquire instead of aborting the tick");
 
     golden.allow_worktree_acquire();
     daemon
@@ -2254,7 +2268,7 @@ fn a_pull_request_branch_that_lags_the_validated_commit_is_pushed_forward() {
 }
 
 #[test]
-fn a_fix_role_push_overwrites_a_force_pushed_remote_branch() {
+fn a_fix_role_push_never_overwrites_a_force_pushed_remote_branch() {
     let golden = Golden::new(Validation::Passing);
     golden.map_role("fix", Some(PROFILE));
     let daemon = golden.daemon();
@@ -2310,17 +2324,23 @@ fn a_fix_role_push_overwrites_a_force_pushed_remote_branch() {
 
     daemon
         .tick()
-        .expect("the fix-role push overwrites the force-pushed remote branch");
+        .expect("a rejected fix-role push is recorded, not fatal");
 
-    assert_eq!(golden.task().state, TaskState::PrOpen);
-    assert_eq!(
+    let failed = golden.task();
+    assert_eq!(failed.state, TaskState::Failed);
+    assert_eq!(failed.branch_head, Some(CommitId::new(commit.clone())));
+    assert!(
+        golden.history(TASK).contains(&PUSH_FAILED.to_string()),
+        "the rejection is on the journal"
+    );
+    assert_ne!(
         git::git(
             &golden.origin,
             &["rev-parse", &format!("refs/heads/{fix_branch}")]
         )
         .trim(),
         reworked,
-        "the branch lands on the commit depot validated"
+        "a fix-role push never replaces the branch at the forge"
     );
 }
 
@@ -2660,36 +2680,44 @@ fn hook_events(log: &std::path::Path) -> Vec<serde_json::Value> {
 }
 
 #[test]
-fn a_conflicting_pull_request_is_rebased_by_a_fix_worker_and_lands() {
+fn a_conflicting_pull_request_is_resolved_by_a_fix_worker_and_lands() {
     let golden = Golden::new(Validation::Passing);
     let daemon = golden.daemon();
-    golden.set_auto_merge(true);
     golden.script_merge_endpoint();
     golden.script_delete_branch_endpoint();
     golden.propose();
     daemon.tick().expect("the daemon launches the worker");
     golden.worker_commits_and_submits();
     let commit = golden.head();
-    golden.script_conflicting_pull_request(&commit);
+    golden.script_pull_request(&commit);
     daemon
         .tick()
-        .expect("the daemon validates, opens the pull request and schedules the rebase");
+        .expect("the daemon validates, pushes and opens the pull request");
+    assert_eq!(golden.task().state, TaskState::PrOpen);
+
+    let base = golden.advance_base_conflicting("change.txt", "the base moved\n");
+    golden.script_conflicting_pull_request_at(&commit, &base);
+    golden.set_auto_merge(true);
+    daemon
+        .tick()
+        .expect("the daemon observes the conflict and schedules the fix turn");
 
     let rebasing = golden.task();
     assert_eq!(rebasing.state, TaskState::Running);
+    assert_eq!(rebasing.conflict_base, Some(CommitId::new(base)));
     assert!(golden.history(TASK).contains(&REBASE_SCHEDULED.to_string()));
     assert_eq!(
         golden.task().attempts.len(),
         2,
-        "the rebase is a second attempt on the same task"
+        "the fix turn is a second attempt on the same task"
     );
     assert!(
         golden
             .task()
             .attempts
             .last()
-            .is_some_and(|attempt| attempt.rebase),
-        "the second attempt is marked as a rebase"
+            .is_some_and(|attempt| attempt.base_merge),
+        "the second attempt is marked as a fix turn"
     );
     assert_eq!(
         golden.merge_requests(),
@@ -2697,24 +2725,24 @@ fn a_conflicting_pull_request_is_rebased_by_a_fix_worker_and_lands() {
         "a conflicting pull request is not merged"
     );
 
-    let output = golden.worker_rebases_and_submits();
+    let output = golden.worker_merges_and_submits();
     assert_eq!(
         output.status.code(),
         Some(0),
-        "the fix worker rebases and submits: {}",
+        "the fix worker merges the base and submits: {}",
         support::stderr(&output)
     );
-    let rebased = golden.head();
-    golden.script_rebased_pull_request(&rebased);
+    let merged = golden.head();
+    golden.script_merged_pull_request(&merged);
     daemon
         .tick()
-        .expect("the daemon validates the rebased commit, merges and deletes the branch");
+        .expect("the daemon validates the merged commit, merges and deletes the branch");
 
     let landed = golden.task();
     assert_eq!(landed.state, TaskState::Landed);
     assert!(
         golden.history(TASK).contains(&MERGED.to_string()),
-        "the rebased pull request lands"
+        "the merged pull request lands"
     );
     assert_eq!(golden.merge_requests(), 1);
     assert_eq!(
@@ -2725,7 +2753,7 @@ fn a_conflicting_pull_request_is_rebased_by_a_fix_worker_and_lands() {
     assert_eq!(
         calls_to(&golden.treehouse.calls(), "return").len(),
         1,
-        "landing the rebase returns the worktree"
+        "landing the fix turn returns the worktree"
     );
 
     let history = golden.status_history();
@@ -2734,6 +2762,77 @@ fn a_conflicting_pull_request_is_rebased_by_a_fix_worker_and_lands() {
     assert!(!default.contains("## Landed"), "{default}");
     assert!(default.contains("1 landed"), "{default}");
     assert_eq!(default, golden.checklist());
+}
+
+#[test]
+fn a_stale_conflict_against_an_older_base_never_launches_a_fix_turn() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_submits();
+    let commit = golden.head();
+    golden.script_pull_request(&commit);
+    daemon
+        .tick()
+        .expect("the daemon validates, pushes and opens the pull request");
+    assert_eq!(golden.task().state, TaskState::PrOpen);
+
+    let mut task = golden.task();
+    task.conflict_base = Some(CommitId::new(BASE));
+    golden
+        .store
+        .put_task(&task)
+        .expect("the stale conflict is recorded");
+    golden.script_conflicting_pull_request(&commit);
+
+    daemon
+        .tick()
+        .expect("the daemon re-evaluates the conflict against the fresh base");
+
+    let settled = golden.task();
+    assert_eq!(settled.state, TaskState::PrOpen);
+    assert!(
+        settled.conflict_base.is_none(),
+        "a branch that already contains the base clears the stale conflict"
+    );
+    assert_eq!(
+        settled.attempts.len(),
+        1,
+        "a branch that merges clean never gets a fix turn"
+    );
+    assert!(!golden.history(TASK).contains(&REBASE_SCHEDULED.to_string()));
+}
+
+#[test]
+fn an_unverifiable_conflict_never_launches_a_fix_turn() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_submits();
+    let commit = golden.head();
+    golden.script_pull_request(&commit);
+    daemon
+        .tick()
+        .expect("the daemon validates, pushes and opens the pull request");
+    assert_eq!(golden.task().state, TaskState::PrOpen);
+
+    golden.free_lease();
+    golden.script_conflicting_pull_request(&commit);
+
+    daemon
+        .tick()
+        .expect("the daemon cannot check the conflict and schedules nothing");
+
+    let settled = golden.task();
+    assert_eq!(settled.state, TaskState::PrOpen);
+    assert_eq!(
+        settled.attempts.len(),
+        1,
+        "an unverifiable conflict never gets a fix turn"
+    );
+    assert!(!golden.history(TASK).contains(&REBASE_SCHEDULED.to_string()));
 }
 
 #[test]
@@ -3339,7 +3438,7 @@ fn a_run_past_its_duration_stops_the_session_once_and_holds_the_task() {
 }
 
 #[test]
-fn a_run_duration_stop_that_fails_surfaces_rather_than_pretending_success() {
+fn a_run_duration_stop_that_fails_defers_its_task_instead_of_stopping_the_daemon() {
     let golden = Golden::new(Validation::Passing);
     zero_run_duration(&golden);
     let daemon = golden.daemon();
@@ -3348,12 +3447,15 @@ fn a_run_duration_stop_that_fails_surfaces_rather_than_pretending_success() {
         .boxr
         .respond("stop", "", "boxr could not stop the session", 1);
 
-    let error = daemon
+    daemon
         .tick()
-        .expect_err("the failed stop is surfaced, not swallowed");
+        .expect("a failed stop is deferred rather than fatal");
     assert!(
-        error.to_string().contains("could not stop"),
-        "the stop failure is named: {error}"
+        golden
+            .history(TASK)
+            .contains(&"worker_turn_deferred".to_string()),
+        "the failed stop is recorded: {:?}",
+        golden.history(TASK)
     );
 }
 
@@ -3367,7 +3469,9 @@ fn a_failed_stop_is_retried_until_the_session_is_gone() {
         .boxr
         .respond("stop", "", "boxr could not stop the session", 1);
 
-    daemon.tick().expect_err("the first stop fails");
+    daemon
+        .tick()
+        .expect("a failed stop is deferred rather than fatal");
     assert_eq!(golden.boxr.calls_to("stop").len(), 1);
 
     golden.boxr.respond("stop", "", "", 0);
@@ -3840,6 +3944,11 @@ fn an_unreadable_session_fails_only_its_task_and_the_tick_survives() {
         inbox.contains("boxr is down"),
         "the reason reaches the inbox: {inbox}"
     );
+    let checklist = golden.checklist();
+    assert!(
+        checklist.contains("worker turn deferred 1 time:") && checklist.contains("boxr is down"),
+        "the deferral is visible while the task still reads as running: {checklist}"
+    );
 
     for _ in 0..3 {
         daemon
@@ -3879,6 +3988,101 @@ fn an_unreadable_session_fails_only_its_task_and_the_tick_survives() {
         landed.state,
         TaskState::Landed,
         "the other task still reaches its end"
+    );
+}
+
+#[test]
+fn a_recovered_worker_turn_clears_its_deferral() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+
+    golden.boxr.respond("status", "", "boxr is down", 1);
+    daemon
+        .tick()
+        .expect("an unreadable session does not stop the tick");
+    assert!(
+        golden.checklist().contains("worker turn deferred 1 time:"),
+        "the deferral is visible while the outage lasts: {}",
+        golden.checklist()
+    );
+
+    golden.boxr.report_running();
+    daemon
+        .tick()
+        .expect("a recovered session does not stop the tick");
+
+    let recovered = golden.task();
+    assert_eq!(recovered.state, TaskState::Running);
+    assert!(
+        recovered.turn_deferral.is_none(),
+        "recovery clears the deferral: {:?}",
+        recovered.turn_deferral
+    );
+    assert!(
+        !golden.checklist().contains("worker turn deferred"),
+        "the checklist drops the cleared line: {}",
+        golden.checklist()
+    );
+}
+
+#[test]
+fn a_missing_profile_holds_only_its_task_and_the_tick_survives() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    golden.drop_profiles();
+
+    daemon
+        .tick()
+        .expect("a missing profile holds the task instead of stopping the daemon");
+
+    let held = golden.task();
+    assert_eq!(
+        held.state,
+        TaskState::Failed,
+        "the task is held when its profile cannot be resolved"
+    );
+    assert!(
+        held.failure
+            .as_deref()
+            .is_some_and(|reason| reason.contains("not defined in machine-local settings")),
+        "the task names the config problem: {:?}",
+        held.failure
+    );
+    assert!(
+        golden
+            .history(TASK)
+            .contains(&"worker_turn_unresolved".to_string()),
+        "the config problem is a recorded fact: {:?}",
+        golden.history(TASK)
+    );
+}
+
+#[test]
+fn an_unreadable_worktree_pool_skips_the_lease_pass_and_the_tick_survives() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+
+    golden.depot_ok(&["task", "stop", TASK, "--project", SLUG]);
+    assert!(
+        !golden.task().release_pending.is_empty(),
+        "the stopped task owes its lease"
+    );
+
+    golden
+        .treehouse
+        .respond("status", "", "treehouse is down", 1);
+    daemon
+        .tick()
+        .expect("an unreadable pool skips the lease pass instead of stopping the tick");
+
+    assert!(
+        !golden.task().release_pending.is_empty(),
+        "the lease stays owed until the pool is readable"
     );
 }
 
@@ -3957,5 +4161,231 @@ fn a_launch_with_a_lease_missing_from_the_pool_fails_only_its_task_and_the_tick_
         landed.state,
         TaskState::Landed,
         "the other task still reaches its end"
+    );
+}
+
+#[test]
+fn a_failing_worker_launch_holds_only_its_task_and_the_tick_survives() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden
+        .boxr
+        .respond("--harness", "", "boxr launch is down", 1);
+    golden.propose();
+
+    let second = golden.clone_second_lease("2", BRANCH_TWO);
+    std::fs::write(second.join("second.txt"), "the second task\n")
+        .expect("the second worktree file is written");
+    git::git(&second, &["add", "."]);
+    git::git(&second, &["commit", "-m", "the second task"]);
+    let second_commit = git::head(&second);
+    git::git(&second, &["push", "origin", "HEAD:main"]);
+    golden.hold_two_leases(&second, LEASE_TWO);
+    golden
+        .store
+        .put_task(&validated_task(
+            &golden.project.id,
+            TASK_TWO,
+            LEASE_TWO,
+            &second_commit,
+        ))
+        .expect("the second validated task is recorded");
+
+    daemon
+        .tick()
+        .expect("a failing worker launch does not stop the tick");
+
+    let deferred = golden.task();
+    assert_eq!(
+        deferred.state,
+        TaskState::Running,
+        "the first failed launch does not fail the task outright"
+    );
+    assert!(
+        golden
+            .history(TASK)
+            .contains(&"worker_turn_deferred".to_string()),
+        "the failed launch is a recorded fact: {:?}",
+        golden.history(TASK)
+    );
+
+    daemon
+        .tick()
+        .expect("the unresolved launch does not stop the tick");
+
+    let held = golden.task();
+    assert_eq!(
+        held.state,
+        TaskState::Failed,
+        "the task is held once the launch intent cannot be resolved"
+    );
+    assert!(
+        golden
+            .history(TASK)
+            .contains(&"worker_turn_unresolved".to_string()),
+        "the failed launch is a recorded fact: {:?}",
+        golden.history(TASK)
+    );
+    let inbox = golden.depot_ok(&["inbox", "--project", SLUG]);
+    assert!(
+        inbox.contains("boxr launch is down"),
+        "the reason reaches the inbox: {inbox}"
+    );
+
+    let landed = golden
+        .store
+        .task(&golden.project.id, &TaskId::new(TASK_TWO))
+        .expect("the second task is read")
+        .expect("the second task exists");
+    assert_eq!(
+        landed.state,
+        TaskState::Landed,
+        "the other task still reaches its end"
+    );
+}
+
+#[test]
+fn a_failing_worktree_acquire_holds_only_its_task_and_the_tick_survives() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.reject_worktree_acquire();
+    golden.propose();
+
+    let second = golden.clone_second_lease("2", BRANCH_TWO);
+    std::fs::write(second.join("second.txt"), "the second task\n")
+        .expect("the second worktree file is written");
+    git::git(&second, &["add", "."]);
+    git::git(&second, &["commit", "-m", "the second task"]);
+    let second_commit = git::head(&second);
+    git::git(&second, &["push", "origin", "HEAD:main"]);
+    golden.free_first_and_hold_second(&second, LEASE_TWO);
+    golden
+        .store
+        .put_task(&validated_task(
+            &golden.project.id,
+            TASK_TWO,
+            LEASE_TWO,
+            &second_commit,
+        ))
+        .expect("the second validated task is recorded");
+
+    for _ in 0..4 {
+        daemon
+            .tick()
+            .expect("a failing worktree acquire does not stop the tick");
+    }
+
+    let held = golden.task();
+    assert_eq!(
+        held.state,
+        TaskState::Failed,
+        "the task is held once the bounded retries run out"
+    );
+    assert!(
+        golden
+            .history(TASK)
+            .contains(&"worker_turn_unresolved".to_string()),
+        "the failed acquire is a recorded fact: {:?}",
+        golden.history(TASK)
+    );
+    assert_eq!(
+        golden
+            .history(TASK)
+            .iter()
+            .filter(|kind| kind.as_str() == "worker_turn_deferred")
+            .count(),
+        3,
+        "the acquire is retried a bounded number of times"
+    );
+    let inbox = golden.depot_ok(&["inbox", "--project", SLUG]);
+    assert!(
+        inbox.contains("acquire interrupted"),
+        "the reason reaches the inbox: {inbox}"
+    );
+
+    let landed = golden
+        .store
+        .task(&golden.project.id, &TaskId::new(TASK_TWO))
+        .expect("the second task is read")
+        .expect("the second task exists");
+    assert_eq!(
+        landed.state,
+        TaskState::Landed,
+        "the other task still reaches its end"
+    );
+}
+
+#[test]
+fn a_retried_task_starts_its_deferral_ladder_from_zero() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.reject_worktree_acquire();
+    golden.free_lease();
+    golden.propose();
+
+    for _ in 0..4 {
+        daemon
+            .tick()
+            .expect("a failing worktree acquire does not stop the tick");
+    }
+    assert_eq!(golden.task().state, TaskState::Failed);
+
+    golden.depot_ok(&["task", "retry", TASK, "--project", SLUG]);
+    daemon
+        .tick()
+        .expect("the retried task defers on its own ladder");
+
+    let retried = golden.task();
+    assert_eq!(
+        retried.state,
+        TaskState::Running,
+        "a retry earns a fresh ladder instead of inheriting the spent one"
+    );
+    assert_eq!(
+        golden
+            .history(TASK)
+            .iter()
+            .filter(|kind| kind.as_str() == "worker_turn_deferred")
+            .count(),
+        4,
+        "the retried attempt records its own first deferral"
+    );
+    assert_eq!(
+        golden
+            .history(TASK)
+            .iter()
+            .filter(|kind| kind.as_str() == "worker_turn_unresolved")
+            .count(),
+        1,
+        "the retry does not hold the task again immediately"
+    );
+}
+
+#[test]
+fn one_tick_spends_one_rung_of_the_deferral_ladder() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.free_lease();
+    golden.propose();
+    let mut approved = golden.task();
+    approved.state = TaskState::Approved;
+    approved.attempts.clear();
+    golden
+        .store
+        .put_task(&approved)
+        .expect("the approved task is recorded");
+
+    daemon
+        .tick()
+        .expect("a launch that cannot find its lease does not stop the tick");
+
+    assert_eq!(
+        golden
+            .history(TASK)
+            .iter()
+            .filter(|kind| kind.as_str() == "worker_turn_deferred")
+            .count(),
+        1,
+        "one tick spends one rung, however many paths reach the same deferred turn"
     );
 }

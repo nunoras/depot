@@ -5,7 +5,7 @@ use depot_core::{AnsweredBy, CommitId, Dependency, Fact, FactKind, Role, Task, T
 
 use crate::adapters::process::Program;
 use crate::adapters::sessions::{Boxr, Sessions};
-use crate::adapters::worktrees::Treehouse;
+use crate::adapters::worktrees::Worktrees;
 use crate::clock::now;
 use crate::config::PROJECT_CONFIG_FILE_NAME;
 use crate::documents::write_document;
@@ -156,14 +156,19 @@ pub fn ask_question(
     task(&store, &project, &id)
 }
 
-pub fn submit_task(home: &DepotHome, selection: Option<&str>, id: &str) -> Result<Task> {
+pub fn submit_task(
+    home: &DepotHome,
+    selection: Option<&str>,
+    id: &str,
+    worktrees: &impl Worktrees,
+) -> Result<Task> {
     let store = Store::open(home)?;
     let (project, id) = resolve_task(&store, selection, id)?;
     let current = task(&store, &project, &id)?;
     if current.state != TaskState::Running {
         return Err(transition_refused(&current, "submitted"));
     }
-    let worktree = leased_worktree_path(&project, &current)?;
+    let worktree = leased_worktree_path(worktrees, &project, &current)?;
     let worktree = std::fs::canonicalize(&worktree).map_err(Error::Io)?;
     let here = std::env::current_dir()
         .map_err(Error::Io)
@@ -261,8 +266,7 @@ pub fn rework_task(
     text: &str,
 ) -> Result<Task> {
     let store = Store::open(home)?;
-    let project = select_project(&store, selection)?;
-    let id = TaskId::new(id);
+    let (project, id) = resolve_task(&store, selection, id)?;
     let current = task(&store, &project, &id)?;
     if current.state != TaskState::PrOpen {
         return Err(transition_refused(&current, "reworked"));
@@ -464,7 +468,11 @@ fn transition_refused(task: &Task, action: &str) -> Error {
     ))
 }
 
-fn leased_worktree_path(project: &Project, task: &Task) -> Result<PathBuf> {
+fn leased_worktree_path(
+    worktrees: &impl Worktrees,
+    project: &Project,
+    task: &Task,
+) -> Result<PathBuf> {
     let repo = match project.kind {
         LocationKind::Path => PathBuf::from(project.id.as_str()),
         LocationKind::Url => {
@@ -473,8 +481,11 @@ fn leased_worktree_path(project: &Project, task: &Task) -> Result<PathBuf> {
             ));
         }
     };
-    let worktrees = Treehouse::new(Program::new("treehouse"));
-    Ok(crate::daemon::resolve_worktree_lease(&worktrees, &repo, task)?.path)
+    Ok(
+        crate::adapters::worktrees::resolve_lease(worktrees, &repo, task)
+            .map_err(|error| Error::Project(error.to_string()))?
+            .path,
+    )
 }
 
 fn check_descends_from_base(

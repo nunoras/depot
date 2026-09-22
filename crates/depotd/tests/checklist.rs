@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use depot_core::{
     Checks, CommitId, Dependency, Limits, Link, ProfileId, ProjectId, ProjectState, Question, Role,
-    TaskId, TaskState, Timestamp, ValidationRecord,
+    TaskId, TaskState, Timestamp, TurnDeferral, ValidationRecord,
 };
 use depotd::{CHECKLIST_FILE_NAME, Store, format_timestamp, render_checklist};
 
@@ -456,7 +456,7 @@ fn a_conflicting_pull_request_renders_its_base_until_it_is_mergeable() {
         started_at: Timestamp::from_millis(2),
         finished_at: None,
         outcome: depot_core::AttemptOutcome::InFlight,
-        rebase: true,
+        base_merge: true,
         last_seen_at: None,
     }];
     let mut rebasing = state.clone();
@@ -464,7 +464,7 @@ fn a_conflicting_pull_request_renders_its_base_until_it_is_mergeable() {
     let rendered = render_checklist(&rebasing, true);
     assert!(
         rendered.contains("conflicts with base `ba5eba11`"),
-        "a pending rebase must keep the conflict visible in\n{rendered}"
+        "a pending base merge must keep the conflict visible in\n{rendered}"
     );
 
     let mut mergeable = state.clone();
@@ -488,4 +488,65 @@ fn task_ids_render_project_qualified() {
 
     assert!(rendered.contains("`example/t-0-a`"), "got\n{rendered}");
     assert!(!rendered.contains("- `t-"), "got\n{rendered}");
+}
+
+#[test]
+fn the_checklist_shows_a_deferred_worker_turn_with_its_reason() {
+    let mut state = support::varied_state();
+    let task = state
+        .tasks
+        .values_mut()
+        .find(|task| task.state == TaskState::Running)
+        .expect("a running task");
+    task.turn_deferral = Some(TurnDeferral {
+        count: 2,
+        reason: "the worktree pool is exhausted".to_string(),
+    });
+
+    let rendered = render_checklist(&state, false);
+    assert!(
+        rendered.contains("  - worker turn deferred 2 times: the worktree pool is exhausted\n"),
+        "got\n{rendered}"
+    );
+}
+
+#[test]
+fn a_single_deferral_reads_as_one_time() {
+    let mut state = support::varied_state();
+    let task = state
+        .tasks
+        .values_mut()
+        .find(|task| task.state == TaskState::Running)
+        .expect("a running task");
+    task.turn_deferral = Some(TurnDeferral {
+        count: 1,
+        reason: "boxr is down".to_string(),
+    });
+
+    let rendered = render_checklist(&state, false);
+    assert!(
+        rendered.contains("  - worker turn deferred 1 time: boxr is down\n"),
+        "got\n{rendered}"
+    );
+}
+
+#[test]
+fn a_deferral_on_a_task_past_running_does_not_render() {
+    let mut state = support::varied_state();
+    let task = state
+        .tasks
+        .values_mut()
+        .find(|task| task.state == TaskState::Running)
+        .expect("a running task");
+    task.state = TaskState::Validating;
+    task.turn_deferral = Some(TurnDeferral {
+        count: 1,
+        reason: "boxr is down".to_string(),
+    });
+
+    let rendered = render_checklist(&state, false);
+    assert!(
+        !rendered.contains("worker turn deferred"),
+        "a deferral is stale once the task leaves running\n{rendered}"
+    );
 }

@@ -6,7 +6,7 @@ use crate::fact::{Fact, FactKind, Liveness};
 use crate::model::{
     Answer, Attempt, AttemptOutcome, Checks, CommitId, CoordinatorSession, Dependency, Limits,
     Link, MergePolicy, ProfileId, ProjectState, Question, ReleaseHold, Retry, Role, Submission,
-    Task, TaskId, TaskState, Timestamp, ValidationRecord, WorktreeLease,
+    Task, TaskId, TaskState, Timestamp, TurnDeferral, ValidationRecord, WorktreeLease,
 };
 
 pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) {
@@ -60,6 +60,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                         hold_pr: *hold_pr,
                         release_pending: Vec::new(),
                         release_held: BTreeMap::new(),
+                        turn_deferral: None,
                         retry: None,
                         created_at: fact.at,
                         updated_at: fact.at,
@@ -151,6 +152,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                 task.conflict_base = None;
                 task.failure = None;
                 task.acknowledged_at = None;
+                task.turn_deferral = None;
                 task.updated_at = fact.at;
                 changed = true;
                 approved.push(task.id.clone());
@@ -192,7 +194,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                             started_at: fact.at,
                             finished_at: None,
                             outcome: AttemptOutcome::InFlight,
-                            rebase: false,
+                            base_merge: false,
                             last_seen_at: None,
                         }],
                         questions: Vec::new(),
@@ -211,6 +213,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                         hold_pr: false,
                         release_pending: Vec::new(),
                         release_held: BTreeMap::new(),
+                        turn_deferral: None,
                         retry: None,
                         created_at: fact.at,
                         updated_at: fact.at,
@@ -313,7 +316,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             }
         }
 
-        FactKind::WorkerTurnUnresolved { task, .. } => {
+        FactKind::WorkerTurnUnresolved { task, reason } => {
             let unresolved = next.tasks.get(task).is_some_and(|task| {
                 task.state.in_flight()
                     && task
@@ -324,6 +327,8 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             if unresolved && let Some(task) = next.tasks.get_mut(task) {
                 close_attempt(task, AttemptOutcome::Failed, fact.at);
                 task.state = TaskState::Failed;
+                task.failure = Some(reason.clone());
+                task.turn_deferral = None;
                 task.updated_at = fact.at;
                 changed = true;
                 actions.push(Action::HoldForUser {
@@ -341,6 +346,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                 {
                     attempt.session = Some(session.clone());
                 }
+                task.turn_deferral = None;
                 task.updated_at = fact.at;
             }
         }
@@ -419,6 +425,9 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                     attempt.last_seen_at = Some(fact.at);
                     changed = true;
                 }
+                if task.turn_deferral.take().is_some() {
+                    changed = true;
+                }
                 task.updated_at = fact.at;
             }
         }
@@ -433,6 +442,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                 task.state = TaskState::Failed;
                 task.retry = None;
                 task.failure = Some(reason.clone());
+                task.turn_deferral = None;
                 task.updated_at = fact.at;
                 changed = true;
                 actions.push(Action::HoldForUser {
@@ -470,6 +480,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                 if let Some(task) = next.tasks.get_mut(task) {
                     close_attempt(task, AttemptOutcome::Submitted, fact.at);
                     task.state = TaskState::Validating;
+                    task.turn_deferral = None;
                     task.updated_at = fact.at;
                 }
                 changed = true;
@@ -515,6 +526,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                         duration: *duration,
                         output_tail: output_tail.clone(),
                     });
+                    task.turn_deferral = None;
                     task.updated_at = fact.at;
                     if *exit_code == 0 {
                         task.state = if already_open {
@@ -603,6 +615,9 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                         }
                         attempt.worktree = Some(lease.clone());
                     }
+                    if task.turn_deferral.take().is_some() {
+                        changed = true;
+                    }
                     task.updated_at = fact.at;
                     attached = true;
                 }
@@ -631,7 +646,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                         started_at: fact.at,
                         finished_at: None,
                         outcome: AttemptOutcome::InFlight,
-                        rebase: false,
+                        base_merge: false,
                     });
                     task.state = TaskState::Running;
                     task.updated_at = fact.at;
@@ -1118,7 +1133,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                 && next
                     .tasks
                     .get(task)
-                    .is_some_and(|task| rebase_allowed(&next, task));
+                    .is_some_and(|task| base_merge_allowed(&next, task));
             if scheduled && let Some(task) = next.tasks.get_mut(task) {
                 let lease = take_last_worktree(task);
                 task.failure = None;
@@ -1130,7 +1145,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                     started_at: fact.at,
                     finished_at: None,
                     outcome: AttemptOutcome::InFlight,
-                    rebase: true,
+                    base_merge: true,
                 });
                 task.state = TaskState::Running;
                 task.updated_at = fact.at;
@@ -1143,7 +1158,23 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
         }
 
         FactKind::OnEventNotified { .. } => {}
-        FactKind::WorkerTurnDeferred { .. } => {}
+        FactKind::WorkerTurnDeferred { task, reason } => {
+            if let Some(task) = next.tasks.get_mut(task)
+                && task.state.in_flight()
+            {
+                let count = task
+                    .turn_deferral
+                    .as_ref()
+                    .map_or(0, |deferral| deferral.count)
+                    + 1;
+                task.turn_deferral = Some(TurnDeferral {
+                    count,
+                    reason: reason.clone(),
+                });
+                task.updated_at = fact.at;
+                changed = true;
+            }
+        }
         FactKind::Polled => {}
     }
 
@@ -1184,7 +1215,7 @@ fn relaunch(task: &mut Task, at: Timestamp, actions: &mut Vec<Action>) -> bool {
         started_at: at,
         finished_at: None,
         outcome: AttemptOutcome::InFlight,
-        rebase: false,
+        base_merge: false,
         last_seen_at: None,
     });
     task.state = TaskState::Running;
@@ -1408,7 +1439,7 @@ fn start_ready_tasks(
             started_at: at,
             finished_at: None,
             outcome: AttemptOutcome::InFlight,
-            rebase: false,
+            base_merge: false,
         });
         actions.push(Action::AcquireWorktree {
             task: id.clone(),
@@ -1496,14 +1527,14 @@ fn review_landed(state: &ProjectState, task: &Task, head: &CommitId) -> bool {
     })
 }
 
-pub fn rebase_due(state: &ProjectState, task: &Task, conflicting: bool) -> Option<ProfileId> {
-    if !conflicting || !rebase_allowed(state, task) {
+pub fn base_merge_due(state: &ProjectState, task: &Task, conflicting: bool) -> Option<ProfileId> {
+    if !conflicting || !base_merge_allowed(state, task) {
         return None;
     }
     state.profiles.get(&Role::Fix).cloned()
 }
 
-fn rebase_allowed(state: &ProjectState, task: &Task) -> bool {
+fn base_merge_allowed(state: &ProjectState, task: &Task) -> bool {
     task.state == TaskState::PrOpen
         && task
             .attempts
@@ -1514,7 +1545,7 @@ fn rebase_allowed(state: &ProjectState, task: &Task) -> bool {
             other
                 .attempts
                 .iter()
-                .any(|a| a.rebase && a.outcome.is_open())
+                .any(|a| a.base_merge && a.outcome.is_open())
         })
 }
 

@@ -125,7 +125,6 @@ fn need_for(tag: FactTag, task: Option<&Task>) -> Need {
         | FactTag::ValidationFailed
         | FactTag::WorkerLivenessChanged
         | FactTag::WorkerSessionFailed
-        | FactTag::WorkerTurnDeferred
         | FactTag::WorkerTurnUnresolved
         | FactTag::PushFailed
         | FactTag::DeliveryFailed
@@ -158,6 +157,7 @@ fn need_for(tag: FactTag, task: Option<&Task>) -> Need {
         | FactTag::WorkerTurnLaunchRequested
         | FactTag::WorkerTurnResumeRequested
         | FactTag::WorkerRelaunchRequested
+        | FactTag::WorkerTurnDeferred
         | FactTag::WorkerTurnStarted
         | FactTag::WorkerTurnEnded
         | FactTag::WorkerRedirected
@@ -334,7 +334,7 @@ fn headline(tag: FactTag, event: &RecordedEvent, task: Option<&Task>) -> Result<
             format!("the describe step failed: {}", one_line(&reason))
         }
         FactTag::RebaseScheduled => {
-            "a conflicting pull request was scheduled for a rebase".to_string()
+            "a conflicting pull request was scheduled to merge the base branch".to_string()
         }
         FactTag::RunDurationExceeded => "ran past its run duration".to_string(),
         FactTag::RetryExhausted => "ran out of retries".to_string(),

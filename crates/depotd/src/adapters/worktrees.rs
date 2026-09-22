@@ -1,7 +1,7 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use depot_core::{Baseline, WorktreeLease};
+use depot_core::{Baseline, Task, WorktreeLease};
 use serde_json::Value;
 
 use crate::adapters::process::{Output, ProcessError, Program};
@@ -277,6 +277,33 @@ fn field(command: &str, value: &Value, name: &str) -> Result<String, WorktreeErr
         })
 }
 
+pub fn resolve_lease(
+    worktrees: &impl Worktrees,
+    repo: &Path,
+    task: &Task,
+) -> Result<Lease, WorktreeError> {
+    let lease = task
+        .attempts
+        .last()
+        .and_then(|attempt| attempt.worktree.as_ref())
+        .ok_or_else(|| WorktreeError::NoLease {
+            task: task.id.to_string(),
+        })?;
+    worktrees
+        .pool(repo)?
+        .into_iter()
+        .find(|entry| entry.lease.as_ref() == Some(lease))
+        .map(|entry| Lease {
+            lease: lease.clone(),
+            path: entry.path,
+            holder: entry.holder.unwrap_or_default(),
+            acquired_at: String::new(),
+        })
+        .ok_or_else(|| WorktreeError::LeaseNotInPool {
+            lease: lease.to_string(),
+        })
+}
+
 #[derive(Debug)]
 pub enum WorktreeError {
     Command(ProcessError),
@@ -292,6 +319,12 @@ pub enum WorktreeError {
         lease: String,
         path: PathBuf,
         reason: String,
+    },
+    NoLease {
+        task: String,
+    },
+    LeaseNotInPool {
+        lease: String,
     },
 }
 
@@ -314,6 +347,10 @@ impl fmt::Display for WorktreeError {
                 "refusing to release lease {lease} at {}: {reason}; a worktree holding unlanded work is never reset or removed",
                 path.display()
             ),
+            WorktreeError::NoLease { task } => write!(f, "task `{task}` has no worktree lease"),
+            WorktreeError::LeaseNotInPool { lease } => {
+                write!(f, "worktree lease `{lease}` is not present in the pool")
+            }
         }
     }
 }

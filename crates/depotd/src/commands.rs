@@ -242,7 +242,7 @@ pub fn acknowledge_task(home: &DepotHome, selection: Option<&str>, id: &str) -> 
         at: now(),
         kind: FactKind::TaskAcknowledged { task: id.clone() },
     };
-    apply(&store, &project, &["task_acknowledged", id.as_str()], &fact)?;
+    apply_repeatable(&store, &project, &["task_acknowledged", id.as_str()], &fact)?;
     task(&store, &project, &id)
 }
 
@@ -257,7 +257,7 @@ pub fn retry_task(home: &DepotHome, selection: Option<&str>, id: &str) -> Result
         at: now(),
         kind: FactKind::TaskRetried { task: id.clone() },
     };
-    apply(&store, &project, &["task_retried", id.as_str()], &fact)?;
+    apply_repeatable(&store, &project, &["task_retried", id.as_str()], &fact)?;
     task(&store, &project, &id)
 }
 
@@ -301,7 +301,7 @@ pub fn stop_task(home: &DepotHome, selection: Option<&str>, id: &str) -> Result<
             at: now(),
             kind: FactKind::TaskCancelled { task: id.clone() },
         };
-        apply(&store, &project, &["task_cancelled", id.as_str()], &fact)?;
+        apply_repeatable(&store, &project, &["task_cancelled", id.as_str()], &fact)?;
     }
     task(&store, &project, &id)
 }
@@ -326,19 +326,14 @@ pub fn redirect_task(
             current.id
         )));
     }
-    let at = now();
     let fact = Fact {
-        at,
+        at: now(),
         kind: FactKind::WorkerRedirected {
             task: id.clone(),
             text: text.to_owned(),
         },
     };
-    store.apply_fact(
-        &project,
-        &event_key(&["worker_redirected", id.as_str(), &at.millis().to_string()]),
-        &fact,
-    )?;
+    apply_repeatable(&store, &project, &["worker_redirected", id.as_str()], &fact)?;
     Ok((task(&store, &project, &id)?, turn_running))
 }
 
@@ -357,7 +352,7 @@ pub fn release_task(home: &DepotHome, selection: Option<&str>, id: &str) -> Resu
             at: now(),
             kind: FactKind::TaskReleased { task: id.clone() },
         };
-        apply(&store, &project, &["task_released", id.as_str()], &fact)?;
+        apply_repeatable(&store, &project, &["task_released", id.as_str()], &fact)?;
     }
     task(&store, &project, &id)
 }
@@ -574,8 +569,21 @@ fn turn_is_running(task: &Task) -> bool {
 }
 
 fn apply(store: &Store, project: &Project, parts: &[&str], fact: &Fact) -> Result<()> {
-    store.apply_fact(project, &event_key(parts), fact)?;
+    let applied = store.apply_fact(project, &event_key(parts), fact)?;
+    if applied.outcome == crate::EventOutcome::Duplicate {
+        return Err(Error::Project(format!(
+            "the `{}` change was already recorded by another invocation",
+            parts[0]
+        )));
+    }
     Ok(())
+}
+
+fn apply_repeatable(store: &Store, project: &Project, parts: &[&str], fact: &Fact) -> Result<()> {
+    let at = fact.at.millis().to_string();
+    let mut key = parts.to_vec();
+    key.push(&at);
+    apply(store, project, &key, fact)
 }
 
 fn task(store: &Store, project: &Project, id: &TaskId) -> Result<Task> {

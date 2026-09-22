@@ -79,10 +79,6 @@ Evidence lives in `~/.depot-verify/runs/<UTC stamp>-<feature>/`, outside the rep
 - `transcript.txt`: every command in order with its exit code, stdout (`out|`) and stderr (`err|`).
 - `commands/NN-<label>.{cmd,out,err,exit}`: the same, one file set per command.
 - `build.log`: the cargo build output.
-- `frames/NN-<label>.{ansi,png}`: one frame per command (the command line, its output and exit code) and one per TUI pane capture, in run order.
-- `proof.mp4`: the frames stitched two seconds apiece into a 1280x800 video, ready to attach to a PR.
-  It needs `python3`, `ffmpeg` and a headless `google-chrome` or `chromium`; without them the run still passes and `meta.txt` records `video: skipped: <reason>`.
-  `scripts/render-frame.py <frame.ansi> <frame.png>` renders one frame by hand.
 - Per feature: `checklist.md`, `events.txt` (the journal, read with `sqlite3 -readonly`), `task-states*.txt`, `docs/`, `tui-*.txt` pane captures, `depotd-*.log` and `depotd-lock-1.json`.
 
 Proof standards:

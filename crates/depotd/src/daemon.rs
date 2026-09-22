@@ -2310,9 +2310,20 @@ where
             if task.validations.iter().any(|v| v.commit == commit) {
                 continue;
             }
-            if self.baselined_commit(&task.id)?.as_ref() == Some(&commit) {
-                self.record_worker_committed_nothing(&task.id, &commit, COMMITTED_NOTHING_REASON)?;
-                continue;
+            match self.baselined_commit(&task.id) {
+                Ok(Some(baseline)) if baseline == commit => {
+                    self.record_worker_committed_nothing(
+                        &task.id,
+                        &commit,
+                        COMMITTED_NOTHING_REASON,
+                    )?;
+                    continue;
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    self.record_validation_failure(&task.id, &commit, &error.to_string())?;
+                    continue;
+                }
             }
             match self.submitted_nothing_over_base(&task, &commit, base.as_ref()) {
                 Ok(true) => {

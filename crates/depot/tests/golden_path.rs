@@ -3227,6 +3227,63 @@ fn a_worker_that_fast_forwards_its_lease_and_commits_nothing_fails_instead_of_la
 }
 
 #[test]
+fn a_worker_that_pushes_to_the_base_before_submitting_fails_instead_of_landing() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+
+    golden.commit_in_lease("change.txt", "the work\n");
+    git::git(&golden.lease, &["push", "origin", "HEAD:main"]);
+
+    let submitted = golden.worker_submits();
+    assert_eq!(
+        submitted.status.code(),
+        Some(0),
+        "the worker script failed: {}",
+        support::stderr(&submitted)
+    );
+
+    daemon
+        .tick()
+        .expect("the daemon sees the hand-pushed commit on the base and holds the task");
+
+    let failed = golden.task();
+    assert_eq!(failed.state, TaskState::Failed);
+    assert_eq!(
+        failed.failure.as_deref(),
+        Some(
+            "the submitted commit is already on the base branch and this attempt adds nothing over it"
+        )
+    );
+    assert!(
+        golden
+            .history(TASK)
+            .contains(&"worker_committed_nothing".to_string()),
+        "the hand-pushed submission is on the journal: {:?}",
+        golden.history(TASK)
+    );
+    assert!(
+        !golden.history(TASK).contains(&VALIDATED.to_string()),
+        "nothing was validated: {:?}",
+        golden.history(TASK)
+    );
+    assert!(
+        !golden
+            .history(TASK)
+            .contains(&"task_landed_on_base".to_string()),
+        "a hand-pushed commit does not land: {:?}",
+        golden.history(TASK)
+    );
+    assert!(
+        !golden.history(TASK).contains(&PUSHED.to_string()),
+        "nothing was pushed: {:?}",
+        golden.history(TASK)
+    );
+    assert_eq!(golden.pull_requests_opened(), 0);
+}
+
+#[test]
 fn a_base_that_cannot_be_read_holds_the_task_instead_of_landing_it() {
     let golden = Golden::new(Validation::Passing);
     let daemon = golden.daemon();
@@ -3286,7 +3343,7 @@ fn a_lease_that_cannot_be_read_holds_the_task_instead_of_landing_it() {
 
     daemon
         .tick()
-        .expect("a base object that cannot be read is recorded, not fatal");
+        .expect("a lease that cannot be read is recorded, not fatal");
 
     let held = golden.task();
     assert_eq!(held.state, TaskState::Failed);
@@ -3294,25 +3351,25 @@ fn a_lease_that_cannot_be_read_holds_the_task_instead_of_landing_it() {
         golden
             .history(TASK)
             .contains(&"validation_failed".to_string()),
-        "the unreadable base is on the journal: {:?}",
+        "the unreadable lease is on the journal: {:?}",
         golden.history(TASK)
     );
     assert!(
         !golden
             .history(TASK)
             .contains(&"task_landed_on_base".to_string()),
-        "a base object that could not be read never lands the task"
+        "a lease that could not be read never lands the task"
     );
     assert!(
         !golden.history(TASK).contains(&PUSHED.to_string()),
-        "a base object that could not be read never pushes the branch"
+        "a lease that could not be read never pushes the branch"
     );
     assert_eq!(golden.pull_requests_opened(), 0);
 
     let inbox = golden.depot_ok(&["inbox", "--project", SLUG]);
     assert!(
         inbox.contains("merge-base --is-ancestor exited 128"),
-        "the unreadable base is named as the cause: {inbox}"
+        "the unreadable lease is named as the cause: {inbox}"
     );
 }
 

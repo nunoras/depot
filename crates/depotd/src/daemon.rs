@@ -1674,7 +1674,13 @@ where
     }
 
     fn release(&self, task: TaskId, lease: WorktreeLease) -> Result<()> {
-        let repo = self.repository()?;
+        let repo = match self.repository() {
+            Ok(repo) => repo,
+            Err(error) => {
+                log_project_error(&self.project.slug, &error);
+                return self.record_release_held(&task, &lease, &error.to_string());
+            }
+        };
         let pool = self
             .worktrees
             .pool(&repo)
@@ -1771,7 +1777,21 @@ where
         {
             return Ok(());
         }
-        let repo = self.repository()?;
+        let repo = match self.repository() {
+            Ok(repo) => repo,
+            Err(error) => {
+                log_project_error(&self.project.slug, &error);
+                for task in owed {
+                    for lease in task.release_pending.clone() {
+                        if !self.lease_is_due(task, &lease) {
+                            continue;
+                        }
+                        self.record_release_held(&task.id, &lease, &error.to_string())?;
+                    }
+                }
+                return Ok(());
+            }
+        };
         let pool = match self.worktrees.pool(&repo) {
             Ok(pool) => pool,
             Err(error) => {

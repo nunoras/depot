@@ -5052,3 +5052,119 @@ fn a_submit_from_a_clone_whose_origin_moved_is_refused() {
         "a refused submit leaves the task where it was"
     );
 }
+
+#[test]
+fn a_clone_whose_origin_moved_does_not_stop_the_lease_pass_for_a_sibling() {
+    let mut golden = Golden::new(Validation::Passing);
+    golden.repoint_to_github();
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    assert_eq!(golden.task().state, TaskState::Running);
+
+    let mut owed = validated_task(&golden.project.id, TASK_TWO, LEASE_TWO, &golden.head());
+    owed.state = TaskState::Cancelled;
+    owed.release_pending = vec![WorktreeLease::new(LEASE_TWO)];
+    golden
+        .store
+        .put_task(&owed)
+        .expect("the terminal task that still owes its lease is recorded");
+
+    golden.set_clone_remote("git@github.com:nunoras/other.git");
+    daemon
+        .tick()
+        .expect("a moved clone does not stop the lease pass of an in-flight sibling");
+
+    let sibling = golden
+        .store
+        .task(&golden.project.id, &TaskId::new(TASK_TWO))
+        .expect("the sibling is read")
+        .expect("the sibling exists");
+    assert!(
+        sibling
+            .release_pending
+            .contains(&WorktreeLease::new(LEASE_TWO)),
+        "the lease stays owed: {:?}",
+        sibling.release_pending
+    );
+    let hold = sibling
+        .release_held
+        .get(&WorktreeLease::new(LEASE_TWO))
+        .expect("the refusal is recorded as a held release");
+    assert!(
+        hold.reason.contains("github.com/nunoras/depot"),
+        "{}",
+        hold.reason
+    );
+    assert!(
+        hold.reason.contains("github.com/nunoras/other"),
+        "{}",
+        hold.reason
+    );
+
+    let inbox = golden.depot_ok(&["inbox", "--project", SLUG]);
+    assert!(inbox.contains("is held, not returned"), "{inbox}");
+    assert!(inbox.contains("github.com/nunoras/other"), "{inbox}");
+
+    daemon.tick().expect("later ticks stay alive");
+    assert_eq!(
+        golden.task().state,
+        TaskState::Running,
+        "the in-flight task is untouched"
+    );
+}
+
+#[test]
+fn a_clone_whose_origin_moved_does_not_stop_a_merge_release() {
+    let mut golden = Golden::new(Validation::Passing);
+    golden.repoint_to_github();
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    assert_eq!(golden.task().state, TaskState::Running);
+
+    let commit = golden.head();
+    let mut merged = validated_task(&golden.project.id, TASK_TWO, LEASE_TWO, &commit);
+    merged.state = TaskState::PrOpen;
+    golden
+        .store
+        .put_task(&merged)
+        .expect("the open pull request is recorded");
+
+    golden.set_clone_remote("git@github.com:nunoras/other.git");
+    daemon
+        .record(
+            &format!("pull_request_merged:{}:{commit}", TASK_TWO),
+            Fact {
+                at: Timestamp::from_millis(2),
+                kind: FactKind::PullRequestMerged {
+                    task: TaskId::new(TASK_TWO),
+                    commit: CommitId::new(commit.clone()),
+                },
+            },
+        )
+        .expect("a moved clone does not stop the merge action");
+
+    let landed = golden
+        .store
+        .task(&golden.project.id, &TaskId::new(TASK_TWO))
+        .expect("the merged task is read")
+        .expect("the merged task exists");
+    assert_eq!(landed.state, TaskState::Landed);
+    let hold = landed
+        .release_held
+        .get(&WorktreeLease::new(LEASE_TWO))
+        .expect("the refused release is recorded as held");
+    assert!(
+        hold.reason.contains("github.com/nunoras/other"),
+        "{}",
+        hold.reason
+    );
+
+    daemon.tick().expect("later ticks stay alive");
+    assert_eq!(
+        golden.task().state,
+        TaskState::Running,
+        "the in-flight task is untouched"
+    );
+}

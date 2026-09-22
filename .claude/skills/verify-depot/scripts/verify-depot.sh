@@ -97,6 +97,7 @@ step=guard
 daemon_pids=""
 tmux_socket=""
 command_count=0
+frame_count=0
 
 inside "$throwaway" "$real_agni_home" && refuse "the throwaway $throwaway lands inside $real_agni_home"
 inside "$evidence_root" "$real_agni_home" && refuse "the evidence root $evidence_root lands inside $real_agni_home"
@@ -171,7 +172,7 @@ trap on_exit EXIT
 trap 'fail "interrupted by SIGINT"' INT
 trap 'fail "terminated by SIGTERM"' TERM
 
-mkdir -p "$run_dir/commands"
+mkdir -p "$run_dir/commands" "$run_dir/frames"
 say "verify: feature $feature"
 say "verify: evidence $run_dir"
 
@@ -199,6 +200,61 @@ run_in() {
   } >>"$run_dir/transcript.txt"
   last="$base"
   last_code="$code"
+  frame_command "$label" "$base" "$code"
+}
+
+next_frame() {
+  frame_count=$((frame_count + 1))
+  printf -v frame '%s/frames/%02d-%s.ansi' "$run_dir" "$frame_count" "$1"
+}
+
+frame_command() {
+  local frame
+  next_frame "$1"
+  {
+    printf '\033[2m$\033[0m %s\n' "$(cat "$2.cmd")"
+    cat "$2.out"
+    [ -s "$2.err" ] && printf '\033[31m%s\033[0m\n' "$(cat "$2.err")"
+    printf '\033[2m[exit %s]\033[0m\n' "$3"
+  } >"$frame"
+}
+
+frame_pane() {
+  local frame
+  next_frame "$1"
+  tmux -L "$tmux_socket" capture-pane -p -e -t verify >"$frame" 2>/dev/null || true
+}
+
+video_blocker() {
+  command -v ffmpeg >/dev/null 2>&1 || { printf 'no ffmpeg on PATH'; return; }
+  command -v python3 >/dev/null 2>&1 || { printf 'no python3 on PATH'; return; }
+  command -v google-chrome >/dev/null 2>&1 || command -v chromium >/dev/null 2>&1 || printf 'no headless chrome on PATH'
+}
+
+make_video() {
+  local blocker ansi png fitted list="$run_dir/frames/concat.txt" fit_dir="$run_dir/frames/fit"
+  blocker="$(video_blocker)"
+  if [ -n "$blocker" ]; then
+    note video "skipped: $blocker"
+    return
+  fi
+  [ "$frame_count" -gt 0 ] || { note video "skipped: no frames"; return; }
+  mkdir -p "$fit_dir"
+  : >"$list"
+  for ansi in "$run_dir"/frames/*.ansi; do
+    png="${ansi%.ansi}.png"
+    python3 "$skill_dir/scripts/render-frame.py" "$ansi" "$png" >/dev/null || fail "could not render $ansi"
+    fitted="$fit_dir/$(basename "$png")"
+    ffmpeg -loglevel error -y -i "$png" \
+      -vf "scale=1280:800:force_original_aspect_ratio=decrease,pad=1280:800:0:0:color=0x161616" "$fitted" ||
+      fail "could not fit $png"
+    printf "file '%s'\nduration 2\n" "$fitted" >>"$list"
+  done
+  printf "file '%s'\n" "$fitted" >>"$list"
+  ffmpeg -loglevel error -y -f concat -safe 0 -i "$list" -vf format=yuv420p -r 30 -movflags +faststart \
+    "$run_dir/proof.mp4" || fail "ffmpeg could not stitch $list"
+  rm -rf "$fit_dir" "$list"
+  note video "$run_dir/proof.mp4"
 }
 
 expect_exit() { [ "$last_code" = "$1" ] || fail "$(cat "$last.cmd") exited $last_code, expected $1; read $last.err"; }
@@ -448,11 +504,13 @@ drive_status_tui() {
     "env AGNI_HOME='$AGNI_HOME' BOXR_HOME='$BOXR_HOME' PATH='$PATH' depot status --tui" ||
     fail "tmux could not start the TUI session"
   wait_for_pane 'q quit' "$run_dir/tui-live.txt"
+  frame_pane tui-live
   grep -q 'Held for approval' "$run_dir/tui-live.txt" || fail "the live TUI does not list the held task; read $run_dir/tui-live.txt"
   grep -q 'Cancelled early' "$run_dir/tui-live.txt" && fail "the live TUI lists a cancelled task before history is toggled; read $run_dir/tui-live.txt"
 
   tmux -L "$tmux_socket" send-keys -t verify h
   wait_for_pane 'Cancelled early' "$run_dir/tui-history.txt"
+  frame_pane tui-history
 
   tmux -L "$tmux_socket" send-keys -t verify q
   local waited=0
@@ -584,6 +642,7 @@ esac
 step=evidence
 [ -s "$run_dir/transcript.txt" ] || fail "no transcript was written"
 note commands "$command_count"
+make_video
 
 step=cleanup
 remove_throwaway
@@ -599,3 +658,4 @@ say "  result: ok"
 say "  commands: $command_count"
 say "  evidence: $run_dir"
 say "  transcript: $run_dir/transcript.txt"
+say "  video: $(sed -n 's/^video: //p' "$meta")"

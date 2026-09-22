@@ -491,6 +491,23 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             }
         }
 
+        FactKind::WorkerCommittedNothing { task, .. } => {
+            let accepting = next
+                .tasks
+                .get(task)
+                .is_some_and(|task| task.state == TaskState::Validating);
+            if accepting && let Some(task) = next.tasks.get_mut(task) {
+                task.state = TaskState::Failed;
+                task.retry = None;
+                task.failure = Some("the worker committed nothing".to_string());
+                task.updated_at = fact.at;
+                changed = true;
+                actions.push(Action::HoldForUser {
+                    task: task.id.clone(),
+                });
+            }
+        }
+
         FactKind::ValidationStarted { task, .. } => {
             if let Some(task) = next.tasks.get_mut(task)
                 && task.state == TaskState::Validating
@@ -672,6 +689,8 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                 }
             }
         }
+
+        FactKind::WorktreeBaselined { .. } => {}
 
         FactKind::BranchPushed { task, commit } => {
             if let Some(task) = next.tasks.get_mut(task)

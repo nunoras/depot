@@ -123,6 +123,7 @@ fn need_for(tag: FactTag, task: Option<&Task>) -> Need {
         },
         FactTag::ValidationFinished
         | FactTag::ValidationFailed
+        | FactTag::WorkerCommittedNothing
         | FactTag::WorkerLivenessChanged
         | FactTag::WorkerSessionFailed
         | FactTag::WorkerTurnUnresolved
@@ -166,6 +167,7 @@ fn need_for(tag: FactTag, task: Option<&Task>) -> Need {
         | FactTag::WorkerSubmitted
         | FactTag::ValidationStarted
         | FactTag::WorktreeAcquired
+        | FactTag::WorktreeBaselined
         | FactTag::WorktreeReleased
         | FactTag::BranchPushed
         | FactTag::PullRequestOpened
@@ -266,10 +268,15 @@ fn headline(tag: FactTag, event: &RecordedEvent, task: Option<&Task>) -> Result<
             let reason = payload_field(&event.payload, "reason")?;
             format!("the validation could not run: {}", one_line(&reason))
         }
+        FactTag::WorkerCommittedNothing => "the worker committed nothing".to_string(),
         FactTag::WorktreeAcquired => match lease(task) {
             Some(lease) => format!("worktree lease `{lease}` acquired"),
             None => "a worktree was acquired".to_string(),
         },
+        FactTag::WorktreeBaselined => {
+            let commit = payload_field(&event.payload, "commit")?;
+            format!("worktree baselined at `{commit}`")
+        }
         FactTag::WorktreeReleased => {
             let lease = payload_field(&event.payload, "lease")?;
             format!("worktree lease `{lease}` returned to the pool")

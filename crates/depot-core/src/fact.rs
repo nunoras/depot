@@ -121,6 +121,10 @@ pub enum FactKind {
         task: TaskId,
         commit: CommitId,
     },
+    WorkerCommittedNothing {
+        task: TaskId,
+        commit: CommitId,
+    },
     ValidationStarted {
         task: TaskId,
         commit: CommitId,
@@ -144,6 +148,10 @@ pub enum FactKind {
         lease: WorktreeLease,
         baseline: crate::action::Baseline,
         included: Vec<Dependency>,
+    },
+    WorktreeBaselined {
+        task: TaskId,
+        commit: CommitId,
     },
     WorktreeReleased {
         task: TaskId,

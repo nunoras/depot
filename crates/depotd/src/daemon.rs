@@ -1720,6 +1720,15 @@ where
         if owed.is_empty() {
             return Ok(());
         }
+        if !sweep
+            && !owed.iter().any(|task| {
+                task.release_pending
+                    .iter()
+                    .any(|lease| self.lease_is_due(task, lease))
+            })
+        {
+            return Ok(());
+        }
         let repo = self.repository()?;
         let pool = match self.worktrees.pool(&repo) {
             Ok(pool) => pool,
@@ -1735,15 +1744,7 @@ where
                 task.release_pending.clone()
             };
             for lease in leases {
-                if task.attempts.iter().any(|attempt| {
-                    attempt.outcome.is_open() && attempt.worktree.as_ref() == Some(&lease)
-                }) {
-                    continue;
-                }
-                let held_recently = task.release_held.get(&lease).is_some_and(|hold| {
-                    now().millis().saturating_sub(hold.at.millis()) < RELEASE_HOLD_BACKOFF_MILLIS
-                });
-                if held_recently {
+                if !self.lease_is_due(task, &lease) {
                     continue;
                 }
                 if let Err(error) = self.release_from(&task.id, &lease, &pool) {
@@ -1752,6 +1753,19 @@ where
             }
         }
         Ok(())
+    }
+
+    fn lease_is_due(&self, task: &Task, lease: &WorktreeLease) -> bool {
+        let open = task
+            .attempts
+            .iter()
+            .any(|attempt| attempt.outcome.is_open() && attempt.worktree.as_ref() == Some(lease));
+        if open {
+            return false;
+        }
+        !task.release_held.get(lease).is_some_and(|hold| {
+            now().millis().saturating_sub(hold.at.millis()) < RELEASE_HOLD_BACKOFF_MILLIS
+        })
     }
 
     fn reconcile_notify(&self) -> Result<()> {
@@ -2131,19 +2145,29 @@ where
             let Some(session) = attempt.session.clone() else {
                 continue;
             };
-            if !self.session_is_running(&session)? {
+            let key = stop_confirmed_key(&task.id, task.attempts.len(), &session);
+            if self.store.event(&self.project.id, &key)?.is_some() {
                 continue;
             }
-            self.deferring(&task.id, || self.stop(task.id.clone()))?;
+            match self.sessions.status(&session) {
+                Ok(status) if status.state == crate::adapters::sessions::SessionState::Running => {
+                    self.deferring(&task.id, || self.stop(task.id.clone()))?;
+                }
+                Ok(_) => {
+                    self.record(
+                        &key,
+                        Fact {
+                            at: now(),
+                            kind: FactKind::WorkerTurnEnded {
+                                task: task.id.clone(),
+                            },
+                        },
+                    )?;
+                }
+                Err(_) => {}
+            }
         }
         Ok(())
-    }
-
-    fn session_is_running(&self, session: &SessionId) -> Result<bool> {
-        Ok(matches!(
-            self.sessions.status(session),
-            Ok(status) if status.state == crate::adapters::sessions::SessionState::Running
-        ))
     }
 
     fn reconcile_sessions(&self) -> Result<()> {
@@ -2839,6 +2863,15 @@ fn owed_leases(task: &Task, pool: &[PoolEntry]) -> Vec<WorktreeLease> {
         }
     }
     leases
+}
+
+fn stop_confirmed_key(task: &TaskId, attempt: usize, session: &SessionId) -> String {
+    event_key(&[
+        "worker_turn_ended",
+        task.as_str(),
+        &attempt.to_string(),
+        session.as_str(),
+    ])
 }
 
 fn log(kind: &str, value: &str) {

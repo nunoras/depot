@@ -248,7 +248,10 @@ pub fn retry_task(home: &DepotHome, selection: Option<&str>, id: &str) -> Result
     let store = Store::open(home)?;
     let (project, id) = resolve_task(&store, selection, id)?;
     let current = task(&store, &project, &id)?;
-    if !matches!(current.state, TaskState::Failed | TaskState::Cancelled) {
+    if !matches!(
+        current.state,
+        TaskState::Held | TaskState::Failed | TaskState::Cancelled
+    ) {
         return Err(transition_refused(&current, "retried"));
     }
     let fact = Fact {
@@ -504,7 +507,10 @@ fn check_descends_from_base(
             }
         }
         depot_core::Baseline::DefaultBranchHead => {
-            let base = store.project_config(project)?.pull_request.base;
+            let base = match crate::project_file::ProjectFile::read_for_base(worktree) {
+                Ok(file) => file.base_branch,
+                Err(_) => store.project_config(project)?.pull_request.base,
+            };
             let remote = format!("origin/{base}");
             if git_in(worktree, &["rev-parse", "--verify", &remote]).is_ok()
                 && git_in(worktree, &["merge-base", "HEAD", &remote]).is_err()

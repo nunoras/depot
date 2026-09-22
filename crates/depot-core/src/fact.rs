@@ -125,6 +125,11 @@ pub enum FactKind {
         task: TaskId,
         commit: CommitId,
     },
+    ProjectFileChanged {
+        task: TaskId,
+        commit: CommitId,
+        files: Vec<String>,
+    },
     ValidationFinished {
         task: TaskId,
         command: String,

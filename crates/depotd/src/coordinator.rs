@@ -7,6 +7,7 @@ use crate::documents::write_document;
 use crate::error::{Error, Result};
 use crate::home::ProjectHome;
 use crate::project::Project;
+use crate::project_file::ProjectFile;
 use crate::store::Store;
 use crate::vocabulary::role_name;
 
@@ -32,15 +33,23 @@ pub struct CoordinatorContext {
     pub project: Project,
     pub home: ProjectHome,
     pub config: ProjectConfig,
+    pub project_file: Option<ProjectFile>,
     pub state: ProjectState,
 }
 
 impl Store {
     pub fn coordinator_context(&self, project: &Project) -> Result<CoordinatorContext> {
+        let project_file = match project.kind {
+            crate::project::LocationKind::Path => {
+                ProjectFile::load_optional(std::path::Path::new(project.id.as_str()))?
+            }
+            crate::project::LocationKind::Url => None,
+        };
         Ok(CoordinatorContext {
             project: project.clone(),
             home: self.home().project_home(&project.slug),
             config: self.project_config(project)?,
+            project_file,
             state: self.project_state(project)?,
         })
     }
@@ -105,7 +114,7 @@ impl CoordinatorContext {
         let output = output_destination(task, &self.home);
         let done = done_criteria(task.role);
         let dependencies = dependency_lines(&self.state, task);
-        let validation = validation_note(&self.config);
+        let validation = validation_note(&self.config, self.project_file.as_ref());
         let worker_context = worker_context(task)?;
         let store = display(self.home.root());
         let checklist = display(&self.checklist_path());
@@ -241,8 +250,11 @@ fn dependency_lines(state: &ProjectState, task: &Task) -> String {
     out
 }
 
-fn validation_note(config: &ProjectConfig) -> String {
-    let command = config.validation.command.trim();
+fn validation_note(config: &ProjectConfig, project_file: Option<&ProjectFile>) -> String {
+    let command = project_file
+        .map(|file| file.validation.command.as_str())
+        .unwrap_or(config.validation.command.as_str())
+        .trim();
     if command.is_empty() {
         "This project configures no validation command, so the daemon has nothing to run against \
          your commit."

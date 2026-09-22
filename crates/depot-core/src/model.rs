@@ -82,6 +82,7 @@ pub enum TaskState {
     Validated,
     PrOpen,
     ReworkPending,
+    Held,
     Landed,
     Failed,
     Cancelled,
@@ -100,6 +101,7 @@ impl TaskState {
             self,
             TaskState::WaitingOnQuestion
                 | TaskState::PrOpen
+                | TaskState::Held
                 | TaskState::Landed
                 | TaskState::Failed
                 | TaskState::Cancelled

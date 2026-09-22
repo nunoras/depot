@@ -35,6 +35,7 @@ pub fn state_name(state: TaskState) -> &'static str {
         TaskState::Validated => "validated",
         TaskState::PrOpen => "pr_open",
         TaskState::ReworkPending => "rework_pending",
+        TaskState::Held => "held",
         TaskState::Landed => "landed",
         TaskState::Failed => "failed",
         TaskState::Cancelled => "cancelled",
@@ -51,6 +52,7 @@ pub fn state_from_name(name: &str) -> Result<TaskState> {
         "validated" => Ok(TaskState::Validated),
         "pr_open" => Ok(TaskState::PrOpen),
         "rework_pending" => Ok(TaskState::ReworkPending),
+        "held" => Ok(TaskState::Held),
         "landed" => Ok(TaskState::Landed),
         "failed" => Ok(TaskState::Failed),
         "cancelled" => Ok(TaskState::Cancelled),
@@ -129,6 +131,7 @@ pub enum FactTag {
     WorkerSubmissionRecorded,
     WorkerSubmitted,
     ValidationStarted,
+    ProjectFileChanged,
     ValidationFinished,
     ValidationFailed,
     WorktreeAcquired,
@@ -185,6 +188,7 @@ pub fn fact_tag(kind: &FactKind) -> FactTag {
         FactKind::WorkerSubmissionRecorded { .. } => FactTag::WorkerSubmissionRecorded,
         FactKind::WorkerSubmitted { .. } => FactTag::WorkerSubmitted,
         FactKind::ValidationStarted { .. } => FactTag::ValidationStarted,
+        FactKind::ProjectFileChanged { .. } => FactTag::ProjectFileChanged,
         FactKind::ValidationFinished { .. } => FactTag::ValidationFinished,
         FactKind::ValidationFailed { .. } => FactTag::ValidationFailed,
         FactKind::WorktreeAcquired { .. } => FactTag::WorktreeAcquired,
@@ -242,6 +246,7 @@ pub fn fact_tag_name(tag: FactTag) -> &'static str {
         FactTag::WorkerSubmissionRecorded => "worker_submission_recorded",
         FactTag::WorkerSubmitted => "worker_submitted",
         FactTag::ValidationStarted => "validation_started",
+        FactTag::ProjectFileChanged => "project_file_changed",
         FactTag::ValidationFinished => "validation_finished",
         FactTag::ValidationFailed => "validation_failed",
         FactTag::WorktreeAcquired => "worktree_acquired",
@@ -299,6 +304,7 @@ pub fn fact_tag_from_name(name: &str) -> Result<FactTag> {
         "worker_submission_recorded" => FactTag::WorkerSubmissionRecorded,
         "worker_submitted" => FactTag::WorkerSubmitted,
         "validation_started" => FactTag::ValidationStarted,
+        "project_file_changed" => FactTag::ProjectFileChanged,
         "validation_finished" => FactTag::ValidationFinished,
         "validation_failed" => FactTag::ValidationFailed,
         "worktree_acquired" => FactTag::WorktreeAcquired,
@@ -360,6 +366,7 @@ pub fn fact_task(kind: &FactKind) -> Option<TaskId> {
         | FactKind::WorkerSubmissionRecorded { task, .. }
         | FactKind::WorkerSubmitted { task, .. }
         | FactKind::ValidationStarted { task, .. }
+        | FactKind::ProjectFileChanged { task, .. }
         | FactKind::ValidationFinished { task, .. }
         | FactKind::ValidationFailed { task, .. }
         | FactKind::WorktreeAcquired { task, .. }

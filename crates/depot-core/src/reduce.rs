@@ -141,10 +141,12 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
         }
 
         FactKind::TaskRetried { task } => {
-            let retryable = next
-                .tasks
-                .get(task)
-                .is_some_and(|task| matches!(task.state, TaskState::Failed | TaskState::Cancelled));
+            let retryable = next.tasks.get(task).is_some_and(|task| {
+                matches!(
+                    task.state,
+                    TaskState::Held | TaskState::Failed | TaskState::Cancelled
+                )
+            });
             if retryable && let Some(task) = next.tasks.get_mut(task) {
                 task.state = TaskState::Approved;
                 task.retry = None;
@@ -496,6 +498,22 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                 && task.state == TaskState::Validating
             {
                 task.updated_at = fact.at;
+            }
+        }
+
+        FactKind::ProjectFileChanged { task, files, .. } => {
+            let holding = next
+                .tasks
+                .get(task)
+                .is_some_and(|task| task.state == TaskState::Validating);
+            if holding {
+                if let Some(task) = next.tasks.get_mut(task) {
+                    task.state = TaskState::Held;
+                    task.failure = Some(crate::project_file::project_file_hold_reason(files));
+                    task.updated_at = fact.at;
+                }
+                changed = true;
+                actions.push(Action::HoldForUser { task: task.clone() });
             }
         }
 

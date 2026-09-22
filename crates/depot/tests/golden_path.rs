@@ -316,6 +316,109 @@ fn a_merged_pull_request_lands_a_task_that_is_waiting_on_a_rework() {
 }
 
 #[test]
+fn a_landed_task_stops_reporting_the_checks_of_its_merged_pull_request() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_submits();
+    let commit = golden.head();
+    golden.script_pull_request(&commit);
+    golden.script_failing_checks(&commit);
+    daemon
+        .tick()
+        .expect("the daemon validates the commit and opens the pull request");
+
+    let open = golden.status();
+    assert!(open.contains("checks failing"), "{open}");
+
+    golden.script_merge(&commit);
+    daemon.tick().expect("the daemon observes the merge");
+
+    assert_eq!(golden.task().state, TaskState::Landed);
+    let landed = golden.status_history();
+    assert!(
+        !landed.contains("checks failing"),
+        "a landed task never reports the checks of a merged pull request: {landed}"
+    );
+}
+
+#[test]
+fn a_rework_chain_polls_its_shared_pull_request_once_per_tick() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_submits();
+    let commit = golden.head();
+    golden.script_pull_request(&commit);
+    daemon
+        .tick()
+        .expect("the daemon validates the commit and opens the pull request");
+    assert_eq!(golden.task().state, TaskState::PrOpen);
+
+    assert_eq!(
+        golden.depot_ok(&[
+            "task",
+            "rework",
+            TASK,
+            "--text",
+            "address the review",
+            "--project",
+            SLUG,
+        ]),
+        format!("rework filed against {TASK}\n")
+    );
+    let mut fix = golden
+        .store
+        .task(&golden.project.id, &TaskId::new(TASK_TWO))
+        .expect("the rework is read")
+        .expect("the rework exists");
+    assert!(
+        fix.pull_request().is_some(),
+        "the rework inherits the pull request link"
+    );
+    fix.state = TaskState::PrOpen;
+    golden
+        .store
+        .put_task(&fix)
+        .expect("the rework is placed at its pull request");
+
+    let before = check_run_calls(&golden);
+    daemon
+        .tick()
+        .expect("the daemon polls the shared pull request");
+    assert_eq!(
+        check_run_calls(&golden) - before,
+        1,
+        "one pull request is polled once per tick"
+    );
+
+    golden.script_merge(&commit);
+    daemon.tick().expect("the daemon observes the merge");
+
+    assert_eq!(golden.task().state, TaskState::Landed);
+    assert_eq!(
+        golden
+            .events()
+            .into_iter()
+            .filter(|event| event.kind == MERGED)
+            .count(),
+        1,
+        "a merge is journaled once for the whole chain"
+    );
+}
+
+fn check_run_calls(golden: &Golden) -> usize {
+    golden
+        .forge
+        .requests()
+        .iter()
+        .filter(|request| request.path.ends_with("/check-runs"))
+        .count()
+}
+
+#[test]
 fn a_worker_question_is_relayed_answered_and_the_worker_resumes_with_the_answer() {
     let golden = Golden::new(Validation::Passing);
     let daemon = golden.daemon();

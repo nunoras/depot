@@ -326,6 +326,14 @@ impl Task {
             _ => false,
         }
     }
+
+    pub fn may_still_land(&self) -> bool {
+        match self.state {
+            TaskState::PrOpen | TaskState::ReworkPending => true,
+            TaskState::Failed => self.acknowledged_at.is_none(),
+            _ => false,
+        }
+    }
 }
 
 impl Default for Task {

@@ -818,6 +818,7 @@ where
         self.reconcile_sessions()?;
         self.reconcile_stops()?;
         self.reconcile_leases(true)?;
+        self.reconcile_stale_merges()?;
         self.reconcile_notify()
     }
 
@@ -2417,6 +2418,60 @@ where
             .update_pull_request(task, repo, number, &title, &body)
     }
 
+    fn observe_shared(
+        &self,
+        task: &Task,
+        number: u64,
+        polled: &mut BTreeMap<u64, Option<ObservedPullRequest>>,
+    ) -> Option<ObservedPullRequest> {
+        polled
+            .entry(number)
+            .or_insert_with(|| {
+                self.project_repo()
+                    .and_then(|repo| self.delivery.observe_pull_request(task, &repo))
+                    .unwrap_or_else(|error| {
+                        log("forge_unavailable", &error.to_string());
+                        None
+                    })
+            })
+            .clone()
+    }
+
+    fn reconcile_stale_merges(&self) -> Result<()> {
+        let state = self.store.project_state(&self.project)?;
+        let mut polled: BTreeMap<u64, Option<ObservedPullRequest>> = BTreeMap::new();
+        let mut settled: BTreeSet<u64> = BTreeSet::new();
+        for task in state.tasks.values() {
+            if task.state != TaskState::Failed || task.acknowledged_at.is_some() {
+                continue;
+            }
+            let Some((number, _, _)) = task.pull_request() else {
+                continue;
+            };
+            let Some(observed) = self.observe_shared(task, number, &mut polled) else {
+                continue;
+            };
+            if observed.state != PrState::Merged || !settled.insert(number) {
+                continue;
+            }
+            self.record(
+                &event_key(&[
+                    "pull_request_merged",
+                    task.id.as_str(),
+                    observed.commit.as_str(),
+                ]),
+                Fact {
+                    at: now(),
+                    kind: FactKind::PullRequestMerged {
+                        task: task.id.clone(),
+                        commit: observed.commit,
+                    },
+                },
+            )?;
+        }
+        Ok(())
+    }
+
     fn reconcile_forge(&self) -> Result<()> {
         let state = self.store.project_state(&self.project)?;
         let mut polled: BTreeMap<u64, Option<ObservedPullRequest>> = BTreeMap::new();
@@ -2429,24 +2484,7 @@ where
             let Some((number, _, recorded)) = task.pull_request() else {
                 continue;
             };
-            let observed = match polled.get(&number) {
-                Some(observed) => observed.clone(),
-                None => {
-                    let observed = match self
-                        .project_repo()
-                        .and_then(|repo| self.delivery.observe_pull_request(task, &repo))
-                    {
-                        Ok(observed) => observed,
-                        Err(error) => {
-                            log("forge_unavailable", &error.to_string());
-                            None
-                        }
-                    };
-                    polled.insert(number, observed.clone());
-                    observed
-                }
-            };
-            let Some(mut observed) = observed else {
+            let Some(mut observed) = self.observe_shared(task, number, &mut polled) else {
                 continue;
             };
             let at = now();

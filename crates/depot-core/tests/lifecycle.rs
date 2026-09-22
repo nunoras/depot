@@ -3306,6 +3306,37 @@ fn a_merged_pull_request_settles_the_rework_family() {
             subject(state, "t1").state == TaskState::Landed
                 && subject(state, "t3").state == TaskState::Cancelled
         }),
+        case(
+            "a merge no member of the family validated holds the whole family",
+            state(vec![
+                rework_pending("t1", None, "c1"),
+                rework_pending("t2", Some("t1"), "c2"),
+                rework("t3", "t2", AttemptOutcome::InFlight, Some("w1")),
+            ]),
+            vec![fact(
+                3_000,
+                FactKind::PullRequestMerged {
+                    task: task_id("t1"),
+                    commit: commit("c9"),
+                },
+            )],
+        )
+        .when(
+            "t1",
+            TaskState::Failed,
+            vec![
+                Action::StopSession {
+                    task: task_id("t3"),
+                },
+                hold("t1"),
+                Action::RenderChecklist,
+            ],
+        )
+        .checking(|state| {
+            subject(state, "t1").state == TaskState::Failed
+                && subject(state, "t2").state == TaskState::Failed
+                && subject(state, "t3").state == TaskState::Failed
+        }),
     ]);
 }
 

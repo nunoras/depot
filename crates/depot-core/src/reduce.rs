@@ -761,10 +761,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
         }
 
         FactKind::PullRequestMerged { task, commit } => {
-            let tracked = next
-                .tasks
-                .get(task)
-                .is_some_and(|task| task.state.tracks_pull_request());
+            let tracked = next.tasks.get(task).is_some_and(Task::may_still_land);
             if let Some(task) = next.tasks.get_mut(task) {
                 let cleared_refusal = task.merge_refused.take().is_some();
                 let cleared_conflict = task.conflict_base.take().is_some();
@@ -1242,9 +1239,19 @@ fn settle_merged_rework_family(
         .cloned()
         .collect();
     if owners.is_empty() {
-        if let Some(task) = state.tasks.get_mut(task) {
-            task.state = TaskState::Failed;
-            task.updated_at = at;
+        for id in &family {
+            let Some(member) = state.tasks.get_mut(id) else {
+                continue;
+            };
+            if matches!(member.state, TaskState::Landed | TaskState::Cancelled) {
+                continue;
+            }
+            let stopped = close_attempt(member, AttemptOutcome::Stopped, at);
+            member.state = TaskState::Failed;
+            member.updated_at = at;
+            if stopped {
+                actions.push(Action::StopSession { task: id.clone() });
+            }
         }
         *changed = true;
         actions.push(Action::HoldForUser { task: task.clone() });

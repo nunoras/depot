@@ -409,6 +409,78 @@ fn a_rework_chain_polls_its_shared_pull_request_once_per_tick() {
     );
 }
 
+#[test]
+fn a_stale_rework_pending_row_is_settled_by_the_next_poll() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_submits();
+    let commit = golden.head();
+    golden.script_pull_request(&commit);
+    daemon
+        .tick()
+        .expect("the daemon validates the commit and opens the pull request");
+
+    let mut stale = golden.task();
+    stale.state = TaskState::ReworkPending;
+    golden
+        .store
+        .put_task(&stale)
+        .expect("the row an earlier daemon left behind is stored");
+
+    golden.script_merge(&commit);
+    let restarted = golden.daemon();
+    restarted
+        .recover()
+        .expect("the daemon starts against the store");
+    restarted
+        .tick()
+        .expect("the first poll settles the row the earlier daemon left");
+
+    assert_eq!(
+        golden.task().state,
+        TaskState::Landed,
+        "a rework pending row whose pull request merged is landed on the next poll"
+    );
+}
+
+#[test]
+fn a_stale_failed_row_is_settled_by_the_next_poll() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_submits();
+    let commit = golden.head();
+    golden.script_pull_request(&commit);
+    daemon
+        .tick()
+        .expect("the daemon validates the commit and opens the pull request");
+
+    let mut stale = golden.task();
+    stale.state = TaskState::Failed;
+    golden
+        .store
+        .put_task(&stale)
+        .expect("the row an earlier daemon left behind is stored");
+
+    golden.script_merge(&commit);
+    let restarted = golden.daemon();
+    restarted
+        .recover()
+        .expect("the daemon starts against the store");
+    restarted
+        .tick()
+        .expect("the first poll settles the row the earlier daemon left");
+
+    assert_eq!(
+        golden.task().state,
+        TaskState::Landed,
+        "a failed row whose pull request merged is landed on the next poll"
+    );
+}
+
 fn check_run_calls(golden: &Golden) -> usize {
     golden
         .forge

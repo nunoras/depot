@@ -151,9 +151,14 @@ pub fn encode_payload(kind: &FactKind) -> String {
                 optional(base.as_ref().map(|commit| quoted(commit.as_str()))),
             ),
         ]),
-        FactKind::WorkerCommittedNothing { task, commit } => object(vec![
+        FactKind::WorkerCommittedNothing {
+            task,
+            commit,
+            reason,
+        } => object(vec![
             ("task", quoted(task.as_str())),
             ("commit", quoted(commit.as_str())),
+            ("reason", quoted(reason)),
         ]),
         FactKind::ValidationStarted { task, commit } => object(vec![
             ("task", quoted(task.as_str())),

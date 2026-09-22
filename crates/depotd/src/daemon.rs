@@ -34,6 +34,9 @@ const MAX_RESUME_ATTEMPTS: u32 = 3;
 const MAX_DEFERRED_ATTEMPTS: u32 = 3;
 const LIVENESS_REFRESH_MILLIS: u64 = 60_000;
 const RELEASE_HOLD_BACKOFF_MILLIS: u64 = 60_000;
+const COMMITTED_NOTHING_REASON: &str = "the worker committed nothing";
+const COMMIT_ALREADY_ON_BASE_REASON: &str =
+    "the submitted commit is already on the base branch and this attempt adds nothing over it";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DaemonScope {
@@ -2307,11 +2310,24 @@ where
             if task.validations.iter().any(|v| v.commit == commit) {
                 continue;
             }
-            if self.baselined_commit(&task.id)?.as_ref() == Some(&commit)
-                || self.submitted_nothing_over_base(&task, &commit, base.as_ref())?
-            {
-                self.record_worker_committed_nothing(&task.id, &commit)?;
+            if self.baselined_commit(&task.id)?.as_ref() == Some(&commit) {
+                self.record_worker_committed_nothing(&task.id, &commit, COMMITTED_NOTHING_REASON)?;
                 continue;
+            }
+            match self.submitted_nothing_over_base(&task, &commit, base.as_ref()) {
+                Ok(true) => {
+                    self.record_worker_committed_nothing(
+                        &task.id,
+                        &commit,
+                        COMMIT_ALREADY_ON_BASE_REASON,
+                    )?;
+                    continue;
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    self.record_validation_failure(&task.id, &commit, &error.to_string())?;
+                    continue;
+                }
             }
             self.validate(task.id, commit)?;
         }
@@ -2366,13 +2382,11 @@ where
         )? {
             0 => Ok(true),
             1 => Ok(false),
-            code => {
-                log(
-                    "submitted-base-unreadable",
-                    &format!("git merge-base --is-ancestor exited {code}"),
-                );
-                Ok(false)
-            }
+            code => Err(Error::Project(format!(
+                "git merge-base --is-ancestor exited {code} for {} against base {}",
+                commit.as_str(),
+                base.as_str()
+            ))),
         }
     }
 
@@ -2398,7 +2412,12 @@ where
         Ok(Some(CommitId::new(commit)))
     }
 
-    fn record_worker_committed_nothing(&self, task: &TaskId, commit: &CommitId) -> Result<()> {
+    fn record_worker_committed_nothing(
+        &self,
+        task: &TaskId,
+        commit: &CommitId,
+        reason: &str,
+    ) -> Result<()> {
         log("worker-committed-nothing", task.as_str());
         self.record(
             &event_key(&["worker_committed_nothing", task.as_str(), commit.as_str()]),
@@ -2407,6 +2426,7 @@ where
                 kind: FactKind::WorkerCommittedNothing {
                     task: task.clone(),
                     commit: commit.clone(),
+                    reason: reason.to_owned(),
                 },
             },
         )

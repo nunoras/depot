@@ -491,7 +491,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             }
         }
 
-        FactKind::WorkerCommittedNothing { task, .. } => {
+        FactKind::WorkerCommittedNothing { task, reason, .. } => {
             let accepting = next
                 .tasks
                 .get(task)
@@ -499,7 +499,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             if accepting && let Some(task) = next.tasks.get_mut(task) {
                 task.state = TaskState::Failed;
                 task.retry = None;
-                task.failure = Some("the worker committed nothing".to_string());
+                task.failure = Some(reason.clone());
                 task.updated_at = fact.at;
                 changed = true;
                 actions.push(Action::HoldForUser {

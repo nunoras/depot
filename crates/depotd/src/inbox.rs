@@ -268,7 +268,10 @@ fn headline(tag: FactTag, event: &RecordedEvent, task: Option<&Task>) -> Result<
             let reason = payload_field(&event.payload, "reason")?;
             format!("the validation could not run: {}", one_line(&reason))
         }
-        FactTag::WorkerCommittedNothing => "the worker committed nothing".to_string(),
+        FactTag::WorkerCommittedNothing => {
+            let reason = payload_field(&event.payload, "reason")?;
+            one_line(&reason)
+        }
         FactTag::WorktreeAcquired => match lease(task) {
             Some(lease) => format!("worktree lease `{lease}` acquired"),
             None => "a worktree was acquired".to_string(),

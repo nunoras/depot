@@ -125,6 +125,7 @@ pub enum FactKind {
     WorkerCommittedNothing {
         task: TaskId,
         commit: CommitId,
+        reason: String,
     },
     ValidationStarted {
         task: TaskId,

@@ -3049,7 +3049,7 @@ fn a_project_describes_against_the_fetched_base_without_a_local_base_branch() {
 }
 
 #[test]
-fn a_commit_already_on_the_base_branch_lands_without_a_pull_request() {
+fn a_commit_pushed_to_the_base_after_submitting_lands_without_a_pull_request() {
     let golden = Golden::new(Validation::Passing);
     let daemon = golden.daemon();
     golden.propose();
@@ -3202,7 +3202,9 @@ fn a_worker_that_fast_forwards_its_lease_and_commits_nothing_fails_instead_of_la
     assert_eq!(failed.state, TaskState::Failed);
     assert_eq!(
         failed.failure.as_deref(),
-        Some("the worker committed nothing")
+        Some(
+            "the submitted commit is already on the base branch and this attempt adds nothing over it"
+        )
     );
     assert!(
         golden
@@ -3271,6 +3273,47 @@ fn a_base_that_cannot_be_read_holds_the_task_instead_of_landing_it() {
 
     let inbox = golden.depot_ok(&["inbox", "--project", SLUG]);
     assert!(inbox.contains("the validation could not run"), "{inbox}");
+}
+
+#[test]
+fn a_lease_that_cannot_be_read_holds_the_task_instead_of_landing_it() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_submits();
+    std::fs::remove_dir_all(&golden.lease).expect("the lease is gone before the tick");
+
+    daemon
+        .tick()
+        .expect("a base object that cannot be read is recorded, not fatal");
+
+    let held = golden.task();
+    assert_eq!(held.state, TaskState::Failed);
+    assert!(
+        golden
+            .history(TASK)
+            .contains(&"validation_failed".to_string()),
+        "the unreadable base is on the journal: {:?}",
+        golden.history(TASK)
+    );
+    assert!(
+        !golden
+            .history(TASK)
+            .contains(&"task_landed_on_base".to_string()),
+        "a base object that could not be read never lands the task"
+    );
+    assert!(
+        !golden.history(TASK).contains(&PUSHED.to_string()),
+        "a base object that could not be read never pushes the branch"
+    );
+    assert_eq!(golden.pull_requests_opened(), 0);
+
+    let inbox = golden.depot_ok(&["inbox", "--project", SLUG]);
+    assert!(
+        inbox.contains("merge-base --is-ancestor exited 128"),
+        "the unreadable base is named as the cause: {inbox}"
+    );
 }
 
 #[test]

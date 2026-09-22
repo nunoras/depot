@@ -387,7 +387,7 @@ pub fn fact_task(kind: &FactKind) -> Option<TaskId> {
         | FactKind::StaleMergeObserved { task, .. }
         | FactKind::PullRequestMergeRefused { task, .. }
         | FactKind::PullRequestMergeabilityChanged { task, .. }
-        | FactKind::PullRequestClosedUnmerged { task }
+        | FactKind::PullRequestClosedUnmerged { task, .. }
         | FactKind::DescribeFailed { task, .. }
         | FactKind::EvidencePosted { task, .. }
         | FactKind::EvidenceFailed { task, .. }

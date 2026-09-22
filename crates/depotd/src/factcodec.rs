@@ -268,7 +268,15 @@ pub fn encode_payload(kind: &FactKind) -> String {
             ("task", quoted(task.as_str())),
             ("commit", quoted(commit.as_str())),
         ]),
-        FactKind::PullRequestClosedUnmerged { task } => task_field(task.as_str()),
+        FactKind::PullRequestClosedUnmerged {
+            task,
+            number,
+            commit,
+        } => object(vec![
+            ("task", quoted(task.as_str())),
+            ("number", numeric(number)),
+            ("commit", quoted(commit.as_str())),
+        ]),
         FactKind::PullRequestMergeRefused {
             task,
             commit,

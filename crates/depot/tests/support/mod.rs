@@ -580,11 +580,23 @@ impl Golden {
         );
     }
 
+    pub fn worker_submits_for(&self, task: &str) -> Output {
+        self.worker_in_for(
+            &self.lease,
+            task,
+            &script(&[&format!("depot submit --task {task} --project {SLUG}")]),
+        )
+    }
+
     fn worker(&self, body: &str) -> Output {
         self.worker_in(&self.lease, body)
     }
 
     fn worker_in(&self, directory: &Path, body: &str) -> Output {
+        self.worker_in_for(directory, TASK, body)
+    }
+
+    fn worker_in_for(&self, directory: &Path, task: &str, body: &str) -> Output {
         let name = if cfg!(windows) {
             "worker.cmd"
         } else {
@@ -605,7 +617,7 @@ impl Golden {
             .current_dir(directory)
             .env(HOME_ENV, self.home.root())
             .env_remove(LEGACY_HOME_ENV)
-            .env("DEPOT_TASK_ID", TASK)
+            .env("DEPOT_TASK_ID", task)
             .env("DEPOT_ATTEMPT_ID", LEASE)
             .env(
                 "PATH",
@@ -802,6 +814,39 @@ impl Golden {
             &format!("/repos/{REPOSITORY}/pulls/1"),
             200,
             &pull_request(commit, BASE, "closed", false, false),
+        );
+    }
+
+    pub fn script_replacement_pull_request(&self, number: u64, commit: &str) {
+        self.forge.route(
+            "GET",
+            &format!("/repos/{REPOSITORY}/commits/{commit}/check-runs"),
+            200,
+            &check_runs(),
+        );
+        self.forge.route(
+            "GET",
+            &format!("/repos/{REPOSITORY}/pulls/{number}"),
+            200,
+            &pull_request_numbered(number, commit, BASE, "open", false, true),
+        );
+        self.forge.replace_route_query(
+            "GET",
+            &format!("/repos/{REPOSITORY}/pulls"),
+            Some(&format!("state=open&head=nunoras%3A{BRANCH}")),
+            200,
+            &format!(
+                "[{{\"number\":{number},\"html_url\":\"https://forge.test/{REPOSITORY}/pull/{number}\",\"state\":\"open\"}}]"
+            ),
+        );
+    }
+
+    pub fn script_replacement_merged(&self, number: u64, commit: &str) {
+        self.forge.replace_route(
+            "GET",
+            &format!("/repos/{REPOSITORY}/pulls/{number}"),
+            200,
+            &pull_request_numbered(number, commit, BASE, "closed", true, false),
         );
     }
 
@@ -1155,7 +1200,25 @@ fn check_runs_with(conclusion: &str) -> String {
 }
 
 fn pull_request(commit: &str, base: &str, state: &str, merged: bool, mergeable: bool) -> String {
-    pull_request_with_body(commit, base, state, merged, mergeable, None)
+    pull_request_numbered(1, commit, base, state, merged, mergeable)
+}
+
+fn pull_request_numbered(
+    number: u64,
+    commit: &str,
+    base: &str,
+    state: &str,
+    merged: bool,
+    mergeable: bool,
+) -> String {
+    let merged = if state == "closed" {
+        format!("\"merged\":{merged},")
+    } else {
+        String::new()
+    };
+    format!(
+        "{{\"number\":{number},\"html_url\":\"https://forge.test/{REPOSITORY}/pull/{number}\",\"title\":\"Wire the store\",\"state\":\"{state}\",{merged}\"mergeable\":{mergeable},\"head\":{{\"sha\":\"{commit}\",\"ref\":\"{BRANCH}\"}},\"base\":{{\"sha\":\"{base}\"}}}}"
+    )
 }
 
 fn pull_request_with_body(

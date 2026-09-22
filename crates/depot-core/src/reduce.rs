@@ -709,12 +709,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             match state {
                 Some(TaskState::Validating) => {
                     if let Some(task) = next.tasks.get_mut(task) {
-                        if task.pull_request().is_none() {
-                            task.links.push(Link::PullRequest {
-                                number: *number,
-                                url: url.clone(),
-                                checks: Checks::Unknown,
-                            });
+                        if link_pull_request(task, *number, url) {
                             changed = true;
                         }
                         task.updated_at = fact.at;
@@ -723,13 +718,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                 Some(TaskState::Validated) => {
                     if let Some(task) = next.tasks.get_mut(task) {
                         let stopped = close_attempt(task, AttemptOutcome::Submitted, fact.at);
-                        if task.pull_request().is_none() {
-                            task.links.push(Link::PullRequest {
-                                number: *number,
-                                url: url.clone(),
-                                checks: Checks::Unknown,
-                            });
-                        }
+                        link_pull_request(task, *number, url);
                         task.state = TaskState::PrOpen;
                         task.updated_at = fact.at;
                         changed = true;
@@ -742,12 +731,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                 }
                 Some(TaskState::PrOpen) => {
                     if let Some(task) = next.tasks.get_mut(task) {
-                        if task.pull_request().is_none() {
-                            task.links.push(Link::PullRequest {
-                                number: *number,
-                                url: url.clone(),
-                                checks: Checks::Unknown,
-                            });
+                        if link_pull_request(task, *number, url) {
                             changed = true;
                         }
                         task.updated_at = fact.at;
@@ -801,12 +785,28 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             }
         }
 
-        FactKind::PullRequestClosedUnmerged { task } => {
-            let tracked = next.tasks.get(task).is_some_and(|task| {
-                !matches!(task.state, TaskState::Cancelled | TaskState::Landed)
+        FactKind::PullRequestClosedUnmerged {
+            task,
+            number,
+            commit,
+        } => {
+            let tracked = next.tasks.get(task).is_some_and(|record| {
+                !matches!(record.state, TaskState::Cancelled | TaskState::Landed)
+                    && record.pull_request().map(|(number, _, _)| number) == Some(*number)
             });
             if tracked {
-                cancel_rework_family(&mut next, task, fact.at, &mut actions, &mut changed);
+                if close_superseded_in_family(&next, task, *number, commit) {
+                    changed |= supersede_stale_close(
+                        &mut next,
+                        task,
+                        *number,
+                        commit,
+                        fact.at,
+                        &mut actions,
+                    );
+                } else {
+                    cancel_rework_family(&mut next, task, fact.at, &mut actions, &mut changed);
+                }
             }
         }
 
@@ -1383,6 +1383,127 @@ fn rework_ancestor_of(state: &ProjectState, candidate: &TaskId, owner: &TaskId) 
         current = parent;
     }
     false
+}
+
+fn close_superseded_in_family(
+    state: &ProjectState,
+    task: &TaskId,
+    number: u64,
+    commit: &CommitId,
+) -> bool {
+    rework_family(state, task).iter().any(|id| {
+        state.tasks.get(id).is_some_and(|member| {
+            !matches!(member.state, TaskState::Cancelled | TaskState::Landed)
+                && (member
+                    .pull_request()
+                    .is_some_and(|(recorded, _, _)| recorded != number)
+                    || member
+                        .branch_head
+                        .as_ref()
+                        .is_some_and(|head| head != commit))
+        })
+    })
+}
+
+fn supersede_stale_close(
+    state: &mut ProjectState,
+    task: &TaskId,
+    number: u64,
+    commit: &CommitId,
+    at: Timestamp,
+    actions: &mut Vec<Action>,
+) -> bool {
+    let family = rework_family(state, task);
+    let mut changed = false;
+    for id in family {
+        let Some(member) = state.tasks.get(&id) else {
+            continue;
+        };
+        if matches!(member.state, TaskState::Cancelled | TaskState::Landed)
+            || member.pull_request().map(|(recorded, _, _)| recorded) != Some(number)
+        {
+            continue;
+        }
+        let moved = member
+            .branch_head
+            .as_ref()
+            .is_some_and(|head| head != commit);
+        let Some(member) = state.tasks.get_mut(&id) else {
+            continue;
+        };
+        member
+            .links
+            .retain(|link| !matches!(link, Link::PullRequest { .. }));
+        member.updated_at = at;
+        changed = true;
+        if moved {
+            changed |= republish_after_stale_close(member, at, actions);
+        }
+    }
+    changed
+}
+
+fn republish_after_stale_close(task: &mut Task, at: Timestamp, actions: &mut Vec<Action>) -> bool {
+    task.links
+        .retain(|link| !matches!(link, Link::PullRequest { .. }));
+    task.state = TaskState::Validated;
+    task.merge_refused = None;
+    task.conflict_base = None;
+    task.updated_at = at;
+    let Some(commit) = task.validated_commit().cloned() else {
+        return true;
+    };
+    if task.hold_pr {
+        actions.push(Action::HoldForUser {
+            task: task.id.clone(),
+        });
+        return true;
+    }
+    if task.push_owed().is_some() {
+        actions.push(Action::Push {
+            task: task.id.clone(),
+            commit: commit.clone(),
+        });
+    }
+    actions.push(Action::OpenPullRequest {
+        task: task.id.clone(),
+        commit,
+    });
+    true
+}
+
+fn link_pull_request(task: &mut Task, number: u64, url: &str) -> bool {
+    let index = task
+        .links
+        .iter()
+        .position(|link| matches!(link, Link::PullRequest { .. }));
+    match index {
+        Some(index) => {
+            let Link::PullRequest {
+                number: recorded,
+                url: recorded_url,
+                checks,
+            } = &mut task.links[index]
+            else {
+                return false;
+            };
+            if *recorded == number {
+                return false;
+            }
+            *recorded = number;
+            *recorded_url = url.to_owned();
+            *checks = Checks::Unknown;
+            true
+        }
+        None => {
+            task.links.push(Link::PullRequest {
+                number,
+                url: url.to_owned(),
+                checks: Checks::Unknown,
+            });
+            true
+        }
+    }
 }
 
 fn close_rework_originals(state: &mut ProjectState, fix: &TaskId, end: TaskState, at: Timestamp) {

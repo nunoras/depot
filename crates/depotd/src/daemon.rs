@@ -2718,11 +2718,18 @@ where
                         continue;
                     }
                     self.record(
-                        &event_key(&["pull_request_closed_unmerged", task.id.as_str()]),
+                        &event_key(&[
+                            "pull_request_closed_unmerged",
+                            task.id.as_str(),
+                            &number.to_string(),
+                            observed.commit.as_str(),
+                        ]),
                         Fact {
                             at,
                             kind: FactKind::PullRequestClosedUnmerged {
                                 task: task.id.clone(),
+                                number,
+                                commit: observed.commit,
                             },
                         },
                     )?;

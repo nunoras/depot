@@ -205,6 +205,8 @@ pub enum FactKind {
     },
     PullRequestClosedUnmerged {
         task: TaskId,
+        number: u64,
+        commit: CommitId,
     },
     PullRequestMergeRefused {
         task: TaskId,

@@ -415,25 +415,51 @@ fn project_count(database: &std::path::Path) -> i64 {
         .expect("the count")
 }
 
+fn seed_an_interrupted_move(legacy: &std::path::Path, home: &DepotHome) -> ProjectId {
+    let source = legacy.join("depot.db");
+    let connection = Connection::open(&source).expect("the legacy database");
+    connection
+        .execute_batch("PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0;")
+        .expect("wal mode");
+    let checkpointed = legacy.join("depot.db-checkpointed");
+    std::fs::copy(&source, &checkpointed).expect("the checkpointed database");
+    connection
+        .execute_batch(
+            "INSERT INTO projects (id, kind, slug, created_at)
+             VALUES ('/work/wal-only', 'path', 'wal-only', 1700000000000);",
+        )
+        .expect("the uncheckpointed row");
+    std::fs::create_dir_all(home.root()).expect("the partially moved home");
+    std::fs::copy(legacy.join("depot.db-wal"), home.root().join("agni.db-wal"))
+        .expect("the wal the interrupted move left");
+    drop(connection);
+    std::fs::copy(&checkpointed, &source).expect("the database without the wal row");
+    std::fs::remove_file(&checkpointed).expect("the snapshot is removed");
+    ProjectId::new("/work/wal-only")
+}
+
 #[test]
 fn a_move_that_stopped_between_the_wal_and_the_database_finishes_on_the_next_run() {
     let (_temp, legacy, home) = a_legacy_home();
-    std::fs::create_dir_all(home.root()).expect("the partially moved home");
-    std::fs::write(home.root().join("agni.db-wal"), "orphan wal").expect("the orphan wal");
+    let wal_only = seed_an_interrupted_move(&legacy, &home);
 
     let migration = migrate_store(&home).expect("the interrupted move finishes");
 
     assert_eq!(migration.moved_from.as_deref(), Some(legacy.as_path()));
-    assert!(
-        !home.root().join("agni.db-wal").exists(),
-        "the orphan wal is cleared before the database moves"
-    );
     let store = Store::open(&home).expect("the moved store opens");
+    assert!(
+        store
+            .project(&wal_only)
+            .expect("projects are read")
+            .is_some(),
+        "the row committed into the moved wal survives the rerun"
+    );
     assert!(
         store
             .project(&ProjectId::new("/work/example"))
             .expect("projects are read")
-            .is_some()
+            .is_some(),
+        "the checkpointed rows survive too"
     );
 }
 

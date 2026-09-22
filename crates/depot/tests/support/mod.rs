@@ -26,7 +26,8 @@ use depotd::adapters::sessions::{Boxr, Sessions};
 use depotd::adapters::worktrees::Treehouse;
 use depotd::{
     DAEMON_SCOPE_FILE_NAME, Daemon, DepotHome, ForgeDelivery, HOME_ENV, InstanceLock,
-    OnEventSettings, ProfileSettings, Project, RecordedEvent, Settings, ShellValidation, Store,
+    LEGACY_HOME_ENV, OnEventSettings, ProfileSettings, Project, RecordedEvent, Settings,
+    ShellValidation, Store,
 };
 use depotd::{EventHook, NoEventHook, ShellEventHook};
 use fake_forge::FakeForge;
@@ -198,6 +199,7 @@ impl Golden {
                 repo.to_str().expect("the repository is utf-8"),
             ])
             .env(HOME_ENV, home.root())
+            .env_remove(LEGACY_HOME_ENV)
             .current_dir(&repo)
             .output()
             .expect("the depot binary runs");
@@ -450,6 +452,7 @@ impl Golden {
         Command::new(DEPOT)
             .args(arguments)
             .env(HOME_ENV, self.home.root())
+            .env_remove(LEGACY_HOME_ENV)
             .env("PATH", with_program(&self.fakes.join("bin")))
             .env(self.boxr.directory_env().0, self.boxr.directory_env().1)
             .current_dir(&self.repo)
@@ -570,6 +573,7 @@ impl Golden {
         command
             .current_dir(directory)
             .env(HOME_ENV, self.home.root())
+            .env_remove(LEGACY_HOME_ENV)
             .env("DEPOT_TASK_ID", TASK)
             .env("DEPOT_ATTEMPT_ID", LEASE)
             .env(

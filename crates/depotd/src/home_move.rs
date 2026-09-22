@@ -63,15 +63,15 @@ pub fn move_legacy_home(home: &DepotHome, mut lock: LegacyLock) -> Result<Option
     for entry in fs::read_dir(&legacy_root)? {
         let entry = entry?;
         let name = entry.file_name();
-        if is_database_file(&name) {
-            continue;
-        }
-        if name == OsStr::new(DAEMON_LOCK_FILE_NAME) {
-            lock.release();
-            fs::remove_file(entry.path())?;
+        if is_database_file(&name) || name == OsStr::new(DAEMON_LOCK_FILE_NAME) {
             continue;
         }
         move_entry(&entry.path(), &home.root().join(destination_for(&name)))?;
+    }
+    lock.release();
+    let lock_path = legacy_root.join(DAEMON_LOCK_FILE_NAME);
+    if lock_path.exists() {
+        fs::remove_file(&lock_path)?;
     }
     drop(lock);
     remove_if_empty(&legacy_root);
@@ -88,6 +88,7 @@ fn move_database(legacy_root: &Path, root: &Path) -> Result<()> {
     if !source.is_file() {
         return Ok(());
     }
+    checkpoint_database(&source)?;
     let destination = root.join(DATABASE_FILE_NAME);
     if destination.exists() {
         let source_projects = projects_in(&source)?;
@@ -103,24 +104,27 @@ fn move_database(legacy_root: &Path, root: &Path) -> Result<()> {
             remove_database(&source);
             return Ok(());
         }
+        remove_database(&destination);
     }
-    remove_database(&destination);
-    move_database_file(
-        &legacy_root.join(LEGACY_DATABASE_WAL),
-        &root.join(format!("{DATABASE_FILE_NAME}-wal")),
-    )?;
-    move_database_file(
-        &legacy_root.join(LEGACY_DATABASE_SHM),
-        &root.join(format!("{DATABASE_FILE_NAME}-shm")),
-    )?;
     fs::rename(&source, &destination)?;
     Ok(())
 }
 
-fn move_database_file(source: &Path, destination: &Path) -> Result<()> {
-    if source.exists() {
-        fs::rename(source, destination)?;
+fn checkpoint_database(database: &Path) -> Result<()> {
+    let connection = rusqlite::Connection::open(database)
+        .map_err(|error| Error::Home(format!("cannot read {}: {error}", database.display())))?;
+    let busy: i64 = connection
+        .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))
+        .map_err(|error| {
+            Error::Home(format!("cannot checkpoint {}: {error}", database.display()))
+        })?;
+    if busy != 0 {
+        return Err(Error::Home(format!(
+            "cannot checkpoint {}: it is in use; stop whatever holds it, then run `depot store migrate` again",
+            database.display()
+        )));
     }
+    drop(connection);
     Ok(())
 }
 

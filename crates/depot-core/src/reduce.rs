@@ -1238,25 +1238,6 @@ fn settle_merged_rework_family(
         .filter(|id| state.tasks.get(id).and_then(Task::validated_commit) == Some(commit))
         .cloned()
         .collect();
-    if owners.is_empty() {
-        for id in &family {
-            let Some(member) = state.tasks.get_mut(id) else {
-                continue;
-            };
-            if matches!(member.state, TaskState::Landed | TaskState::Cancelled) {
-                continue;
-            }
-            let stopped = close_attempt(member, AttemptOutcome::Stopped, at);
-            member.state = TaskState::Failed;
-            member.updated_at = at;
-            if stopped {
-                actions.push(Action::StopSession { task: id.clone() });
-            }
-        }
-        *changed = true;
-        actions.push(Action::HoldForUser { task: task.clone() });
-        return;
-    }
     if publication_blocked(state, task) {
         *changed = true;
         actions.push(Action::HoldForUser { task: task.clone() });
@@ -1269,7 +1250,8 @@ fn settle_merged_rework_family(
         if matches!(member.state, TaskState::Landed | TaskState::Cancelled) {
             continue;
         }
-        let lands = owners.contains(&id)
+        let lands = owners.is_empty()
+            || owners.contains(&id)
             || owners
                 .iter()
                 .any(|owner| rework_ancestor_of(state, &id, owner));

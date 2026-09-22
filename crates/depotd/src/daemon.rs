@@ -654,7 +654,7 @@ fn repo_slug(remote: &str) -> Result<RepoSlug> {
         .rsplit_once(':')
         .map(|(_, path)| path)
         .unwrap_or(remote);
-    let mut parts = target.rsplit('/');
+    let mut parts = target.rsplit(['/', '\\']);
     let name = parts.next().filter(|part| !part.is_empty());
     let owner = parts.next().filter(|part| !part.is_empty());
     match (owner, name) {
@@ -3518,6 +3518,28 @@ mod tests {
                 .expect("ssh remote")
                 .path(),
             "nunoras/depot"
+        );
+    }
+
+    #[test]
+    fn reads_local_path_remotes_on_every_platform() {
+        assert_eq!(
+            repo_slug("/mirrors/acme/widget.git")
+                .expect("unix path")
+                .path(),
+            "acme/widget"
+        );
+        assert_eq!(
+            repo_slug(r"C:\mirrors\acme\widget.git")
+                .expect("windows path")
+                .path(),
+            "acme/widget"
+        );
+        assert_eq!(
+            repo_slug("C:/mirrors/acme/widget.git")
+                .expect("drive path with forward slashes")
+                .path(),
+            "acme/widget"
         );
     }
 }

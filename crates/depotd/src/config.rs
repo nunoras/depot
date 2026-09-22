@@ -49,23 +49,23 @@ impl DispatchConfig {
     pub fn validated_rules(&self) -> Result<Vec<depot_core::DispatchRule>> {
         if depot_core::Confidence::new(self.confidence_floor).is_none() {
             return Err(Error::Config(
-                ".depot.toml dispatch.confidence_floor must be between 0 and 1".into(),
+                ".agni/project.toml dispatch.confidence_floor must be between 0 and 1".into(),
             ));
         }
         if self.rules.is_empty() {
             return Err(Error::Config(
-                ".depot.toml dispatch.rules is empty; configure at least one rule or supply --role"
+                ".agni/project.toml dispatch.rules is empty; configure at least one rule or supply --role"
                     .into(),
             ));
         }
         let mut seen = std::collections::BTreeSet::new();
         self.rules.iter().map(|rule| {
             if rule.when.trim().is_empty() || rule.when == crate::adapters::typesafe::NO_MATCH || !seen.insert(&rule.when) {
-                return Err(Error::Config(".depot.toml dispatch.rules requires unique, nonempty when strings distinct from the neutral option".into()));
+                return Err(Error::Config(".agni/project.toml dispatch.rules requires unique, nonempty when strings distinct from the neutral option".into()));
             }
-            let role = role_from_name(&rule.role).ok_or_else(|| Error::Config(format!("unknown dispatch rule role `{}` in .depot.toml", rule.role)))?;
+            let role = role_from_name(&rule.role).ok_or_else(|| Error::Config(format!("unknown dispatch rule role `{}` in .agni/project.toml", rule.role)))?;
             if rule.candidates.iter().any(|candidate| candidate.trim().is_empty()) {
-                return Err(Error::Config(".depot.toml dispatch rule contains an empty candidate profile".into()));
+                return Err(Error::Config(".agni/project.toml dispatch rule contains an empty candidate profile".into()));
             }
             Ok(depot_core::DispatchRule { when: rule.when.clone(), role, candidates: rule.candidates.iter().map(ProfileId::new).collect() })
         }).collect()

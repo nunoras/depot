@@ -2,7 +2,8 @@ mod support;
 
 use depot_core::{ProjectId, TaskId};
 use depotd::{
-    DepotHome, HOME_DIR_NAME, LEGACY_HOME_DIR_NAME, SCHEMA_VERSION, Store, migrate_store,
+    DepotHome, HOME_DIR_NAME, LEGACY_HOME_DIR_NAME, SCHEMA_VERSION, SETTINGS_FILE_NAME, Store,
+    migrate_store,
 };
 use fs2::FileExt;
 use rusqlite::Connection;
@@ -385,6 +386,38 @@ fn a_move_refuses_while_a_daemon_holds_the_legacy_lock_and_names_its_pid() {
         !home.root().exists(),
         "a refused move leaves no agni skeleton behind"
     );
+}
+
+#[test]
+fn a_checkpoint_refusal_leaves_the_legacy_settings_where_they_were() {
+    let (_temp, legacy, home) = a_legacy_home();
+    std::fs::write(
+        legacy.join(SETTINGS_FILE_NAME),
+        "[daemon]\ncoordinator_context_tokens = 4242\n",
+    )
+    .expect("the legacy settings");
+    let reader = Connection::open(legacy.join("depot.db")).expect("the legacy database");
+    reader
+        .execute_batch(
+            "PRAGMA journal_mode = WAL;
+             INSERT INTO projects (id, kind, slug, created_at)
+                 VALUES ('/work/wal', 'path', 'wal', 1700000000000);
+             BEGIN;
+             SELECT count(*) FROM projects;",
+        )
+        .expect("a held read snapshot");
+
+    let error = migrate_store(&home).expect_err("an open reader blocks the checkpoint");
+
+    assert!(
+        error.to_string().contains("cannot checkpoint"),
+        "the refusal names the checkpoint, got {error}"
+    );
+    assert!(
+        legacy.join(SETTINGS_FILE_NAME).is_file(),
+        "a refused move leaves the legacy settings where they were"
+    );
+    drop(reader);
 }
 
 fn empty_database(path: &std::path::Path) {

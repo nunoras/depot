@@ -57,6 +57,7 @@ pub fn move_legacy_home(home: &DepotHome, mut lock: LegacyLock) -> Result<Option
     if !legacy_root.is_dir() {
         return Ok(None);
     }
+    checkpoint_legacy_database(&legacy_root)?;
     home.ensure()?;
     move_settings(&legacy_root, home.root())?;
     move_database(&legacy_root, home.root())?;
@@ -88,7 +89,6 @@ fn move_database(legacy_root: &Path, root: &Path) -> Result<()> {
     if !source.is_file() {
         return Ok(());
     }
-    checkpoint_database(&source)?;
     let destination = root.join(DATABASE_FILE_NAME);
     if destination.exists() {
         let source_projects = projects_in(&source)?;
@@ -107,6 +107,14 @@ fn move_database(legacy_root: &Path, root: &Path) -> Result<()> {
         remove_database(&destination);
     }
     fs::rename(&source, &destination)?;
+    Ok(())
+}
+
+fn checkpoint_legacy_database(legacy_root: &Path) -> Result<()> {
+    let source = legacy_root.join(LEGACY_DATABASE_FILE_NAME);
+    if source.is_file() {
+        checkpoint_database(&source)?;
+    }
     Ok(())
 }
 

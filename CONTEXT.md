@@ -41,7 +41,7 @@ _Avoid_: checkout
 **Identity**:
 A project's `origin` remote reduced to lowercase host, owner and name, with the scheme, user, port, a trailing slash and `.git` dropped.
 It is what names a project, so every URL form of one remote is one project.
-_Avoid_: key, id
+_Avoid_: key
 
 **Clone**:
 One working copy of a project's repository on this machine, holding the path depot found it at and the origin that path actually carries.

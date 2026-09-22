@@ -1019,7 +1019,6 @@ where
         if self.launch_is_pending(&task)? {
             return self.surface_unresolved_turn(&task, "a previous launch intent never completed");
         }
-        self.store.ensure_clone_origin(&self.project)?;
         let task_record = self.task(&task)?;
         let worktree = match self.lease_for(&task_record) {
             Ok(worktree) => worktree,
@@ -2801,6 +2800,7 @@ where
     }
 
     fn repository(&self) -> Result<std::path::PathBuf> {
+        self.store.ensure_clone_origin(&self.project)?;
         self.store.project_path(&self.project)?.ok_or_else(|| {
             Error::Project(format!(
                 "project `{}` has no local clone to run",

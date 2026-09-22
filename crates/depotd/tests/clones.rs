@@ -104,6 +104,10 @@ fn acting_on_a_clone_whose_origin_moved_is_refused_while_a_task_is_in_flight() {
         &repo,
         &["remote", "set-url", "origin", "git@github.com:o/other.git"],
     );
+    let recorded = store
+        .clone_for_project(&added.project.id)
+        .expect("the clone is read")
+        .expect("the clone is recorded");
     let error = store
         .ensure_clone_origin(&added.project)
         .expect_err("a moved origin is refused while a task is in flight");
@@ -111,7 +115,7 @@ fn acting_on_a_clone_whose_origin_moved_is_refused_while_a_task_is_in_flight() {
     assert!(message.contains("github.com/o/r"), "got {message}");
     assert!(message.contains("github.com/o/other"), "got {message}");
     assert!(
-        message.contains(&repo.display().to_string()),
+        message.contains(&recorded.path.display().to_string()),
         "the refusal names the clone, got {message}"
     );
 }

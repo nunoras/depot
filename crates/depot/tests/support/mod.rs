@@ -330,6 +330,29 @@ impl Golden {
         .to_owned()
     }
 
+    pub fn repoint_to_github(&mut self) {
+        let origin = format!("git@github.com:{REPOSITORY}.git");
+        git::git(&self.repo, &["remote", "set-url", "origin", &origin]);
+        let output = self.depot(&["project", "repoint", SLUG, "--origin", &origin]);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "repointing the fixture failed: {}",
+            stderr(&output)
+        );
+        self.project = self
+            .store
+            .project(&depot_core::ProjectId::new(format!(
+                "github.com/{REPOSITORY}"
+            )))
+            .expect("the project is read")
+            .expect("the repointed project exists");
+    }
+
+    pub fn set_clone_remote(&self, origin: &str) {
+        git::git(&self.repo, &["remote", "set-url", "origin", origin]);
+    }
+
     pub fn set_auto_merge(&self, enabled: bool) {
         let path = self.repo.join(depotd::PROJECT_CONFIG_FILE_NAME);
         let text = fs::read_to_string(&path).expect("the project config is readable");

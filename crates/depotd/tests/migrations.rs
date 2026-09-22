@@ -744,3 +744,30 @@ fn the_migration_refuses_to_merge_two_paths_with_one_origin_when_both_have_tasks
         "the refusal says why, got {message}"
     );
 }
+
+#[test]
+fn the_migration_records_a_clone_for_a_path_project_whose_directory_is_absent() {
+    let fixture = support::fixture();
+    let missing = fixture.temp.path().join("unmounted").join("repo");
+    std::fs::create_dir_all(fixture.home.root()).expect("the home directory");
+    let connection = Connection::open(fixture.home.database_path()).expect("the database");
+    connection
+        .execute_batch(include_str!("fixtures/schema-v18.sql"))
+        .expect("v18 schema");
+    connection
+        .execute(
+            "INSERT INTO projects (id, kind, slug, created_at) VALUES (?1, 'path', 'repo', 1700000000000)",
+            [missing.to_string_lossy().as_ref()],
+        )
+        .expect("the project");
+    drop(connection);
+
+    let store = Store::open_migrating(&fixture.home).expect("the store migrates");
+
+    let clones = store
+        .clones_for_project(&ProjectId::new(missing.to_string_lossy().to_string()))
+        .expect("the clones are read");
+    assert_eq!(clones.len(), 1, "the absent path still gets a clone row");
+    assert_eq!(clones[0].path, missing);
+    assert_eq!(clones[0].origin, None);
+}

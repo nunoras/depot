@@ -185,7 +185,7 @@ impl Store {
             if project.id.as_str() != identity {
                 self.rekey_project(&project.id, &ProjectId::new(identity))?;
             }
-            self.record_clone_path(&ProjectId::new(identity), Path::new(project.id.as_str()))?;
+            self.record_clone_path(&ProjectId::new(identity), project)?;
             return Ok(());
         }
 
@@ -220,7 +220,7 @@ impl Store {
             self.rekey_project(&winner.id, &ProjectId::new(identity))?;
         }
         for member in &members {
-            self.record_clone_path(&ProjectId::new(identity), Path::new(member.id.as_str()))?;
+            self.record_clone_path(&ProjectId::new(identity), member)?;
         }
         Ok(())
     }
@@ -234,11 +234,24 @@ impl Store {
         Ok(count > 0)
     }
 
-    fn record_clone_path(&self, identity: &ProjectId, path: &Path) -> Result<()> {
-        if !path.is_dir() {
+    fn record_clone_path(&self, identity: &ProjectId, project: &Project) -> Result<()> {
+        if project.kind != LocationKind::Path {
             return Ok(());
         }
-        let origin = crate::identity::read_origin(path);
+        let path = Path::new(project.id.as_str());
+        let readable = path.is_dir();
+        if !readable {
+            eprintln!(
+                "warning: the project directory `{}` could not be read while rekeying; run `depot project repoint {} --origin <url>` once it is available",
+                path.display(),
+                project.slug,
+            );
+        }
+        let origin = if readable {
+            crate::identity::read_origin(path)
+        } else {
+            None
+        };
         self.put_clone(&Clone {
             project: identity.clone(),
             path: path.to_path_buf(),

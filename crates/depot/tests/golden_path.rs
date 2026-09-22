@@ -4360,7 +4360,7 @@ fn project_repoint_changes_the_identity_keeps_history_and_refuses_while_a_task_i
         "repoint",
         SLUG,
         "--origin",
-        "git@github.com:nunoras/depot.git",
+        "https://github.com/nunoras/depot",
     ]);
     assert_eq!(stale.status.code(), Some(1));
     assert!(
@@ -4382,7 +4382,7 @@ fn project_repoint_changes_the_identity_keeps_history_and_refuses_while_a_task_i
         "repoint",
         SLUG,
         "--origin",
-        "git@github.com:nunoras/depot.git",
+        "https://github.com/nunoras/depot",
     ]);
     assert!(
         repointed.contains("github.com/nunoras/depot"),
@@ -4395,11 +4395,130 @@ fn project_repoint_changes_the_identity_keeps_history_and_refuses_while_a_task_i
         .expect("the project is read")
         .expect("the rekeyed project exists");
     assert_eq!(project.slug, SLUG);
+    let clone = store
+        .clone_for_project(&project.id)
+        .expect("the clone is read")
+        .expect("the clone is recorded");
+    assert_eq!(
+        clone.origin.as_deref(),
+        Some("git@github.com:nunoras/depot.git"),
+        "repoint records the clone's live origin, not the typed one"
+    );
     assert!(
         store
             .task(&project.id, &TaskId::new(TASK))
             .expect("the task is read")
             .is_some(),
         "repointing keeps the task history"
+    );
+}
+
+#[test]
+fn re_adding_a_clone_under_another_url_form_of_the_same_origin_updates_it() {
+    let temp = tempfile::tempdir().expect("a temporary directory");
+    let home = depotd::DepotHome::at(temp.path().join("agni"));
+    home.ensure().expect("the agni home");
+    let repo = origin_repo(&temp.path().join("repos"), "repo", "git@github.com:o/r.git");
+
+    let first = run_depot(&home, &["project", "add", repo.to_str().expect("utf-8")]);
+    assert_eq!(
+        first.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&first.stdout).contains("github.com/o/r"),
+        "{}",
+        String::from_utf8_lossy(&first.stdout)
+    );
+
+    git::git(
+        &repo,
+        &["remote", "set-url", "origin", "https://github.com/o/r"],
+    );
+    let second = run_depot(&home, &["project", "add", repo.to_str().expect("utf-8")]);
+    assert_eq!(
+        second.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    let printed = String::from_utf8_lossy(&second.stdout);
+    assert!(
+        printed.contains("already registered github.com/o/r"),
+        "the second add must not fork the project: {printed}"
+    );
+    assert!(
+        !printed.contains("added clone"),
+        "the same path is not a second clone: {printed}"
+    );
+
+    let store = depotd::Store::open(&home).expect("the store opens");
+    let projects = store.projects().expect("the projects are read");
+    assert_eq!(projects.len(), 1, "one origin stays one project");
+    let clones = store
+        .clones_for_project(&projects[0].id)
+        .expect("the clones are read");
+    assert_eq!(clones.len(), 1, "the same path stays one clone");
+    assert_eq!(
+        clones[0].origin.as_deref(),
+        Some("https://github.com/o/r"),
+        "the recorded origin follows the clone's live remote"
+    );
+}
+
+#[test]
+fn a_clone_whose_origin_moved_is_refused_when_the_daemon_acts_on_it() {
+    let mut golden = Golden::new(Validation::Passing);
+    golden.repoint_to_github();
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    assert_eq!(golden.task().state, TaskState::Running);
+
+    golden.worker_commits_and_submits();
+    assert_eq!(golden.task().state, TaskState::Validating);
+
+    golden.set_clone_remote("git@github.com:nunoras/other.git");
+    daemon
+        .tick()
+        .expect("a refused validation does not stop the tick");
+
+    let held = golden.task();
+    assert_eq!(
+        held.state,
+        TaskState::Failed,
+        "the task is held when the clone no longer matches its project"
+    );
+    let inbox = golden.depot_ok(&["inbox", "--project", SLUG]);
+    assert!(inbox.contains("github.com/nunoras/depot"), "{inbox}");
+    assert!(inbox.contains("github.com/nunoras/other"), "{inbox}");
+}
+
+#[test]
+fn a_submit_from_a_clone_whose_origin_moved_is_refused() {
+    let mut golden = Golden::new(Validation::Passing);
+    golden.repoint_to_github();
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    assert_eq!(golden.task().state, TaskState::Running);
+
+    golden.set_clone_remote("git@github.com:nunoras/other.git");
+    let refused = golden.worker_commits_and_submits();
+    assert_eq!(
+        refused.status.code(),
+        Some(1),
+        "the submit is refused: {}",
+        String::from_utf8_lossy(&refused.stdout)
+    );
+    let message = String::from_utf8_lossy(&refused.stderr);
+    assert!(message.contains("github.com/nunoras/depot"), "{message}");
+    assert!(message.contains("github.com/nunoras/other"), "{message}");
+    assert_eq!(
+        golden.task().state,
+        TaskState::Running,
+        "a refused submit leaves the task where it was"
     );
 }

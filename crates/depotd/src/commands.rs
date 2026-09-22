@@ -14,7 +14,7 @@ use crate::home::DepotHome;
 use crate::inbox::{inbox_entries, render_inbox};
 use crate::project::Project;
 use crate::projects::{resolve_task, select_project};
-use crate::store::{Store, event_key};
+use crate::store::{Applied, EventOutcome, Store, event_key};
 use crate::vocabulary::{ROLE_NAMES, answered_by_from_name, role_from_name, role_name, state_name};
 
 pub struct TaskRequest {
@@ -66,7 +66,7 @@ pub fn add_task(home: &DepotHome, selection: Option<&str>, request: &TaskRequest
         facts.push((event_key(&["task_dispatch_judged", id.as_str()]), judgement));
     }
     facts.push((event_key(&["task_proposed", id.as_str()]), fact));
-    if store.apply_facts(&project, &facts)?.outcome == crate::EventOutcome::Duplicate {
+    if store.apply_facts(&project, &facts)?.outcome == EventOutcome::Duplicate {
         return Err(Error::Project(
             "another task was created concurrently; retry task creation".into(),
         ));
@@ -108,7 +108,15 @@ pub fn approve_tasks(
                 at: now(),
                 kind: FactKind::TaskApproved { task: id.clone() },
             };
-            apply(&store, &project, &["task_approved", id.as_str()], &fact)?;
+            apply(
+                &store,
+                &project,
+                &["task_approved", id.as_str()],
+                &fact,
+                &format!(
+                    "the `task_approved` fact is already recorded for task `{id}`; nothing changed"
+                ),
+            )?;
         }
         approved.push(task(&store, &project, &id)?);
     }
@@ -141,11 +149,7 @@ pub fn ask_question(
             relay,
         },
     };
-    let applied = store.apply_fact(
-        &project,
-        &event_key(&["question_asked", id.as_str(), &at.millis().to_string()]),
-        &fact,
-    )?;
+    let applied = apply_repeatable(&store, &project, &["question_asked", id.as_str()], &fact)?;
     if applied
         .actions
         .iter()
@@ -196,6 +200,9 @@ pub fn submit_task(
         &project,
         &["worker_submitted", id.as_str(), commit.as_str()],
         &fact,
+        &format!(
+            "the `worker_submitted` fact is already recorded for task `{id}` and commit `{commit}`; nothing changed"
+        ),
     )?;
     task(&store, &project, &id)
 }
@@ -225,6 +232,9 @@ pub fn answer_question(
         &project,
         &["question_answered", id.as_str(), &position.to_string()],
         &fact,
+        &format!(
+            "the `question_answered` fact is already recorded for task `{id}`; nothing changed"
+        ),
     )?;
     task(&store, &project, &id)
 }
@@ -242,7 +252,7 @@ pub fn acknowledge_task(home: &DepotHome, selection: Option<&str>, id: &str) -> 
         at: now(),
         kind: FactKind::TaskAcknowledged { task: id.clone() },
     };
-    apply(&store, &project, &["task_acknowledged", id.as_str()], &fact)?;
+    apply_repeatable(&store, &project, &["task_acknowledged", id.as_str()], &fact)?;
     task(&store, &project, &id)
 }
 
@@ -257,7 +267,7 @@ pub fn retry_task(home: &DepotHome, selection: Option<&str>, id: &str) -> Result
         at: now(),
         kind: FactKind::TaskRetried { task: id.clone() },
     };
-    apply(&store, &project, &["task_retried", id.as_str()], &fact)?;
+    apply_repeatable(&store, &project, &["task_retried", id.as_str()], &fact)?;
     task(&store, &project, &id)
 }
 
@@ -288,6 +298,7 @@ pub fn rework_task(
         &project,
         &["task_reworked", id.as_str(), fix.as_str()],
         &fact,
+        &format!("the `task_reworked` fact is already recorded for task `{id}`; nothing changed"),
     )?;
     task(&store, &project, &id)
 }
@@ -301,7 +312,7 @@ pub fn stop_task(home: &DepotHome, selection: Option<&str>, id: &str) -> Result<
             at: now(),
             kind: FactKind::TaskCancelled { task: id.clone() },
         };
-        apply(&store, &project, &["task_cancelled", id.as_str()], &fact)?;
+        apply_repeatable(&store, &project, &["task_cancelled", id.as_str()], &fact)?;
     }
     task(&store, &project, &id)
 }
@@ -326,19 +337,14 @@ pub fn redirect_task(
             current.id
         )));
     }
-    let at = now();
     let fact = Fact {
-        at,
+        at: now(),
         kind: FactKind::WorkerRedirected {
             task: id.clone(),
             text: text.to_owned(),
         },
     };
-    store.apply_fact(
-        &project,
-        &event_key(&["worker_redirected", id.as_str(), &at.millis().to_string()]),
-        &fact,
-    )?;
+    apply_repeatable(&store, &project, &["worker_redirected", id.as_str()], &fact)?;
     Ok((task(&store, &project, &id)?, turn_running))
 }
 
@@ -357,7 +363,7 @@ pub fn release_task(home: &DepotHome, selection: Option<&str>, id: &str) -> Resu
             at: now(),
             kind: FactKind::TaskReleased { task: id.clone() },
         };
-        apply(&store, &project, &["task_released", id.as_str()], &fact)?;
+        apply_repeatable(&store, &project, &["task_released", id.as_str()], &fact)?;
     }
     task(&store, &project, &id)
 }
@@ -573,9 +579,37 @@ fn turn_is_running(task: &Task) -> bool {
         .is_ok_and(|status| status.state == crate::adapters::sessions::SessionState::Running)
 }
 
-fn apply(store: &Store, project: &Project, parts: &[&str], fact: &Fact) -> Result<()> {
-    store.apply_fact(project, &event_key(parts), fact)?;
+fn apply(
+    store: &Store,
+    project: &Project,
+    parts: &[&str],
+    fact: &Fact,
+    duplicate: &str,
+) -> Result<()> {
+    let applied = store.apply_fact(project, &event_key(parts), fact)?;
+    if applied.outcome == EventOutcome::Duplicate {
+        return Err(Error::Project(duplicate.to_owned()));
+    }
     Ok(())
+}
+
+fn apply_repeatable(
+    store: &Store,
+    project: &Project,
+    parts: &[&str],
+    fact: &Fact,
+) -> Result<Applied> {
+    let at = fact.at.millis().to_string();
+    let mut key = parts.to_vec();
+    key.push(&at);
+    let applied = store.apply_fact(project, &event_key(&key), fact)?;
+    if applied.outcome == EventOutcome::Duplicate {
+        return Err(Error::Project(format!(
+            "the `{}` fact was already recorded by another invocation",
+            parts[0]
+        )));
+    }
+    Ok(applied)
 }
 
 fn task(store: &Store, project: &Project, id: &TaskId) -> Result<Task> {

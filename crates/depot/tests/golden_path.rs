@@ -3107,6 +3107,89 @@ fn a_retry_of_a_failed_task_runs_a_fresh_attempt_on_the_lease_it_still_holds() {
 }
 
 #[test]
+fn a_second_retry_of_a_failed_task_is_applied() {
+    let golden = Golden::new(Validation::Failing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+
+    golden.worker_commits_and_submits();
+    daemon.tick().expect("the daemon validates the commit");
+    assert_eq!(golden.task().state, TaskState::Failed);
+    assert_eq!(golden.task().attempts.len(), 1);
+
+    const RELAUNCHED_SESSION: &str = "b3c7e2";
+    golden.boxr.respond_launches(&[SESSION, RELAUNCHED_SESSION]);
+    assert_eq!(
+        golden.depot_ok(&["task", "retry", TASK, "--project", SLUG]),
+        format!("retried {TASK}\n")
+    );
+    daemon
+        .tick()
+        .expect("the daemon launches the retried worker");
+    assert_eq!(golden.task().state, TaskState::Running);
+    assert_eq!(golden.task().attempts.len(), 2);
+
+    golden.worker_commits_and_submits_with("retry once", "the second try");
+    daemon
+        .tick()
+        .expect("the daemon validates the second commit");
+    assert_eq!(golden.task().state, TaskState::Failed);
+    assert_eq!(golden.task().attempts.len(), 2);
+
+    assert_eq!(
+        golden.depot_ok(&["task", "retry", TASK, "--project", SLUG]),
+        format!("retried {TASK}\n")
+    );
+    let retried = golden.task();
+    assert_eq!(
+        retried.state,
+        TaskState::Running,
+        "the second retry is applied"
+    );
+    assert_eq!(retried.attempts.len(), 3);
+}
+
+#[test]
+fn a_retried_worker_that_submits_the_same_commit_is_told_it_is_already_recorded() {
+    let golden = Golden::new(Validation::Failing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+
+    golden.worker_commits_and_submits();
+    let submitted_commit = golden.head();
+    daemon.tick().expect("the daemon validates the commit");
+    assert_eq!(golden.task().state, TaskState::Failed);
+
+    const RELAUNCHED_SESSION: &str = "b3c7e2";
+    golden.boxr.respond_launches(&[SESSION, RELAUNCHED_SESSION]);
+    assert_eq!(
+        golden.depot_ok(&["task", "retry", TASK, "--project", SLUG]),
+        format!("retried {TASK}\n")
+    );
+    daemon
+        .tick()
+        .expect("the daemon launches the retried worker");
+    assert_eq!(golden.task().state, TaskState::Running);
+    assert_eq!(golden.task().attempts.len(), 2);
+
+    let repeated = golden.worker_submits();
+    assert_eq!(
+        repeated.status.code(),
+        Some(1),
+        "a repeated submission of the same commit must fail: {}",
+        support::stderr(&repeated)
+    );
+    assert_eq!(
+        support::stderr(&repeated),
+        format!(
+            "depot: the `worker_submitted` fact is already recorded for task `{TASK}` and commit `{submitted_commit}`; nothing changed\n"
+        )
+    );
+}
+
+#[test]
 fn a_describe_failure_does_not_open_the_pull_request_and_holds_the_task() {
     let golden = Golden::new(Validation::Passing);
     let config = std::fs::read_to_string(golden.repo.join(".depot.toml")).expect("the config");

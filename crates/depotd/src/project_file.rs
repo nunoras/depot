@@ -67,11 +67,13 @@ impl ProjectFile {
         format!("the base branch has no `{PROJECT_FILE_PATH}`; commit it with {PROJECT_FILE_KEYS}")
     }
 
-    pub fn read_for_base(repo: &Path) -> Result<Self> {
+    pub fn read_for_base(repo: &Path) -> Result<Option<Self>> {
         let default = default_branch(repo)?;
         fetch_branch(repo, &default)?;
-        let at_default = Self::at_ref(repo, &format!("refs/remotes/origin/{default}"))?
-            .ok_or_else(|| Error::Config(Self::missing_message()))?;
+        let Some(at_default) = Self::at_ref(repo, &format!("refs/remotes/origin/{default}"))?
+        else {
+            return Ok(None);
+        };
         let base = at_default.base_branch.trim().to_owned();
         if base.is_empty() {
             return Err(Error::Config(format!(
@@ -79,7 +81,7 @@ impl ProjectFile {
             )));
         }
         if base == default {
-            return Ok(at_default);
+            return Ok(Some(at_default));
         }
         fetch_branch(repo, &base)?;
         let at_base = Self::at_ref(repo, &format!("refs/remotes/origin/{base}"))?
@@ -90,7 +92,7 @@ impl ProjectFile {
                 "`{PROJECT_FILE_PATH}` names base_branch `{named}` on `origin/{base}` but `{base}` on `origin/{default}`; refusing to follow the disagreement"
             )));
         }
-        Ok(at_base)
+        Ok(Some(at_base))
     }
 
     fn at_ref(repo: &Path, reference: &str) -> Result<Option<Self>> {

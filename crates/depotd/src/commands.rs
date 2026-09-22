@@ -508,8 +508,8 @@ fn check_descends_from_base(
         }
         depot_core::Baseline::DefaultBranchHead => {
             let base = match crate::project_file::ProjectFile::read_for_base(worktree) {
-                Ok(file) => file.base_branch,
-                Err(_) => store.project_config(project)?.pull_request.base,
+                Ok(Some(file)) => file.base_branch,
+                Ok(None) | Err(_) => store.project_config(project)?.pull_request.base,
             };
             let remote = format!("origin/{base}");
             if git_in(worktree, &["rev-parse", "--verify", &remote]).is_ok()

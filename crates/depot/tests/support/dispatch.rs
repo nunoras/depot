@@ -233,3 +233,63 @@ fn typesafe_api_failure_is_named_and_does_not_guess_a_role() {
     assert!(golden.store.tasks(&golden.project.id).unwrap().is_empty());
     assert_eq!(server.requests().len(), 1);
 }
+
+#[test]
+fn an_uncommitted_project_file_edit_never_wins_over_the_committed_one() {
+    let golden = Golden::new(Validation::Passing);
+    let server = fake_typesafe::endpoint(fake_typesafe::CONDITION, 0.95);
+    configure(
+        &golden,
+        &server.base_url(),
+        &rules(&format!("candidates = [{PROFILE:?}]")),
+        true,
+    );
+    let gate = if cfg!(windows) {
+        "validate.cmd"
+    } else {
+        "sh validate.sh"
+    };
+    let path = golden.repo.join(depotd::PROJECT_FILE_PATH);
+    let committed = std::fs::read_to_string(&path).unwrap();
+    let edited = committed
+        .replace("role = \"build\"", "role = \"review\"")
+        .replace(
+            &format!("command = \"{gate}\""),
+            "command = \"gate-from-the-working-tree\"",
+        );
+    assert!(edited.contains("role = \"review\""), "the role is edited");
+    assert!(
+        edited.contains("gate-from-the-working-tree"),
+        "the gate is edited"
+    );
+    std::fs::write(&path, edited).unwrap();
+
+    let output = create(&golden, false);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let task = golden.task();
+    assert_eq!(
+        task.role,
+        Role::Build,
+        "dispatch judges the committed rules, not the working tree"
+    );
+    golden.depot_ok(&["task", "approve", TASK, "--project", SLUG]);
+    golden
+        .daemon()
+        .tick()
+        .expect("the daemon launches the worker");
+    let launch = golden.boxr.calls_to("--harness");
+    assert_eq!(launch.len(), 1, "one worker is launched, {launch:?}");
+    let brief = launch[0].last().expect("the launch carries the prompt");
+    assert!(
+        brief.contains(&format!("The command is `{gate}`")),
+        "the brief carries the committed gate: {brief}"
+    );
+    assert!(
+        !brief.contains("gate-from-the-working-tree"),
+        "the brief ignores the uncommitted gate: {brief}"
+    );
+}

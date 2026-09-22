@@ -5,7 +5,8 @@ use std::path::Path;
 use std::rc::Rc;
 
 use depot_core::{
-    Attempt, AttemptOutcome, ProfileId, ProjectId, SessionId, Task, TaskState, Timestamp,
+    Attempt, AttemptOutcome, ProfileId, ProjectId, ReleaseHold, SessionId, Task, TaskState,
+    Timestamp, WorktreeLease,
 };
 use depotd::adapters::sessions::{
     Capabilities, LaunchRequest, SessionError, SessionState, SessionStatus, SessionSummary,
@@ -162,8 +163,9 @@ fn an_idle_daemon_polls_a_stopped_session_once_and_never_touches_the_pool() {
         supervisor.tick(turn).expect("an idle tick stays alive");
     }
 
-    assert!(
-        sessions.status.get() <= 1,
+    assert_eq!(
+        sessions.status.get(),
+        1,
         "an idle daemon observed a session already stopped {} times in ten ticks",
         sessions.status.get()
     );
@@ -172,9 +174,72 @@ fn an_idle_daemon_polls_a_stopped_session_once_and_never_touches_the_pool() {
         0,
         "a session already stopped is never asked to stop"
     );
+    assert!(
+        store
+            .event(
+                &project.id,
+                &depotd::event_key(&["worker_turn_ended", "t-1", "1", "s-1"]),
+            )
+            .expect("the journal")
+            .is_some(),
+        "the confirmed stop is journalled once"
+    );
     assert_eq!(
         worktrees.pool.get(),
         0,
         "an idle daemon never reads the worktree pool"
+    );
+}
+
+#[test]
+fn an_idle_daemon_reads_the_pool_once_while_a_release_is_held_back() {
+    let fixture = support::fixture();
+    let store = Store::open(&fixture.home).expect("the store opens");
+    let project = registered_project(&fixture.home, "example");
+    store.put_project(&project).expect("the project is stored");
+
+    let held = WorktreeLease::new("l-held");
+    let due = WorktreeLease::new("l-due");
+    let mut task = support::simple_task(&project.id, "t-1", TaskState::Cancelled, 0);
+    task.release_pending = vec![held.clone(), due.clone()];
+    task.release_held.insert(
+        held,
+        ReleaseHold {
+            reason: "unlanded work".to_owned(),
+            at: Timestamp::from_millis(u64::MAX),
+        },
+    );
+    store
+        .put_task(&task)
+        .expect("the task owing two releases is stored");
+
+    let sessions = CountingSessions {
+        status: Rc::new(Cell::new(0)),
+        stop: Rc::new(Cell::new(0)),
+    };
+    let worktrees = CountingWorktrees {
+        pool: Rc::new(Cell::new(0)),
+    };
+    let supervisor = Supervisor::new(
+        &store,
+        vec![project.clone()],
+        sessions,
+        worktrees.clone(),
+        ShellValidation,
+        ForgeDelivery::new(depotd::adapters::forge::GitHub::new(
+            "http://forge.test",
+            "token".to_owned(),
+        )),
+        NoEventHook,
+    );
+
+    for turn in 0..10 {
+        supervisor.tick(turn).expect("an idle tick stays alive");
+    }
+
+    assert_eq!(
+        worktrees.pool.get(),
+        1,
+        "the pool is read for the due lease once and never again while the other release is held"
     );
 }

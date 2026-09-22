@@ -2164,7 +2164,15 @@ where
                         },
                     )?;
                 }
-                Err(_) => {}
+                Err(error) => {
+                    log_project_error(
+                        &self.project.slug,
+                        &Error::Project(format!(
+                            "could not read the status of session {session} for task {}: {error}",
+                            task.id
+                        )),
+                    );
+                }
             }
         }
         Ok(())

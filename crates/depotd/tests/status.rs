@@ -246,7 +246,7 @@ fn running_tasks_carry_attempt_age_and_observed_liveness() {
         started_at: depot_core::Timestamp::from_millis(1_000),
         finished_at: None,
         outcome: depot_core::AttemptOutcome::Unknown,
-        rebase: false,
+        base_merge: false,
     });
 
     let mut unseen = support::simple_task(&added.project.id, "t-unseen", TaskState::Running, 1_000);
@@ -258,7 +258,7 @@ fn running_tasks_carry_attempt_age_and_observed_liveness() {
         started_at: depot_core::Timestamp::from_millis(1_000),
         finished_at: None,
         outcome: depot_core::AttemptOutcome::Unknown,
-        rebase: false,
+        base_merge: false,
     });
 
     let mut alive = support::simple_task(&added.project.id, "t-alive", TaskState::Running, 1_000);
@@ -269,7 +269,7 @@ fn running_tasks_carry_attempt_age_and_observed_liveness() {
         started_at: depot_core::Timestamp::from_millis(1_000),
         finished_at: None,
         outcome: depot_core::AttemptOutcome::InFlight,
-        rebase: false,
+        base_merge: false,
         last_seen_at: Some(depot_core::Timestamp::from_millis(1_000 + 14 * 60 * 1000)),
     });
 
@@ -341,7 +341,7 @@ fn a_never_observed_session_still_reads_as_not_yet_seen() {
         started_at: depot_core::Timestamp::from_millis(1_000),
         finished_at: None,
         outcome: depot_core::AttemptOutcome::InFlight,
-        rebase: false,
+        base_merge: false,
         last_seen_at: None,
     });
     store.put_task(&task).expect("stored");
@@ -374,7 +374,7 @@ fn rendered_attempt_line(seen_age_millis: u64) -> String {
         started_at: depot_core::Timestamp::from_millis(1_000),
         finished_at: None,
         outcome: depot_core::AttemptOutcome::InFlight,
-        rebase: false,
+        base_merge: false,
         last_seen_at: Some(depot_core::Timestamp::from_millis(now - seen_age_millis)),
     });
     store.put_task(&task).expect("stored");
@@ -402,7 +402,7 @@ fn the_written_checklist_stays_free_of_observation_time() {
         started_at: depot_core::Timestamp::from_millis(1_000),
         finished_at: None,
         outcome: depot_core::AttemptOutcome::Unknown,
-        rebase: false,
+        base_merge: false,
     });
     store.put_task(&task).expect("stored");
 

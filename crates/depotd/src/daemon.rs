@@ -1018,11 +1018,11 @@ where
         }
         let config = self.store.project_config(&self.project)?;
         let settings = self.store.home().load_settings()?;
-        let rebase = task_record
+        let base_merge = task_record
             .attempts
             .last()
-            .is_some_and(|attempt| attempt.rebase);
-        let spec = if rebase {
+            .is_some_and(|attempt| attempt.base_merge);
+        let spec = if base_merge {
             settings.profile_spec(profile.clone())?
         } else if let Some(pinned) = &task_record.dispatch_profile {
             if &profile != pinned && !settings.profile_fallbacks().contains(&profile) {
@@ -1051,8 +1051,8 @@ where
             }
         };
         let context = self.store.coordinator_context(&self.project)?;
-        let brief = if rebase {
-            context.rebase_brief(&task_record)?
+        let brief = if base_merge {
+            context.conflict_brief(&task_record)?
         } else {
             context.brief(&task_record)?
         };
@@ -2489,7 +2489,7 @@ where
             }
         }
         self.file_review_tasks()?;
-        self.schedule_rebases(&observed_open)?;
+        self.schedule_base_merges(&observed_open)?;
         self.auto_merge(observed_open)
     }
 
@@ -2579,7 +2579,10 @@ where
         Ok((fresh, mergeable))
     }
 
-    fn schedule_rebases(&self, observed_open: &[(TaskId, u64, ObservedPullRequest)]) -> Result<()> {
+    fn schedule_base_merges(
+        &self,
+        observed_open: &[(TaskId, u64, ObservedPullRequest)],
+    ) -> Result<()> {
         let conflicting: Vec<&(TaskId, u64, ObservedPullRequest)> = observed_open
             .iter()
             .filter(|(_, _, observed)| observed.mergeable == Some(false))
@@ -2592,7 +2595,7 @@ where
             let Some(task) = state.tasks.get(id) else {
                 continue;
             };
-            let Some(profile) = depot_core::rebase_due(&state, task, true) else {
+            let Some(profile) = depot_core::base_merge_due(&state, task, true) else {
                 continue;
             };
             self.record(

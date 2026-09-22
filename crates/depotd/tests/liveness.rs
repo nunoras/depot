@@ -169,7 +169,7 @@ fn running_task(project: &ProjectId, id: &str, session: &str, started_at: u64) -
         started_at: Timestamp::from_millis(started_at),
         finished_at: None,
         outcome: AttemptOutcome::InFlight,
-        rebase: false,
+        base_merge: false,
         last_seen_at: None,
     });
     task

@@ -766,7 +766,7 @@ impl Golden {
         );
     }
 
-    pub fn script_rebased_pull_request(&self, commit: &str) {
+    pub fn script_merged_pull_request(&self, commit: &str) {
         self.forge.route(
             "GET",
             &format!("/repos/{REPOSITORY}/commits/{commit}/check-runs"),
@@ -864,7 +864,7 @@ pub fn validated_task(
             started_at: depot_core::Timestamp::from_millis(0),
             finished_at: Some(depot_core::Timestamp::from_millis(1)),
             outcome: depot_core::AttemptOutcome::Submitted,
-            rebase: false,
+            base_merge: false,
         }],
         questions: Vec::new(),
         validations: vec![depot_core::ValidationRecord {

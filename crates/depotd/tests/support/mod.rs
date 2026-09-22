@@ -138,7 +138,7 @@ pub fn full_task(project: &ProjectId, id: &str) -> Task {
                 started_at: Timestamp::from_millis(1_700_000_000_000),
                 finished_at: Some(Timestamp::from_millis(1_700_000_060_000)),
                 outcome: AttemptOutcome::Failed,
-                rebase: false,
+                base_merge: false,
             },
             Attempt {
                 last_seen_at: None,
@@ -148,7 +148,7 @@ pub fn full_task(project: &ProjectId, id: &str) -> Task {
                 started_at: Timestamp::from_millis(1_700_000_120_000),
                 finished_at: None,
                 outcome: AttemptOutcome::Unknown,
-                rebase: false,
+                base_merge: false,
             },
         ],
         questions: vec![

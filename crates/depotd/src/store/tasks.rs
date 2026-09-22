@@ -272,7 +272,7 @@ impl Store {
                 started_at: millis(raw.started_at)?,
                 finished_at: raw.finished_at.map(millis).transpose()?,
                 outcome: outcome_from_name(&raw.outcome)?,
-                rebase: raw.rebase,
+                base_merge: raw.rebase,
                 last_seen_at: raw.last_seen_at.map(millis).transpose()?,
             });
         }
@@ -607,7 +607,7 @@ pub(super) fn write_task(transaction: &Transaction<'_>, task: &Task) -> Result<(
                 attempt.started_at.millis() as i64,
                 attempt.finished_at.map(|at| at.millis() as i64),
                 outcome_name(attempt.outcome),
-                attempt.rebase as i64,
+                attempt.base_merge as i64,
                 attempt.last_seen_at.map(|at| at.millis() as i64),
             ],
         )?;

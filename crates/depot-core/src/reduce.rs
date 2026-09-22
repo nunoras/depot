@@ -192,7 +192,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                             started_at: fact.at,
                             finished_at: None,
                             outcome: AttemptOutcome::InFlight,
-                            rebase: false,
+                            base_merge: false,
                             last_seen_at: None,
                         }],
                         questions: Vec::new(),
@@ -631,7 +631,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                         started_at: fact.at,
                         finished_at: None,
                         outcome: AttemptOutcome::InFlight,
-                        rebase: false,
+                        base_merge: false,
                     });
                     task.state = TaskState::Running;
                     task.updated_at = fact.at;
@@ -1164,7 +1164,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                 && next
                     .tasks
                     .get(task)
-                    .is_some_and(|task| rebase_allowed(&next, task));
+                    .is_some_and(|task| base_merge_allowed(&next, task));
             if scheduled && let Some(task) = next.tasks.get_mut(task) {
                 let lease = take_last_worktree(task);
                 task.failure = None;
@@ -1176,7 +1176,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                     started_at: fact.at,
                     finished_at: None,
                     outcome: AttemptOutcome::InFlight,
-                    rebase: true,
+                    base_merge: true,
                 });
                 task.state = TaskState::Running;
                 task.updated_at = fact.at;
@@ -1230,7 +1230,7 @@ fn relaunch(task: &mut Task, at: Timestamp, actions: &mut Vec<Action>) -> bool {
         started_at: at,
         finished_at: None,
         outcome: AttemptOutcome::InFlight,
-        rebase: false,
+        base_merge: false,
         last_seen_at: None,
     });
     task.state = TaskState::Running;
@@ -1305,7 +1305,7 @@ fn start_ready_tasks(
             started_at: at,
             finished_at: None,
             outcome: AttemptOutcome::InFlight,
-            rebase: false,
+            base_merge: false,
         });
         actions.push(Action::AcquireWorktree {
             task: id.clone(),
@@ -1393,14 +1393,14 @@ fn review_landed(state: &ProjectState, task: &Task, head: &CommitId) -> bool {
     })
 }
 
-pub fn rebase_due(state: &ProjectState, task: &Task, conflicting: bool) -> Option<ProfileId> {
-    if !conflicting || !rebase_allowed(state, task) {
+pub fn base_merge_due(state: &ProjectState, task: &Task, conflicting: bool) -> Option<ProfileId> {
+    if !conflicting || !base_merge_allowed(state, task) {
         return None;
     }
     state.profiles.get(&Role::Fix).cloned()
 }
 
-fn rebase_allowed(state: &ProjectState, task: &Task) -> bool {
+fn base_merge_allowed(state: &ProjectState, task: &Task) -> bool {
     task.state == TaskState::PrOpen
         && task
             .attempts
@@ -1411,7 +1411,7 @@ fn rebase_allowed(state: &ProjectState, task: &Task) -> bool {
             other
                 .attempts
                 .iter()
-                .any(|a| a.rebase && a.outcome.is_open())
+                .any(|a| a.base_merge && a.outcome.is_open())
         })
 }
 

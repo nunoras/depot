@@ -456,7 +456,7 @@ fn a_conflicting_pull_request_renders_its_base_until_it_is_mergeable() {
         started_at: Timestamp::from_millis(2),
         finished_at: None,
         outcome: depot_core::AttemptOutcome::InFlight,
-        rebase: true,
+        base_merge: true,
         last_seen_at: None,
     }];
     let mut rebasing = state.clone();
@@ -464,7 +464,7 @@ fn a_conflicting_pull_request_renders_its_base_until_it_is_mergeable() {
     let rendered = render_checklist(&rebasing, true);
     assert!(
         rendered.contains("conflicts with base `ba5eba11`"),
-        "a pending rebase must keep the conflict visible in\n{rendered}"
+        "a pending base merge must keep the conflict visible in\n{rendered}"
     );
 
     let mut mergeable = state.clone();

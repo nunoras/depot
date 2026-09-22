@@ -2544,7 +2544,7 @@ fn a_conflicting_pull_request_is_resolved_by_a_fix_worker_and_lands() {
             .task()
             .attempts
             .last()
-            .is_some_and(|attempt| attempt.rebase),
+            .is_some_and(|attempt| attempt.base_merge),
         "the second attempt is marked as a fix turn"
     );
     assert_eq!(
@@ -2561,7 +2561,7 @@ fn a_conflicting_pull_request_is_resolved_by_a_fix_worker_and_lands() {
         support::stderr(&output)
     );
     let merged = golden.head();
-    golden.script_rebased_pull_request(&merged);
+    golden.script_merged_pull_request(&merged);
     daemon
         .tick()
         .expect("the daemon validates the merged commit, merges and deletes the branch");

@@ -191,7 +191,7 @@ pub struct Attempt {
     pub started_at: Timestamp,
     pub finished_at: Option<Timestamp>,
     pub outcome: AttemptOutcome,
-    pub rebase: bool,
+    pub base_merge: bool,
     pub last_seen_at: Option<Timestamp>,
 }
 

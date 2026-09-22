@@ -410,7 +410,7 @@ fn seed_task(store: &Store, project: &Project, id: &str, state: TaskState) {
         started_at: Timestamp::from_millis(0),
         finished_at: None,
         outcome: AttemptOutcome::InFlight,
-        rebase: false,
+        base_merge: false,
         last_seen_at: None,
     });
     store.put_task(&task).expect("the task is stored");

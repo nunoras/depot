@@ -89,7 +89,7 @@ impl CoordinatorContext {
         self.render_brief(task, &task.title, &task.intent)
     }
 
-    pub fn rebase_brief(&self, task: &Task) -> Result<String> {
+    pub fn conflict_brief(&self, task: &Task) -> Result<String> {
         let title = format!("Resolve conflicts: {}", task.title);
         let intent = "The task's open pull request conflicts with the project base branch. In \
              your worktree, fetch the base branch and merge it into the delivery branch, resolve \

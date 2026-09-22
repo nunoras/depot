@@ -2,7 +2,10 @@ mod support;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use depotd::{PROJECT_CONFIG_FILE_NAME, ProfileSettings, ProjectConfig, Settings, add_project};
+use depotd::{
+    DeliveryConfig, EvidenceConfig, PROJECT_CONFIG_FILE_NAME, PROJECT_FILE_PATH, ProfileSettings,
+    ProjectConfig, ProjectFile, ProjectFilePullRequest, Settings, ValidationConfig, add_project,
+};
 
 const PROJECT_KEYS: [&str; 7] = [
     "base_branch",
@@ -47,6 +50,72 @@ const MACHINE_LOCAL_KEYS: [&str; 10] = [
     "profiles",
     "artifacts",
 ];
+
+#[test]
+fn the_project_file_holds_the_repository_keys_and_no_machine_local_settings() {
+    let file = ProjectFile {
+        base_branch: "main".to_string(),
+        validation: ValidationConfig {
+            command: "cargo test".to_string(),
+        },
+        evidence: EvidenceConfig {
+            command: Some("./capture".to_string()),
+            ..EvidenceConfig::default()
+        },
+        pull_request: ProjectFilePullRequest {
+            describe_style: "Write in the house voice.".to_string(),
+        },
+        dispatch: Some(
+            toml::from_str("[[rules]]\nwhen = \"the build\"\nrole = \"build\"\n")
+                .expect("dispatch rules"),
+        ),
+        delivery: Some(DeliveryConfig {
+            mode: Some("pull_request".to_string()),
+        }),
+    };
+
+    let text = file.to_toml().expect("toml");
+
+    assert_eq!(
+        top_level_keys(&text),
+        names([
+            "base_branch",
+            "validation",
+            "evidence",
+            "pull_request",
+            "dispatch",
+            "delivery",
+        ])
+    );
+    assert!(
+        keys_at_any_depth(&text).is_disjoint(&names(MACHINE_LOCAL_ONLY_KEYS)),
+        "the committed project file must never carry a machine-local setting, got\n{text}"
+    );
+    assert_eq!(
+        ProjectFile::parse(&text)
+            .expect("the project file round trips")
+            .validation
+            .command,
+        "cargo test"
+    );
+}
+
+#[test]
+fn a_project_file_that_carries_machine_local_settings_is_refused() {
+    let error = ProjectFile::parse("concurrency = 12\n")
+        .expect_err("machine-local settings do not belong in the project file");
+    let message = error.to_string();
+
+    assert!(
+        message.contains("concurrency"),
+        "the refusal should name the offending key, got {message}"
+    );
+}
+
+#[test]
+fn the_project_file_lives_under_agni() {
+    assert_eq!(PROJECT_FILE_PATH, ".agni/project.toml");
+}
 
 #[test]
 fn the_committed_project_file_holds_only_project_knowledge() {

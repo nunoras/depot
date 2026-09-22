@@ -4913,6 +4913,75 @@ fn rule_21_a_commit_already_on_the_base_lands_and_releases_its_worktree() {
 }
 
 #[test]
+fn rule_22_a_task_whose_branch_edits_the_project_file_is_held_before_validation() {
+    run(vec![
+        case(
+            "a submitted task whose diff touches .agni/ is held, naming the files",
+            state(vec![validating("t1")]),
+            vec![fact(
+                1_000,
+                FactKind::ProjectFileChanged {
+                    task: task_id("t1"),
+                    commit: commit("c1"),
+                    files: vec![".agni/project.toml".to_owned()],
+                },
+            )],
+        )
+        .when(
+            "t1",
+            TaskState::Held,
+            vec![hold("t1"), Action::RenderChecklist],
+        )
+        .checking(|state| {
+            subject(state, "t1")
+                .failure
+                .as_deref()
+                .is_some_and(|reason| reason.contains(".agni/project.toml"))
+        }),
+        case(
+            "a task that has not submitted ignores a project file change",
+            state(vec![running("t1")]),
+            vec![fact(
+                2_000,
+                FactKind::ProjectFileChanged {
+                    task: task_id("t1"),
+                    commit: commit("c1"),
+                    files: vec![".agni/project.toml".to_owned()],
+                },
+            )],
+        )
+        .when("t1", TaskState::Running, vec![]),
+        case(
+            "a held task ignores a second project file change",
+            state(vec![task("t1", TaskState::Held)]),
+            vec![fact(
+                3_000,
+                FactKind::ProjectFileChanged {
+                    task: task_id("t1"),
+                    commit: commit("c1"),
+                    files: vec![".agni/automations/nightly.toml".to_owned()],
+                },
+            )],
+        )
+        .when("t1", TaskState::Held, vec![]),
+    ]);
+
+    assert_eq!(
+        project_files_touched(&[
+            "src/main.rs".to_owned(),
+            ".agni/project.toml".to_owned(),
+            ".agni/automations/nightly.toml".to_owned(),
+            "agni.rs".to_owned(),
+        ]),
+        vec![
+            ".agni/project.toml".to_owned(),
+            ".agni/automations/nightly.toml".to_owned(),
+        ],
+        "only files under .agni/ count"
+    );
+}
+
+#[test]
 fn a_wait_settles_on_the_states_it_was_asked_for() {
     let expected = [
         (TaskState::Proposed, false),
@@ -4923,6 +4992,7 @@ fn a_wait_settles_on_the_states_it_was_asked_for() {
         (TaskState::Validated, false),
         (TaskState::PrOpen, true),
         (TaskState::ReworkPending, false),
+        (TaskState::Held, true),
         (TaskState::Landed, true),
         (TaskState::Failed, true),
         (TaskState::Cancelled, true),

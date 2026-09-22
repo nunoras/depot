@@ -346,14 +346,15 @@ impl Golden {
     }
 
     pub fn set_pull_request_base(&self, base: &str) {
-        let path = self.repo.join(depotd::PROJECT_CONFIG_FILE_NAME);
-        let text = fs::read_to_string(&path).expect("the project config is readable");
-        let mut config =
-            depotd::ProjectConfig::from_toml(&text).expect("the project config parses");
-        config.pull_request.base = base.to_owned();
-        config
-            .write(&self.repo)
-            .expect("the project config is written");
+        let path = self.repo.join(depotd::PROJECT_FILE_PATH);
+        let text = fs::read_to_string(&path).expect("the project file is readable");
+        let mut file = depotd::ProjectFile::parse(&text).expect("the project file parses");
+        file.base_branch = base.to_owned();
+        fs::write(&path, file.to_toml().expect("the project file writes"))
+            .expect("the project file is written");
+        git::git(&self.repo, &["add", depotd::PROJECT_FILE_PATH]);
+        git::git(&self.repo, &["commit", "-m", "move the base branch"]);
+        git::git(&self.repo, &["push", "origin", "HEAD:main"]);
     }
 
     pub fn set_describe_profile(&self, profile: &str) {
@@ -613,6 +614,47 @@ impl Golden {
         fs::write(self.repo.join(file), contents).expect("the base file is written");
         git::git(&self.repo, &["add", file]);
         git::git(&self.repo, &["commit", "-m", "advance the base"]);
+        git::git(&self.repo, &["push", "origin", "main"]);
+        git::head(&self.repo)
+    }
+
+    pub fn set_local_validation_command(&self, command: &str) {
+        let path = self.repo.join(depotd::PROJECT_CONFIG_FILE_NAME);
+        let text = fs::read_to_string(&path).expect("the project config is readable");
+        let mut config =
+            depotd::ProjectConfig::from_toml(&text).expect("the project config parses");
+        config.validation.command = command.to_owned();
+        config
+            .write(&self.repo)
+            .expect("the project config is written");
+    }
+
+    pub fn worker_edits_project_file_and_submits(&self, contents: &str) -> Output {
+        fs::write(self.lease.join(depotd::PROJECT_FILE_PATH), contents)
+            .expect("the project file is written in the lease");
+        self.worker(&script(&[
+            &format!("git add {}", depotd::PROJECT_FILE_PATH),
+            "git commit -m \"loosen the gate\"",
+            &format!("depot submit --task {TASK} --project {SLUG}"),
+        ]))
+    }
+
+    pub fn land_project_file_on_base(&self, contents: &str) -> String {
+        fs::write(self.repo.join(depotd::PROJECT_FILE_PATH), contents)
+            .expect("the project file is written");
+        git::git(&self.repo, &["add", depotd::PROJECT_FILE_PATH]);
+        git::git(
+            &self.repo,
+            &["commit", "-m", "review the project file change"],
+        );
+        git::git(&self.repo, &["push", "origin", "main"]);
+        git::head(&self.repo)
+    }
+
+    pub fn remove_project_file_from_base(&self) -> String {
+        git::git(&self.repo, &["rm", "--cached", depotd::PROJECT_FILE_PATH]);
+        let _ = fs::remove_file(self.repo.join(depotd::PROJECT_FILE_PATH));
+        git::git(&self.repo, &["commit", "-m", "drop the project file"]);
         git::git(&self.repo, &["push", "origin", "main"]);
         git::head(&self.repo)
     }
@@ -974,10 +1016,16 @@ pub fn write_project(repo: &Path, validation: Validation) {
     fs::write(
         repo.join(".depot.toml"),
         format!(
-            "base_branch = \"main\"\n\n[profiles]\nbuild = \"{PROFILE}\"\nfix = \"{PROFILE}\"\n\n[validation]\ncommand = \"{validation_command}\"\n\n[pull_request]\nbase = \"main\"\nmerge = \"manual\"\n"
+            "[profiles]\nbuild = \"{PROFILE}\"\nfix = \"{PROFILE}\"\n\n[pull_request]\nmerge = \"manual\"\n"
         ),
     )
-    .expect("the committed project config is written");
+    .expect("the project config is written");
+    fs::create_dir_all(repo.join(".agni")).expect("the project file directory");
+    fs::write(
+        repo.join(".agni/project.toml"),
+        format!("base_branch = \"main\"\n\n[validation]\ncommand = \"{validation_command}\"\n"),
+    )
+    .expect("the committed project file is written");
 }
 
 pub fn write_validation_script(repo: &Path, validation: Validation) {

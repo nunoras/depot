@@ -3160,6 +3160,130 @@ fn a_base_that_cannot_be_read_holds_the_task_instead_of_landing_it() {
 }
 
 #[test]
+fn a_gate_committed_on_the_base_is_the_gate_validation_runs() {
+    let golden = Golden::new(Validation::Passing);
+    golden.set_local_validation_command("exit 1");
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_submits();
+    let commit = golden.head();
+    golden.script_pull_request(&commit);
+    daemon
+        .tick()
+        .expect("the daemon validates against the committed gate");
+
+    let task = golden.task();
+    assert_eq!(task.state, TaskState::PrOpen);
+    let command = task
+        .validations
+        .last()
+        .expect("a validation record")
+        .command
+        .clone();
+    assert_ne!(
+        command, "exit 1",
+        "the machine-local gate is never the gate that ran"
+    );
+}
+
+#[test]
+fn a_worker_that_loosens_the_gate_is_held_for_the_user_before_validation() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    let submitted = golden.worker_edits_project_file_and_submits(
+        "base_branch = \"main\"\n\n[validation]\ncommand = \"exit 0\"\n",
+    );
+    assert_eq!(
+        submitted.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&submitted.stderr)
+    );
+    daemon
+        .tick()
+        .expect("the daemon holds the change before running validation");
+
+    let held = golden.task();
+    assert_eq!(held.state, TaskState::Held);
+    assert!(
+        golden
+            .history(TASK)
+            .contains(&"project_file_changed".to_string()),
+        "the hold is on the journal: {:?}",
+        golden.history(TASK)
+    );
+    assert!(
+        !golden
+            .history(TASK)
+            .contains(&"validation_finished".to_string()),
+        "a held change never reaches validation"
+    );
+    let checklist = golden.checklist();
+    assert!(
+        checklist.contains("Needs you - held for a project file change"),
+        "{checklist}"
+    );
+    assert!(checklist.contains(".agni/project.toml"), "{checklist}");
+
+    let inbox = golden.depot_ok(&["inbox", "--project", SLUG]);
+    assert!(inbox.contains("## For the user"), "{inbox}");
+    assert!(inbox.contains(".agni/project.toml"), "{inbox}");
+}
+
+#[test]
+fn a_reviewed_project_file_change_becomes_the_gate_for_the_next_task() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+
+    golden.land_project_file_on_base(
+        "base_branch = \"main\"\n\n[validation]\ncommand = \"exit 1\"\n",
+    );
+
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_submits();
+    daemon
+        .tick()
+        .expect("the daemon runs the reviewed gate against the submitted commit");
+
+    let task = golden.task();
+    assert_eq!(task.state, TaskState::Failed);
+    let record = task.validations.last().expect("a validation record");
+    assert_eq!(record.exit_code, 1, "the reviewed gate is the one that ran");
+    assert_eq!(record.command, "exit 1");
+}
+
+#[test]
+fn a_project_without_a_project_file_is_told_which_file_and_keys_it_needs() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.remove_project_file_from_base();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_submits();
+    daemon
+        .tick()
+        .expect("the daemon records the missing project file");
+
+    let task = golden.task();
+    assert_eq!(task.state, TaskState::Failed);
+    assert!(
+        !golden
+            .history(TASK)
+            .contains(&"validation_finished".to_string()),
+        "a missing project file never reaches validation"
+    );
+
+    let inbox = golden.depot_ok(&["inbox", "--project", SLUG]);
+    assert!(inbox.contains(".agni/project.toml"), "{inbox}");
+    assert!(inbox.contains("base_branch"), "{inbox}");
+    assert!(inbox.contains("`[validation] command`"), "{inbox}");
+}
+
+#[test]
 fn a_refused_pull_request_holds_only_its_task_and_the_tick_survives() {
     let golden = Golden::new(Validation::Passing);
     let daemon = golden.daemon();

@@ -110,6 +110,36 @@ impl Cli {
         std::fs::create_dir_all(&directory).expect("project directory");
         directory
     }
+
+    fn seed_project_file_base(&self, worktree: &Path) {
+        std::fs::create_dir_all(worktree.join(".agni")).expect("the project file directory");
+        std::fs::write(
+            worktree.join(".agni/project.toml"),
+            "base_branch = \"main\"\n\n[validation]\ncommand = \"cargo test\"\n",
+        )
+        .expect("the project file");
+        git_in(worktree, &["add", ".agni/project.toml"]);
+        git_in(worktree, &["commit", "-m", "the project file"]);
+        let origin = self.temp.path().join("origin.git");
+        let output = Command::new("git")
+            .args(["init", "--bare", "--initial-branch=main"])
+            .arg(&origin)
+            .output()
+            .expect("git runs");
+        assert!(output.status.success(), "the bare origin is created");
+        git_in(
+            worktree,
+            &[
+                "remote",
+                "add",
+                "origin",
+                origin.to_str().expect("utf-8 origin"),
+            ],
+        );
+        git_in(worktree, &["push", "origin", "HEAD:main"]);
+        git_in(worktree, &["fetch", "origin"]);
+        git_in(worktree, &["remote", "set-head", "origin", "-a"]);
+    }
 }
 
 fn stdout(output: &Output) -> String {
@@ -1035,6 +1065,7 @@ fn worker_submit_records_its_summary_artifacts_and_starts_validation() {
         .output()
         .expect("git runs");
     assert!(output.status.success());
+    cli.seed_project_file_base(&worktree);
     cli.lease_pool(&worktree, "attempt-1");
 
     let output = cli.run_worker_from(
@@ -1082,6 +1113,7 @@ fn worker_submit_refuses_a_commit_that_is_not_a_descendant_of_the_task_base() {
     std::fs::write(worktree.join("other.txt"), "other\n").expect("other file");
     git_in(&worktree, &["add", "other.txt"]);
     git_in(&worktree, &["commit", "-m", "other"]);
+    cli.seed_project_file_base(&worktree);
     cli.lease_pool(&worktree, "attempt-1");
 
     let mut seeded = task(added.project.id.as_str(), "t-1", TaskState::Running, 1);

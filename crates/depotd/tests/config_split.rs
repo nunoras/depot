@@ -7,16 +7,6 @@ use depotd::{
     ProjectConfig, ProjectFile, ProjectFilePullRequest, Settings, ValidationConfig, add_project,
 };
 
-const PROJECT_KEYS: [&str; 7] = [
-    "base_branch",
-    "max_concurrent_tasks",
-    "profiles",
-    "validation",
-    "pull_request",
-    "questions",
-    "evidence",
-];
-
 const PROJECT_ONLY_KEYS: [&str; 7] = [
     "base_branch",
     "max_concurrent_tasks",
@@ -115,25 +105,6 @@ fn a_project_file_that_carries_machine_local_settings_is_refused() {
 #[test]
 fn the_project_file_lives_under_agni() {
     assert_eq!(PROJECT_FILE_PATH, ".agni/project.toml");
-}
-
-#[test]
-fn the_committed_project_file_holds_only_project_knowledge() {
-    let config = ProjectConfig {
-        profiles: BTreeMap::from([
-            ("plan".to_string(), "fable-5".to_string()),
-            ("build".to_string(), "glm-5.3".to_string()),
-        ]),
-        ..ProjectConfig::default()
-    };
-
-    let text = config.to_toml().expect("toml");
-
-    assert_eq!(top_level_keys(&text), names(PROJECT_KEYS));
-    assert!(
-        keys_at_any_depth(&text).is_disjoint(&names(MACHINE_LOCAL_ONLY_KEYS)),
-        "the committed project file must never carry a machine-local setting, got\n{text}"
-    );
 }
 
 #[test]

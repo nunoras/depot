@@ -123,9 +123,11 @@ describe_style = "Write in the house voice: plain sentences, no emoji."
 ```
 
 depot reads that file from the fetched base branch, never from a worker's branch, so a worker cannot loosen the gate its own work is judged by.
-Until `#131` finishes the split, a project with no committed `.agni/project.toml` still falls back to the `.depot.toml` gate, base, describe style and evidence; a project with neither is told which file and keys it needs.
-A task whose branch changes anything under `.agni/` is held for you before validation runs; its checklist entry names the files.
+A project with no committed `.agni/project.toml` is told which file and keys it needs; nothing falls back to `.depot.toml`.
+A task whose branch changes anything under `.agni/` fails and is held for you before validation runs; its checklist entry names the files.
 `.agni/automations/` is reserved for repository automations and read by nothing yet.
+
+depot's own gate lives in its committed `.agni/project.toml`.
 
 The keys that describe this machine's choices stay in `.depot.toml` in the repo root, which `depot project add` adds to `.git/info/exclude` so it stays machine-local:
 

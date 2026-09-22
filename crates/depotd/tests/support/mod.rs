@@ -80,6 +80,65 @@ pub fn register_with_config(fixture: &Fixture, name: &str, config: &str) -> Adde
     add_project(&fixture.home, directory.to_str().expect("utf-8 path")).expect("registered project")
 }
 
+pub fn register_git_with_config(
+    fixture: &Fixture,
+    name: &str,
+    config: &str,
+    project_file: &str,
+) -> Added {
+    let directory = project_directory(fixture, name);
+    let origin = fixture.temp.path().join(format!("{name}-origin.git"));
+    let mut bare = std::process::Command::new("git");
+    bare.args(["init", "--bare", "--initial-branch=main"])
+        .arg(&origin);
+    let output = bare.output().expect("git runs");
+    assert!(output.status.success(), "the bare origin is created");
+    git(&directory, &["init", "--initial-branch=main"]);
+    std::fs::write(directory.join(depotd::PROJECT_CONFIG_FILE_NAME), config)
+        .expect("project config");
+    std::fs::create_dir_all(directory.join(".agni")).expect("the project file directory");
+    std::fs::write(directory.join(depotd::PROJECT_FILE_PATH), project_file)
+        .expect("the committed project file");
+    git(&directory, &["add", "."]);
+    git(
+        &directory,
+        &["commit", "-m", "the project the fixture runs against"],
+    );
+    git(
+        &directory,
+        &[
+            "remote",
+            "add",
+            "origin",
+            origin.to_str().expect("utf-8 origin"),
+        ],
+    );
+    git(&directory, &["push", "origin", "main"]);
+    add_project(&fixture.home, directory.to_str().expect("utf-8 path")).expect("registered project")
+}
+
+fn git(directory: &std::path::Path, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .args([
+            "-c",
+            "user.name=depot",
+            "-c",
+            "user.email=depot@example.test",
+            "-c",
+            "commit.gpgsign=false",
+        ])
+        .args(args)
+        .current_dir(directory)
+        .output()
+        .expect("git runs");
+    assert!(
+        output.status.success(),
+        "git {args:?} in {} failed: {}",
+        directory.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 pub fn state(slug: &str) -> TaskState {
     match slug {
         "proposed" => TaskState::Proposed,

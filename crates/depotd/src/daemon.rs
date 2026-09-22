@@ -1409,23 +1409,8 @@ where
                 return self.record_validation_failure(&task, &commit, &error.to_string());
             }
         };
-        let config = self.store.project_config(&self.project)?;
-        let (base, command) = match &file {
-            Some(file) => (file.base_branch.clone(), file.validation.command.clone()),
-            None => {
-                if config.validation.command.trim().is_empty() {
-                    return self.record_validation_failure(
-                        &task,
-                        &commit,
-                        &crate::project_file::ProjectFile::missing_message(),
-                    );
-                }
-                (
-                    config.pull_request.base.clone(),
-                    config.validation.command.clone(),
-                )
-            }
-        };
+        let base = file.base_branch.clone();
+        let command = file.validation.command.clone();
         if let Err(error) = fetch_base(&worktree, &base) {
             return self.record_validation_failure(&task, &commit, &error.to_string());
         }
@@ -1525,10 +1510,8 @@ where
             }
         };
         if task_record.state == TaskState::Validated {
-            let config = self.store.project_config(&self.project)?;
             let base = match crate::project_file::ProjectFile::read_for_base(&worktree) {
-                Ok(Some(file)) => file.base_branch,
-                Ok(None) => config.pull_request.base.clone(),
+                Ok(file) => file.base_branch,
                 Err(error) => {
                     return self.record_delivery_failure(&task, &commit, &error.to_string());
                 }
@@ -1620,22 +1603,14 @@ where
                 return self.record_delivery_failure(&task, &commit, &error.to_string());
             }
         };
-        let base = file
-            .as_ref()
-            .map(|file| file.base_branch.clone())
-            .unwrap_or_else(|| config.pull_request.base.clone());
-        let described = match self.describe_pull_request(
-            &task_record,
-            &worktree,
-            &commit,
-            &config,
-            file.as_ref(),
-        ) {
-            Ok(outcome) => outcome,
-            Err(error) => {
-                return self.record_delivery_failure(&task, &commit, &error.to_string());
-            }
-        };
+        let base = file.base_branch.clone();
+        let described =
+            match self.describe_pull_request(&task_record, &worktree, &commit, &config, &file) {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    return self.record_delivery_failure(&task, &commit, &error.to_string());
+                }
+            };
         match described {
             DescribeOutcome::Output(describe) => {
                 let (title, body) = describe::assemble(Some(describe), &task_record, &commit);
@@ -1680,7 +1655,7 @@ where
         worktree: &Path,
         commit: &CommitId,
         config: &crate::config::ProjectConfig,
-        file: Option<&crate::project_file::ProjectFile>,
+        file: &crate::project_file::ProjectFile,
     ) -> Result<DescribeOutcome> {
         let Some(profile) = config
             .pull_request
@@ -1726,14 +1701,12 @@ where
         task: &Task,
         worktree: &Path,
         config: &crate::config::ProjectConfig,
-        file: Option<&crate::project_file::ProjectFile>,
+        file: &crate::project_file::ProjectFile,
         profile: &str,
     ) -> Result<describe::DescribeOutput> {
         let settings = self.store.home().load_settings()?;
         let spec = settings.profile_spec(depot_core::ProfileId::new(profile.to_owned()))?;
-        let base = file
-            .map(|file| file.base_branch.clone())
-            .unwrap_or_else(|| config.pull_request.base.clone());
+        let base = file.base_branch.clone();
         fetch_base(worktree, &base)?;
         let range = format!("origin/{base}...HEAD");
         let diff = git_output(worktree, &["diff", &range])?;
@@ -1746,9 +1719,7 @@ where
         describer.describe(&describe::DescribeInput {
             title: task.title.clone(),
             diff: describe::diff_section(&diff, &diffstat),
-            style: file
-                .map(|file| file.pull_request.describe_style.clone())
-                .unwrap_or_else(|| config.pull_request.describe_style.clone()),
+            style: file.pull_request.describe_style.clone(),
             directory: worktree.to_path_buf(),
             output_path: std::env::temp_dir().join(format!(
                 "depot-describe-{}-{}.md",
@@ -2579,22 +2550,28 @@ where
     }
 
     fn reconcile_evidence(&self) -> Result<()> {
-        let config = self.store.project_config(&self.project)?;
         let state = self.store.project_state(&self.project)?;
+        let capturing = state.tasks.values().any(|task| {
+            task.state == TaskState::PrOpen
+                && !depot_core::publication_blocked(&state, &task.id)
+                && task.validated_commit().is_some()
+                && task.pull_request().is_some()
+        });
+        if !capturing {
+            return Ok(());
+        }
         let Ok(repo_path) = self.repository() else {
             return Ok(());
         };
-        let file = crate::project_file::ProjectFile::read_for_base(&repo_path)
-            .ok()
-            .flatten();
-        let evidence = file
-            .as_ref()
-            .map(|file| file.evidence.clone())
-            .unwrap_or_else(|| config.evidence.clone());
-        let base = file
-            .as_ref()
-            .map(|file| file.base_branch.clone())
-            .unwrap_or_else(|| config.pull_request.base.clone());
+        let file = match crate::project_file::ProjectFile::read_for_base(&repo_path) {
+            Ok(file) => file,
+            Err(error) => {
+                log_project_error(&self.project.slug, &error);
+                return Ok(());
+            }
+        };
+        let evidence = file.evidence.clone();
+        let base = file.base_branch.clone();
         if evidence
             .command
             .as_deref()
@@ -2971,10 +2948,7 @@ where
         commit: &CommitId,
     ) -> Result<(CommitId, bool)> {
         let worktree = self.lease_for(task)?.path;
-        let base = match crate::project_file::ProjectFile::read_for_base(&worktree)? {
-            Some(file) => file.base_branch,
-            None => self.store.project_config(&self.project)?.pull_request.base,
-        };
+        let base = crate::project_file::ProjectFile::read_for_base(&worktree)?.base_branch;
         let fresh = fetch_base(&worktree, &base)?;
         let scratch = ScratchWorktree::add(&worktree, commit)?;
         let mergeable = merge_base(scratch.path(), &base)?.is_none();

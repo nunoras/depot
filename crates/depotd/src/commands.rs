@@ -181,8 +181,9 @@ pub fn submit_task(
         )));
     }
     let commit = CommitId::new(git_in(&worktree, &["rev-parse", "HEAD"])?);
-    check_descends_from_base(&store, &project, &current, &worktree, &commit)?;
-    let base = submission_base(&store, &project, &worktree)?;
+    let base_branch = crate::project_file::ProjectFile::read_for_base(&worktree)?.base_branch;
+    check_descends_from_base(&current, &worktree, &commit, &base_branch)?;
+    let base = submission_base(&worktree, &base_branch);
     let fact = Fact {
         at: now(),
         kind: FactKind::WorkerSubmitted {
@@ -250,10 +251,7 @@ pub fn retry_task(home: &DepotHome, selection: Option<&str>, id: &str) -> Result
     let store = Store::open(home)?;
     let (project, id) = resolve_task(&store, selection, id)?;
     let current = task(&store, &project, &id)?;
-    if !matches!(
-        current.state,
-        TaskState::Failed | TaskState::Cancelled
-    ) {
+    if !matches!(current.state, TaskState::Failed | TaskState::Cancelled) {
         return Err(transition_refused(&current, "retried"));
     }
     let fact = Fact {
@@ -493,20 +491,18 @@ fn leased_worktree_path(
     )
 }
 
-fn submission_base(store: &Store, project: &Project, worktree: &Path) -> Result<Option<CommitId>> {
-    let base = store.project_config(project)?.pull_request.base.clone();
-    let remote = format!("refs/remotes/origin/{base}");
-    Ok(git_in(worktree, &["rev-parse", "--verify", &remote])
+fn submission_base(worktree: &Path, base_branch: &str) -> Option<CommitId> {
+    let remote = format!("refs/remotes/origin/{base_branch}");
+    git_in(worktree, &["rev-parse", "--verify", &remote])
         .ok()
-        .map(CommitId::new))
+        .map(CommitId::new)
 }
 
 fn check_descends_from_base(
-    store: &Store,
-    project: &Project,
     task: &Task,
     worktree: &Path,
     commit: &CommitId,
+    base_branch: &str,
 ) -> Result<()> {
     match depot_core::worktree_baseline(task) {
         depot_core::Baseline::PinnedCommit(base) => {
@@ -517,16 +513,12 @@ fn check_descends_from_base(
             }
         }
         depot_core::Baseline::DefaultBranchHead => {
-            let base = match crate::project_file::ProjectFile::read_for_base(worktree) {
-                Ok(Some(file)) => file.base_branch,
-                Ok(None) | Err(_) => store.project_config(project)?.pull_request.base,
-            };
-            let remote = format!("origin/{base}");
+            let remote = format!("origin/{base_branch}");
             if git_in(worktree, &["rev-parse", "--verify", &remote]).is_ok()
                 && git_in(worktree, &["merge-base", "HEAD", &remote]).is_err()
             {
                 return Err(Error::Project(format!(
-                    "the worktree {} shares no history with the task's base `{base}`",
+                    "the worktree {} shares no history with the task's base `{base_branch}`",
                     worktree.display()
                 )));
             }

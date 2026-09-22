@@ -1,17 +1,24 @@
-use crate::support::{Golden, PROFILE, SLUG, TASK, Validation, fake_typesafe};
+use crate::support::{Golden, PROFILE, SLUG, TASK, Validation, fake_typesafe, git};
 use depot_core::{ProfileId, Role};
 use serde_json::{Value, json};
 
 fn configure(golden: &Golden, url: &str, rules: &str, key: bool) {
-    let path = golden.repo.join(".depot.toml");
-    let original = std::fs::read_to_string(&path).unwrap();
-    std::fs::write(path, format!("{original}\n{rules}\n")).unwrap();
+    write_project_file(golden, rules);
     let mut settings = golden.home.load_settings().unwrap();
     settings.typesafe_base_url = url.into();
     golden.home.write_settings(&settings).unwrap();
     if key {
         fake_typesafe::key(&golden.home.secrets_dir());
     }
+}
+
+fn write_project_file(golden: &Golden, contents: &str) {
+    let path = golden.repo.join(depotd::PROJECT_FILE_PATH);
+    let original = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(path, format!("{original}\n{contents}\n")).unwrap();
+    git::git(&golden.repo, &["add", depotd::PROJECT_FILE_PATH]);
+    git::git(&golden.repo, &["commit", "-m", "configure dispatch rules"]);
+    git::git(&golden.repo, &["push", "origin", "main"]);
 }
 
 fn create(golden: &Golden, role: bool) -> std::process::Output {
@@ -92,11 +99,14 @@ fn dispatch_judgement_precedes_proposal_and_pins_the_profile_through_launch() {
             "questions": {"dispatch": {"type": "choice", "instructions": "Which condition best matches this work?", "criteria": {fake_typesafe::CONDITION: null, fake_typesafe::NEUTRAL: null}}}
         })
     );
-    let path = golden.repo.join(".depot.toml");
+    let path = golden.repo.join(depotd::PROJECT_FILE_PATH);
     let text = std::fs::read_to_string(&path)
         .unwrap()
         .replace("role = \"build\"", "role = \"review\"");
     std::fs::write(path, text).unwrap();
+    git::git(&golden.repo, &["add", depotd::PROJECT_FILE_PATH]);
+    git::git(&golden.repo, &["commit", "-m", "move the dispatch role"]);
+    git::git(&golden.repo, &["push", "origin", "main"]);
     golden.depot_ok(&["task", "approve", TASK, "--project", SLUG]);
     golden.daemon().tick().unwrap();
     assert_eq!(golden.task().attempts[0].profile, ProfileId::new(PROFILE));

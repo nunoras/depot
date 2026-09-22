@@ -1,0 +1,4 @@
+base_branch = "main"
+
+[validation]
+command = "cargo test && cargo clippy --all-targets -- -D warnings && cargo fmt --all --check"

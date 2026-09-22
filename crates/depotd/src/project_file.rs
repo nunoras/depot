@@ -1,4 +1,3 @@
-use std::io;
 use std::path::Path;
 use std::process::Command;
 
@@ -55,25 +54,15 @@ impl ProjectFile {
         Ok(toml::to_string_pretty(self)?)
     }
 
-    pub fn load_optional(directory: &Path) -> Result<Option<Self>> {
-        match std::fs::read_to_string(directory.join(PROJECT_FILE_PATH)) {
-            Ok(text) => Ok(Some(Self::parse(&text)?)),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(error.into()),
-        }
-    }
-
     pub fn missing_message() -> String {
         format!("the base branch has no `{PROJECT_FILE_PATH}`; commit it with {PROJECT_FILE_KEYS}")
     }
 
-    pub fn read_for_base(repo: &Path) -> Result<Option<Self>> {
+    pub fn read_for_base(repo: &Path) -> Result<Self> {
         let default = default_branch(repo)?;
         fetch_branch(repo, &default)?;
-        let Some(at_default) = Self::at_ref(repo, &format!("refs/remotes/origin/{default}"))?
-        else {
-            return Ok(None);
-        };
+        let at_default = Self::at_ref(repo, &format!("refs/remotes/origin/{default}"))?
+            .ok_or_else(|| Error::Config(Self::missing_message()))?;
         let base = at_default.base_branch.trim().to_owned();
         if base.is_empty() {
             return Err(Error::Config(format!(
@@ -81,7 +70,7 @@ impl ProjectFile {
             )));
         }
         if base == default {
-            return Ok(Some(at_default));
+            return Ok(at_default);
         }
         fetch_branch(repo, &base)?;
         let at_base = Self::at_ref(repo, &format!("refs/remotes/origin/{base}"))?
@@ -92,7 +81,7 @@ impl ProjectFile {
                 "`{PROJECT_FILE_PATH}` names base_branch `{named}` on `origin/{base}` but `{base}` on `origin/{default}`; refusing to follow the disagreement"
             )));
         }
-        Ok(Some(at_base))
+        Ok(at_base)
     }
 
     fn at_ref(repo: &Path, reference: &str) -> Result<Option<Self>> {

@@ -3670,9 +3670,16 @@ fn a_gate_committed_on_the_base_is_the_gate_validation_runs() {
         .expect("a validation record")
         .command
         .clone();
-    assert_ne!(
-        command, "exit 1",
-        "the machine-local gate is never the gate that ran"
+    let committed = depotd::ProjectFile::parse(
+        &std::fs::read_to_string(golden.repo.join(depotd::PROJECT_FILE_PATH))
+            .expect("the committed project file"),
+    )
+    .expect("the committed project file parses")
+    .validation
+    .command;
+    assert_eq!(
+        command, committed,
+        "the gate that ran is the gate committed on the base"
     );
 }
 
@@ -3733,12 +3740,18 @@ fn a_worker_that_loosens_the_gate_is_held_for_the_user_before_validation() {
     assert_eq!(events.len(), 1, "the hold fires one event: {events:?}");
     assert_eq!(events[0]["event"], "failed");
 
-    let checklist = golden.checklist();
+    let checklist = golden.status_history();
     assert!(checklist.contains(".agni/project.toml"), "{checklist}");
 
     let inbox = golden.depot_ok(&["inbox", "--project", SLUG]);
     assert!(inbox.contains("## For the user"), "{inbox}");
     assert!(inbox.contains(".agni/project.toml"), "{inbox}");
+
+    git::git(
+        &golden.lease,
+        &["push", "origin", &format!("HEAD:refs/heads/{BRANCH}")],
+    );
+    git::git(&golden.lease, &["fetch", "origin"]);
 
     assert_eq!(
         golden.depot_ok(&["task", "acknowledge", TASK, "--project", SLUG]),
@@ -3798,7 +3811,9 @@ fn a_hand_landed_branch_settles_a_task_held_for_a_project_file_change() {
     );
     assert!(
         golden.history(TASK).contains(&MERGED.to_string())
-            || golden.history(TASK).contains(&"stale_merge_observed".to_string()),
+            || golden
+                .history(TASK)
+                .contains(&"stale_merge_observed".to_string()),
         "the merge settles the row: {:?}",
         golden.history(TASK)
     );
@@ -3830,6 +3845,7 @@ fn a_reviewed_project_file_change_becomes_the_gate_for_the_next_task() {
 #[test]
 fn a_project_without_a_project_file_is_told_which_file_and_keys_it_needs() {
     let golden = Golden::new(Validation::Passing);
+    golden.set_local_validation_command("exit 0");
     let daemon = golden.daemon();
     golden.remove_project_file_from_base();
     golden.propose();
@@ -3852,6 +3868,77 @@ fn a_project_without_a_project_file_is_told_which_file_and_keys_it_needs() {
     assert!(inbox.contains(".agni/project.toml"), "{inbox}");
     assert!(inbox.contains("base_branch"), "{inbox}");
     assert!(inbox.contains("`[validation] command`"), "{inbox}");
+    assert!(
+        !inbox.contains("exit 0"),
+        "the machine-local gate is never the answer to a missing project file: {inbox}"
+    );
+}
+
+#[test]
+fn a_commit_on_main_but_not_the_project_file_base_is_not_failed_as_adding_nothing() {
+    let golden = Golden::new(Validation::Passing);
+    golden.move_base_to_develop();
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    let submitted = golden.worker_fast_forwards_to_and_submits("main");
+    assert_eq!(
+        submitted.status.code(),
+        Some(0),
+        "the worker script failed: {}",
+        support::stderr(&submitted)
+    );
+    daemon
+        .tick()
+        .expect("the daemon validates the commit the project file base lacks");
+
+    assert!(
+        !golden
+            .history(TASK)
+            .contains(&"worker_committed_nothing".to_string()),
+        "a commit the project file base lacks is not an empty submission: {:?}",
+        golden.history(TASK)
+    );
+    assert!(
+        golden.history(TASK).contains(&VALIDATED.to_string()),
+        "the commit over the project file base validates: {:?}",
+        golden.history(TASK)
+    );
+}
+
+#[test]
+fn a_commit_on_the_project_file_base_is_failed_as_adding_nothing() {
+    let golden = Golden::new(Validation::Passing);
+    golden.move_base_to_develop();
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    let submitted = golden.worker_fast_forwards_to_and_submits("develop");
+    assert_eq!(
+        submitted.status.code(),
+        Some(0),
+        "the worker script failed: {}",
+        support::stderr(&submitted)
+    );
+    daemon
+        .tick()
+        .expect("the daemon sees nothing over the project file base");
+
+    let failed = golden.task();
+    assert_eq!(failed.state, TaskState::Failed);
+    assert_eq!(
+        failed.failure.as_deref(),
+        Some(
+            "the submitted commit is already on the base branch and this attempt adds nothing over it"
+        )
+    );
+    assert!(
+        golden
+            .history(TASK)
+            .contains(&"worker_committed_nothing".to_string()),
+        "the empty submission is on the journal: {:?}",
+        golden.history(TASK)
+    );
 }
 
 #[test]

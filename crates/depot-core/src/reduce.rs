@@ -141,12 +141,10 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
         }
 
         FactKind::TaskRetried { task } => {
-            let retryable = next.tasks.get(task).is_some_and(|task| {
-                matches!(
-                    task.state,
-                    TaskState::Failed | TaskState::Cancelled
-                )
-            });
+            let retryable = next
+                .tasks
+                .get(task)
+                .is_some_and(|task| matches!(task.state, TaskState::Failed | TaskState::Cancelled));
             if retryable && let Some(task) = next.tasks.get_mut(task) {
                 task.state = TaskState::Approved;
                 task.retry = None;

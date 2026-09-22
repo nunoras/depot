@@ -380,6 +380,21 @@ impl Golden {
         git::git(&self.repo, &["push", "origin", "HEAD:main"]);
     }
 
+    pub fn move_base_to_develop(&self) {
+        self.set_pull_request_base("develop");
+        git::git(&self.repo, &["branch", "develop"]);
+        git::git(&self.repo, &["push", "origin", "develop"]);
+        commit_file(
+            &self.repo,
+            "main-only.txt",
+            "only on main\n",
+            "main moves on",
+        );
+        git::git(&self.repo, &["push", "origin", "HEAD:main"]);
+        git::git(&self.repo, &["fetch", "origin"]);
+        git::git(&self.repo, &["remote", "set-head", "origin", "-a"]);
+    }
+
     pub fn set_describe_profile(&self, profile: &str) {
         let path = self.repo.join(depotd::PROJECT_CONFIG_FILE_NAME);
         let text = fs::read_to_string(&path).expect("the project config is readable");
@@ -539,6 +554,14 @@ impl Golden {
         self.worker(&script(&[
             "git fetch origin",
             "git merge --ff-only origin/main",
+            &format!("depot submit --task {TASK} --project {SLUG}"),
+        ]))
+    }
+
+    pub fn worker_fast_forwards_to_and_submits(&self, branch: &str) -> Output {
+        self.worker(&script(&[
+            "git fetch origin",
+            &format!("git merge --ff-only origin/{branch}"),
             &format!("depot submit --task {TASK} --project {SLUG}"),
         ]))
     }

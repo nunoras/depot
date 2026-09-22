@@ -130,6 +130,7 @@ pub enum FactTag {
     WorkerSubmitted,
     WorkerCommittedNothing,
     ValidationStarted,
+    ProjectFileChanged,
     ValidationFinished,
     ValidationFailed,
     WorktreeAcquired,
@@ -189,6 +190,7 @@ pub fn fact_tag(kind: &FactKind) -> FactTag {
         FactKind::WorkerSubmitted { .. } => FactTag::WorkerSubmitted,
         FactKind::WorkerCommittedNothing { .. } => FactTag::WorkerCommittedNothing,
         FactKind::ValidationStarted { .. } => FactTag::ValidationStarted,
+        FactKind::ProjectFileChanged { .. } => FactTag::ProjectFileChanged,
         FactKind::ValidationFinished { .. } => FactTag::ValidationFinished,
         FactKind::ValidationFailed { .. } => FactTag::ValidationFailed,
         FactKind::WorktreeAcquired { .. } => FactTag::WorktreeAcquired,
@@ -249,6 +251,7 @@ pub fn fact_tag_name(tag: FactTag) -> &'static str {
         FactTag::WorkerSubmitted => "worker_submitted",
         FactTag::WorkerCommittedNothing => "worker_committed_nothing",
         FactTag::ValidationStarted => "validation_started",
+        FactTag::ProjectFileChanged => "project_file_changed",
         FactTag::ValidationFinished => "validation_finished",
         FactTag::ValidationFailed => "validation_failed",
         FactTag::WorktreeAcquired => "worktree_acquired",
@@ -309,6 +312,7 @@ pub fn fact_tag_from_name(name: &str) -> Result<FactTag> {
         "worker_submitted" => FactTag::WorkerSubmitted,
         "worker_committed_nothing" => FactTag::WorkerCommittedNothing,
         "validation_started" => FactTag::ValidationStarted,
+        "project_file_changed" => FactTag::ProjectFileChanged,
         "validation_finished" => FactTag::ValidationFinished,
         "validation_failed" => FactTag::ValidationFailed,
         "worktree_acquired" => FactTag::WorktreeAcquired,
@@ -373,6 +377,7 @@ pub fn fact_task(kind: &FactKind) -> Option<TaskId> {
         | FactKind::WorkerSubmitted { task, .. }
         | FactKind::WorkerCommittedNothing { task, .. }
         | FactKind::ValidationStarted { task, .. }
+        | FactKind::ProjectFileChanged { task, .. }
         | FactKind::ValidationFinished { task, .. }
         | FactKind::ValidationFailed { task, .. }
         | FactKind::WorktreeAcquired { task, .. }

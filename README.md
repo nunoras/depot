@@ -105,23 +105,44 @@ A second clone of a registered origin adds a clone rather than a second project,
 `depot project repoint <name> --origin <url>` follows a renamed origin, refused while a task is in flight and refused while a clone's git remote still says the old origin.
 A clone whose live `origin` no longer reduces to its project's identity is left alone: depot refuses to launch or submit from it while that project has work in flight.
 
-5. Configure the project (`.depot.toml` in the repo root; machine-local, never committed):
+5. Configure the project.
+
+The keys that describe the repository are committed in `.agni/project.toml`:
 
 ```toml
 base_branch = "main"
+
+[validation]
+command = "cargo test"
+
+[evidence]
+command = "./capture"
+
+[pull_request]
+describe_style = "Write in the house voice: plain sentences, no emoji."
+```
+
+depot reads that file from the fetched base branch, never from a worker's branch, so a worker cannot loosen the gate its own work is judged by.
+A project with no committed `.agni/project.toml` is told which file and keys it needs; nothing falls back to `.depot.toml`.
+A task whose branch changes anything under `.agni/` fails and is held for you before validation runs; its failure line names the files.
+`.agni/automations/` is reserved for repository automations and read by nothing yet.
+
+depot's own gate lives in its committed `.agni/project.toml`.
+
+The keys that describe this machine's choices stay in `.depot.toml` in the repo root, which `depot project add` adds to `.git/info/exclude` so it stays machine-local:
+
+```toml
 max_concurrent_tasks = 1
 
 [profiles]
 build = "my-builder"
 
-[validation]
-command = "cargo test"
-
 [pull_request]
-base = "main"
 merge = "manual"
 describe_profile = "my-describer"
-describe_style = "Write in the house voice: plain sentences, no emoji."
+
+[questions]
+always_relay = false
 ```
 
 6. Start the daemon:

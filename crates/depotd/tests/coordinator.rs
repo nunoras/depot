@@ -9,6 +9,9 @@ const BUILD_ONLY: &str = "base_branch = \"main\"\n\n\
                           [validation]\n\
                           command = \"cargo test\"\n";
 
+const BUILD_ONLY_PROJECT_FILE: &str =
+    "base_branch = \"main\"\n\n[validation]\ncommand = \"cargo test\"\n";
+
 fn at(millis: u64) -> Timestamp {
     Timestamp::from_millis(millis)
 }
@@ -21,7 +24,8 @@ fn fact(millis: u64, kind: FactKind) -> Fact {
 }
 
 fn context(fixture: &support::Fixture, name: &str) -> (Store, CoordinatorContext) {
-    let added = support::register_with_config(fixture, name, BUILD_ONLY);
+    let added =
+        support::register_git_with_config(fixture, name, BUILD_ONLY, BUILD_ONLY_PROJECT_FILE);
     let store = Store::open(&fixture.home).expect("store");
     let context = store.coordinator_context(&added.project).expect("context");
     (store, context)
@@ -191,7 +195,8 @@ fn a_coordinator_row_without_a_session_keeps_the_inbox_cursor() {
 #[test]
 fn the_brief_renders_from_a_task_record_without_repeating_the_coordinator() {
     let fixture = support::fixture();
-    let added = support::register_with_config(&fixture, "example", BUILD_ONLY);
+    let added =
+        support::register_git_with_config(&fixture, "example", BUILD_ONLY, BUILD_ONLY_PROJECT_FILE);
     let store = Store::open(&fixture.home).expect("store");
     store
         .put_task(&support::simple_task(
@@ -241,7 +246,8 @@ fn the_brief_renders_from_a_task_record_without_repeating_the_coordinator() {
 #[test]
 fn a_worker_launch_stores_the_brief_and_delivers_it_as_the_prompt() {
     let fixture = support::fixture();
-    let added = support::register_with_config(&fixture, "example", BUILD_ONLY);
+    let added =
+        support::register_git_with_config(&fixture, "example", BUILD_ONLY, BUILD_ONLY_PROJECT_FILE);
     let store = Store::open(&fixture.home).expect("store");
     let task = support::full_task(&added.project.id, "t-1");
     let context = store.coordinator_context(&added.project).expect("context");
@@ -338,13 +344,14 @@ fn a_template_placeholder_nothing_fills_is_refused() {
 #[test]
 fn nothing_delivered_to_a_session_carries_the_configured_profile() {
     let fixture = support::fixture();
-    let added = support::register_with_config(
+    let added = support::register_git_with_config(
         &fixture,
         "example",
         "base_branch = \"main\"\n\n\
          [profiles]\n\
          plan = \"fable-5\"\n\
          build = \"glm-5.3\"\n",
+        "base_branch = \"main\"\n",
     );
     let store = Store::open(&fixture.home).expect("store");
     let context = store.coordinator_context(&added.project).expect("context");

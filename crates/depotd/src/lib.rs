@@ -19,6 +19,7 @@ pub mod home_move;
 mod identity;
 mod inbox;
 mod project;
+mod project_file;
 mod projects;
 mod restart;
 mod settings;
@@ -63,6 +64,9 @@ pub use home::{
 };
 pub use inbox::{InboxEntry, Need, inbox_entries, render_inbox};
 pub use project::{Clone, LocationKind, Project};
+pub use project_file::{
+    DeliveryConfig, PROJECT_FILE_KEYS, PROJECT_FILE_PATH, ProjectFile, ProjectFilePullRequest,
+};
 pub use projects::{
     Added, StatusSelection, add_project, needs_daemon, render_projects, render_status,
     render_status_at, repoint_project, select_project,

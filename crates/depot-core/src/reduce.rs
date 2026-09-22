@@ -516,6 +516,23 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             }
         }
 
+        FactKind::ProjectFileChanged { task, files, .. } => {
+            let holding = next
+                .tasks
+                .get(task)
+                .is_some_and(|task| task.state == TaskState::Validating);
+            if holding {
+                if let Some(task) = next.tasks.get_mut(task) {
+                    task.state = TaskState::Failed;
+                    task.retry = None;
+                    task.failure = Some(crate::project_file::project_file_hold_reason(files));
+                    task.updated_at = fact.at;
+                }
+                changed = true;
+                actions.push(Action::HoldForUser { task: task.clone() });
+            }
+        }
+
         FactKind::ValidationFinished {
             task,
             command,

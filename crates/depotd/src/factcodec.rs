@@ -164,6 +164,18 @@ pub fn encode_payload(kind: &FactKind) -> String {
             ("task", quoted(task.as_str())),
             ("commit", quoted(commit.as_str())),
         ]),
+        FactKind::ProjectFileChanged {
+            task,
+            commit,
+            files,
+        } => object(vec![
+            ("task", quoted(task.as_str())),
+            ("commit", quoted(commit.as_str())),
+            (
+                "files",
+                array(files.iter().map(|file| quoted(file)).collect()),
+            ),
+        ]),
         FactKind::ValidationFinished {
             task,
             command,
@@ -371,6 +383,22 @@ pub fn payload_field(payload: &str, field: &str) -> Result<String> {
         .get(field)
         .and_then(serde_json::Value::as_str)
         .map(str::to_owned)
+        .ok_or_else(|| Error::Schema(format!("a fact payload carries no {field}")))
+}
+
+pub fn payload_array(payload: &str, field: &str) -> Result<Vec<String>> {
+    let value: serde_json::Value =
+        serde_json::from_str(payload).map_err(|error| Error::Schema(error.to_string()))?;
+    value
+        .get(field)
+        .and_then(serde_json::Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
         .ok_or_else(|| Error::Schema(format!("a fact payload carries no {field}")))
 }
 

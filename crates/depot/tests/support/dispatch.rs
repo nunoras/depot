@@ -1,17 +1,24 @@
-use crate::support::{Golden, PROFILE, SLUG, TASK, Validation, fake_typesafe};
+use crate::support::{Golden, PROFILE, SLUG, TASK, Validation, fake_typesafe, git};
 use depot_core::{ProfileId, Role};
 use serde_json::{Value, json};
 
 fn configure(golden: &Golden, url: &str, rules: &str, key: bool) {
-    let path = golden.repo.join(".depot.toml");
-    let original = std::fs::read_to_string(&path).unwrap();
-    std::fs::write(path, format!("{original}\n{rules}\n")).unwrap();
+    write_project_file(golden, rules);
     let mut settings = golden.home.load_settings().unwrap();
     settings.typesafe_base_url = url.into();
     golden.home.write_settings(&settings).unwrap();
     if key {
         fake_typesafe::key(&golden.home.secrets_dir());
     }
+}
+
+fn write_project_file(golden: &Golden, contents: &str) {
+    let path = golden.repo.join(depotd::PROJECT_FILE_PATH);
+    let original = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(path, format!("{original}\n{contents}\n")).unwrap();
+    git::git(&golden.repo, &["add", depotd::PROJECT_FILE_PATH]);
+    git::git(&golden.repo, &["commit", "-m", "configure dispatch rules"]);
+    git::git(&golden.repo, &["push", "origin", "main"]);
 }
 
 fn create(golden: &Golden, role: bool) -> std::process::Output {
@@ -92,11 +99,14 @@ fn dispatch_judgement_precedes_proposal_and_pins_the_profile_through_launch() {
             "questions": {"dispatch": {"type": "choice", "instructions": "Which condition best matches this work?", "criteria": {fake_typesafe::CONDITION: null, fake_typesafe::NEUTRAL: null}}}
         })
     );
-    let path = golden.repo.join(".depot.toml");
+    let path = golden.repo.join(depotd::PROJECT_FILE_PATH);
     let text = std::fs::read_to_string(&path)
         .unwrap()
         .replace("role = \"build\"", "role = \"review\"");
     std::fs::write(path, text).unwrap();
+    git::git(&golden.repo, &["add", depotd::PROJECT_FILE_PATH]);
+    git::git(&golden.repo, &["commit", "-m", "move the dispatch role"]);
+    git::git(&golden.repo, &["push", "origin", "main"]);
     golden.depot_ok(&["task", "approve", TASK, "--project", SLUG]);
     golden.daemon().tick().unwrap();
     assert_eq!(golden.task().attempts[0].profile, ProfileId::new(PROFILE));
@@ -222,4 +232,64 @@ fn typesafe_api_failure_is_named_and_does_not_guess_a_role() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("HTTP 429"));
     assert!(golden.store.tasks(&golden.project.id).unwrap().is_empty());
     assert_eq!(server.requests().len(), 1);
+}
+
+#[test]
+fn an_uncommitted_project_file_edit_never_wins_over_the_committed_one() {
+    let golden = Golden::new(Validation::Passing);
+    let server = fake_typesafe::endpoint(fake_typesafe::CONDITION, 0.95);
+    configure(
+        &golden,
+        &server.base_url(),
+        &rules(&format!("candidates = [{PROFILE:?}]")),
+        true,
+    );
+    let gate = if cfg!(windows) {
+        "validate.cmd"
+    } else {
+        "sh validate.sh"
+    };
+    let path = golden.repo.join(depotd::PROJECT_FILE_PATH);
+    let committed = std::fs::read_to_string(&path).unwrap();
+    let edited = committed
+        .replace("role = \"build\"", "role = \"review\"")
+        .replace(
+            &format!("command = \"{gate}\""),
+            "command = \"gate-from-the-working-tree\"",
+        );
+    assert!(edited.contains("role = \"review\""), "the role is edited");
+    assert!(
+        edited.contains("gate-from-the-working-tree"),
+        "the gate is edited"
+    );
+    std::fs::write(&path, edited).unwrap();
+
+    let output = create(&golden, false);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let task = golden.task();
+    assert_eq!(
+        task.role,
+        Role::Build,
+        "dispatch judges the committed rules, not the working tree"
+    );
+    golden.depot_ok(&["task", "approve", TASK, "--project", SLUG]);
+    golden
+        .daemon()
+        .tick()
+        .expect("the daemon launches the worker");
+    let launch = golden.boxr.calls_to("--harness");
+    assert_eq!(launch.len(), 1, "one worker is launched, {launch:?}");
+    let brief = launch[0].last().expect("the launch carries the prompt");
+    assert!(
+        brief.contains(&format!("The command is `{gate}`")),
+        "the brief carries the committed gate: {brief}"
+    );
+    assert!(
+        !brief.contains("gate-from-the-working-tree"),
+        "the brief ignores the uncommitted gate: {brief}"
+    );
 }

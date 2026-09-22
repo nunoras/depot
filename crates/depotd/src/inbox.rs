@@ -4,7 +4,7 @@ use depot_core::{Liveness, Task, TaskId, TaskState, Timestamp};
 
 use crate::checklist::{format_timestamp, one_line};
 use crate::error::Result;
-use crate::factcodec::{liveness_name, payload_field};
+use crate::factcodec::{liveness_name, payload_array, payload_field};
 use crate::store::RecordedEvent;
 use crate::vocabulary::{FactTag, fact_tag_from_name, state_name};
 
@@ -145,6 +145,7 @@ fn need_for(tag: FactTag, task: Option<&Task>) -> Need {
             _ => Need::Nothing,
         },
         FactTag::WorktreeReleaseHeld => Need::User,
+        FactTag::ProjectFileChanged => Need::User,
         FactTag::RebaseScheduled
         | FactTag::TaskDispatchJudged
         | FactTag::TaskProposed
@@ -256,6 +257,10 @@ fn headline(tag: FactTag, event: &RecordedEvent, task: Option<&Task>) -> Result<
         FactTag::WorkerSubmissionRecorded => "recorded a submission".to_string(),
         FactTag::WorkerSubmitted => "submitted a change".to_string(),
         FactTag::ValidationStarted => "validation started".to_string(),
+        FactTag::ProjectFileChanged => {
+            let files = payload_array(&event.payload, "files")?;
+            depot_core::project_file_hold_reason(&files)
+        }
         FactTag::ValidationFinished => match task.and_then(|task| task.validations.last()) {
             Some(record) => format!(
                 "validation `{}` at `{}` exited {}",

@@ -146,7 +146,7 @@ struct Fixture {
     forge: FakeForge,
 }
 
-fn register(config: &str) -> Fixture {
+fn register(machine_config: &str, project_file: &str) -> Fixture {
     let temp = TempDir::new().expect("a temporary directory");
     let home = DepotHome::at(temp.path().join("home"));
     home.ensure().expect("the depot home");
@@ -166,17 +166,34 @@ fn register(config: &str) -> Fixture {
     let store = Store::open(&home).expect("the store opens");
     let directory = temp.path().join("acme-widget");
     std::fs::create_dir_all(&directory).expect("the project directory");
-    std::fs::write(directory.join(".depot.toml"), config).expect("the project config");
+    let origin = temp.path().join("acme").join("widget.git");
+    std::fs::create_dir_all(origin.parent().expect("the origin directory"))
+        .expect("the origin directory");
+    let output = std::process::Command::new("git")
+        .args(["init", "--bare", "--initial-branch=main"])
+        .arg(&origin)
+        .output()
+        .expect("git runs");
+    assert!(output.status.success(), "the bare origin is created");
     git(&directory, &["init", "--initial-branch=main"]);
+    std::fs::write(directory.join(".depot.toml"), machine_config).expect("the project config");
+    std::fs::create_dir_all(directory.join(".agni")).expect("the project file directory");
+    std::fs::write(directory.join(".agni/project.toml"), project_file)
+        .expect("the committed project file");
+    git(&directory, &["add", "."]);
+    git(&directory, &["commit", "-m", "the project"]);
     git(
         &directory,
         &[
             "remote",
             "add",
             "origin",
-            "https://github.com/acme/widget.git",
+            origin.to_str().expect("utf-8 origin"),
         ],
     );
+    git(&directory, &["push", "origin", "main"]);
+    git(&directory, &["fetch", "origin"]);
+    git(&directory, &["remote", "set-head", "origin", "-a"]);
     let project = Project {
         id: ProjectId::new(directory.display().to_string()),
         kind: LocationKind::Path,
@@ -201,6 +218,14 @@ fn register(config: &str) -> Fixture {
 
 fn git(directory: &std::path::Path, args: &[&str]) {
     let output = std::process::Command::new("git")
+        .args([
+            "-c",
+            "user.name=depot",
+            "-c",
+            "user.email=depot@example.test",
+            "-c",
+            "commit.gpgsign=false",
+        ])
         .arg("-C")
         .arg(directory)
         .args(args)
@@ -211,6 +236,14 @@ fn git(directory: &std::path::Path, args: &[&str]) {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+fn fetch_head(fixture: &Fixture) -> std::path::PathBuf {
+    fixture.temp.path().join("acme-widget/.git/FETCH_HEAD")
+}
+
+fn clear_fetch_head(fixture: &Fixture) {
+    let _ = std::fs::remove_file(fetch_head(fixture));
 }
 
 fn open_pull_request_routes(forge: &FakeForge, commit: &str) {
@@ -356,7 +389,11 @@ fn daemon(
     .with_evidence_runner(Box::new(evidence))
 }
 
-const EVIDENCE_CONFIG: &str = "base_branch = \"main\"\n\n[profiles]\nbuild = \"evidence-model\"\n\n[evidence]\ncommand = \"./capture\"\ntimeout_seconds = 60\n";
+const MACHINE_CONFIG: &str = "[profiles]\nbuild = \"evidence-model\"\n";
+const EVIDENCE_PROJECT_FILE: &str =
+    "base_branch = \"main\"\n\n[evidence]\ncommand = \"./capture\"\ntimeout_seconds = 60\n";
+const REQUIRED_EVIDENCE_PROJECT_FILE: &str =
+    "base_branch = \"main\"\n\n[evidence]\ncommand = \"./capture\"\nrequired = true\n";
 
 fn evidence_with(stdout: &str) -> FakeEvidence {
     FakeEvidence {
@@ -367,7 +404,7 @@ fn evidence_with(stdout: &str) -> FakeEvidence {
 
 #[test]
 fn an_open_pull_request_gets_one_proof_section_and_a_rerun_does_not_duplicate_it() {
-    let fixture = register(EVIDENCE_CONFIG);
+    let fixture = register(MACHINE_CONFIG, EVIDENCE_PROJECT_FILE);
     drive_to_pr_open(&fixture, "aaa111");
 
     let daemon = daemon(
@@ -413,7 +450,7 @@ fn an_open_pull_request_gets_one_proof_section_and_a_rerun_does_not_duplicate_it
 
 #[test]
 fn a_new_commit_refreshes_the_single_owned_proof_section() {
-    let fixture = register(EVIDENCE_CONFIG);
+    let fixture = register(MACHINE_CONFIG, EVIDENCE_PROJECT_FILE);
     drive_to_pr_open(&fixture, "aaa111");
 
     let stale = "## Why\n\nwhat the change is for\n\n<!-- depot-proof:start -->\n## Proof\n\nhttps://vid.example/old.mp4\n<!-- depot-proof:end -->\n\n## Validation\n\n`cargo test` exited 0".to_string();
@@ -445,7 +482,7 @@ fn a_new_commit_refreshes_the_single_owned_proof_section() {
 
 #[test]
 fn a_relative_local_file_is_noted_as_unattachable_and_resolved_against_the_worktree() {
-    let fixture = register(EVIDENCE_CONFIG);
+    let fixture = register(MACHINE_CONFIG, EVIDENCE_PROJECT_FILE);
     drive_to_pr_open(&fixture, "aaa111");
 
     daemon(&fixture, evidence_with("out/clip.mp4\tthe flow\n"))
@@ -488,9 +525,7 @@ fn a_relative_local_file_is_noted_as_unattachable_and_resolved_against_the_workt
 
 #[test]
 fn a_required_evidence_run_with_one_url_and_one_local_file_publishes_both_notes() {
-    let fixture = register(
-        "base_branch = \"main\"\n\n[profiles]\nbuild = \"evidence-model\"\n\n[evidence]\ncommand = \"./capture\"\nrequired = true\n",
-    );
+    let fixture = register(MACHINE_CONFIG, REQUIRED_EVIDENCE_PROJECT_FILE);
     drive_to_pr_open(&fixture, "aaa111");
 
     daemon(
@@ -521,9 +556,7 @@ fn a_required_evidence_run_with_one_url_and_one_local_file_publishes_both_notes(
 
 #[test]
 fn a_required_evidence_run_that_captured_nothing_holds_the_task_for_the_user() {
-    let fixture = register(
-        "base_branch = \"main\"\n\n[profiles]\nbuild = \"evidence-model\"\n\n[evidence]\ncommand = \"./capture\"\nrequired = true\n",
-    );
+    let fixture = register(MACHINE_CONFIG, REQUIRED_EVIDENCE_PROJECT_FILE);
     drive_to_pr_open(&fixture, "aaa111");
 
     daemon(&fixture, FakeEvidence::default())
@@ -544,7 +577,7 @@ fn a_required_evidence_run_that_captured_nothing_holds_the_task_for_the_user() {
 
 #[test]
 fn an_optional_evidence_failure_notes_itself_and_never_blocks_the_pull_request() {
-    let fixture = register(EVIDENCE_CONFIG);
+    let fixture = register(MACHINE_CONFIG, EVIDENCE_PROJECT_FILE);
     drive_to_pr_open(&fixture, "aaa111");
 
     let evidence = FakeEvidence {
@@ -576,9 +609,7 @@ fn an_optional_evidence_failure_notes_itself_and_never_blocks_the_pull_request()
 
 #[test]
 fn a_required_evidence_failure_holds_the_task_for_the_user() {
-    let fixture = register(
-        "base_branch = \"main\"\n\n[profiles]\nbuild = \"evidence-model\"\n\n[evidence]\ncommand = \"./capture\"\nrequired = true\n",
-    );
+    let fixture = register(MACHINE_CONFIG, REQUIRED_EVIDENCE_PROJECT_FILE);
     drive_to_pr_open(&fixture, "aaa111");
 
     let evidence = FakeEvidence {
@@ -608,9 +639,7 @@ fn a_required_evidence_failure_holds_the_task_for_the_user() {
 
 #[test]
 fn a_required_evidence_run_with_nothing_attachable_holds_the_task_for_the_user() {
-    let fixture = register(
-        "base_branch = \"main\"\n\n[profiles]\nbuild = \"evidence-model\"\n\n[evidence]\ncommand = \"./capture\"\nrequired = true\n",
-    );
+    let fixture = register(MACHINE_CONFIG, REQUIRED_EVIDENCE_PROJECT_FILE);
     drive_to_pr_open(&fixture, "aaa111");
 
     daemon(&fixture, evidence_with("out/clip.mp4\tthe flow\n"))
@@ -641,7 +670,7 @@ fn a_required_evidence_run_with_nothing_attachable_holds_the_task_for_the_user()
 
 #[test]
 fn an_empty_manifest_is_a_proof_section_saying_nothing_was_captured() {
-    let fixture = register(EVIDENCE_CONFIG);
+    let fixture = register(MACHINE_CONFIG, EVIDENCE_PROJECT_FILE);
     drive_to_pr_open(&fixture, "aaa111");
 
     daemon(&fixture, FakeEvidence::default())
@@ -660,8 +689,48 @@ fn an_empty_manifest_is_a_proof_section_saying_nothing_was_captured() {
 }
 
 #[test]
+fn an_unrecorded_evidence_run_fetches_once_and_a_recorded_one_fetches_no_more() {
+    let fixture = register(MACHINE_CONFIG, EVIDENCE_PROJECT_FILE);
+    drive_to_pr_open(&fixture, "aaa111");
+    clear_fetch_head(&fixture);
+
+    let daemon = daemon(
+        &fixture,
+        evidence_with("https://img.example/shot.png\tlogin screen\n"),
+    );
+    daemon.tick().expect("the first tick runs");
+    assert!(
+        fetch_head(&fixture).exists(),
+        "an unrecorded evidence run reads the project file from a fresh fetch"
+    );
+
+    clear_fetch_head(&fixture);
+    daemon.tick().expect("the second tick runs");
+    assert!(
+        !fetch_head(&fixture).exists(),
+        "a recorded evidence run fetches no more"
+    );
+}
+
+#[test]
+fn an_open_pull_request_without_evidence_configured_fetches_nothing() {
+    let fixture = register(MACHINE_CONFIG, "base_branch = \"main\"\n");
+    drive_to_pr_open(&fixture, "aaa111");
+    clear_fetch_head(&fixture);
+
+    let daemon = daemon(&fixture, FakeEvidence::default());
+    daemon.tick().expect("the first tick runs");
+    daemon.tick().expect("the second tick runs");
+
+    assert!(
+        !fetch_head(&fixture).exists(),
+        "an open pull request without evidence configured never fetches"
+    );
+}
+
+#[test]
 fn a_project_without_evidence_config_never_touches_the_forge_body() {
-    let fixture = register("base_branch = \"main\"\n\n[profiles]\nbuild = \"evidence-model\"\n");
+    let fixture = register(MACHINE_CONFIG, "base_branch = \"main\"\n");
     drive_to_pr_open(&fixture, "aaa111");
 
     daemon(&fixture, FakeEvidence::default())

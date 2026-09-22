@@ -9,6 +9,7 @@ mod event;
 mod fact;
 mod identity;
 mod model;
+mod project_file;
 mod reduce;
 
 pub use action::{Action, Baseline};
@@ -21,6 +22,7 @@ pub use model::{
     Question, ReleaseHold, Retry, Role, SessionId, Submission, Task, TaskId, TaskState, Timestamp,
     TurnDeferral, ValidationRecord, WorktreeLease,
 };
+pub use project_file::{PROJECT_DIRECTORY, project_file_hold_reason, project_files_touched};
 pub use reduce::{
     auto_merge_due, base_merge_due, dependency_satisfied, publication_blocked, reduce,
     worktree_baseline,

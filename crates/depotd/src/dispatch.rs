@@ -17,15 +17,22 @@ pub fn judge(
 ) -> Result<(DispatchResolution, Fact)> {
     let key = read_key(&store.home().secrets_dir())?;
     let config = store.project_config(project)?;
-    let raw_dispatch = config.dispatch.clone().ok_or_else(|| {
-        Error::Config(
-            "no dispatch.rules in .depot.toml; configure [[dispatch.rules]] or supply --role"
-                .into(),
-        )
-    })?;
+    let project_file = match store.project_path(project)? {
+        Some(repo) => Some(crate::project_file::ProjectFile::read_for_base(&repo)?),
+        None => None,
+    };
+    let raw_dispatch = project_file
+        .as_ref()
+        .and_then(|file| file.dispatch.clone())
+        .ok_or_else(|| {
+            Error::Config(
+                "no dispatch.rules in .agni/project.toml; configure [[dispatch.rules]] or supply --role"
+                    .into(),
+            )
+        })?;
     let dispatch: crate::config::DispatchConfig = raw_dispatch.try_into().map_err(|error| {
         Error::Config(format!(
-            "invalid dispatch.rules in .depot.toml: {error}; supply --role to override"
+            "invalid dispatch.rules in .agni/project.toml: {error}; supply --role to override"
         ))
     })?;
     let rules = dispatch.validated_rules()?;

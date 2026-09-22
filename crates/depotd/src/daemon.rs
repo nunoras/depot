@@ -654,7 +654,7 @@ fn repo_slug(remote: &str) -> Result<RepoSlug> {
         .rsplit_once(':')
         .map(|(_, path)| path)
         .unwrap_or(remote);
-    let mut parts = target.rsplit('/');
+    let mut parts = target.rsplit(['/', '\\']);
     let name = parts.next().filter(|part| !part.is_empty());
     let owner = parts.next().filter(|part| !part.is_empty());
     match (owner, name) {
@@ -1403,9 +1403,24 @@ where
                 return self.record_validation_failure(&task, &commit, &error.to_string());
             }
         };
-        let config = self.store.project_config(&self.project)?;
-        let base = config.pull_request.base.clone();
-        let command = config.validation.command.clone();
+        let file = match crate::project_file::ProjectFile::read_for_base(&worktree) {
+            Ok(file) => file,
+            Err(error) => {
+                return self.record_validation_failure(&task, &commit, &error.to_string());
+            }
+        };
+        let base = file.base_branch.clone();
+        let command = file.validation.command.clone();
+        if let Err(error) = fetch_base(&worktree, &base) {
+            return self.record_validation_failure(&task, &commit, &error.to_string());
+        }
+        match self.project_file_hold(&task, &commit, &worktree, &base) {
+            Ok(true) => return Ok(()),
+            Ok(false) => {}
+            Err(error) => {
+                return self.record_validation_failure(&task, &commit, &error.to_string());
+            }
+        }
         let result =
             match self
                 .validation
@@ -1431,6 +1446,39 @@ where
                 },
             },
         )
+    }
+
+    fn project_file_hold(
+        &self,
+        task: &TaskId,
+        commit: &CommitId,
+        worktree: &Path,
+        base: &str,
+    ) -> Result<bool> {
+        let range = format!("refs/remotes/origin/{base}...{}", commit.as_str());
+        let output = git_output(worktree, &["diff", "--name-only", &range])?;
+        let changed: Vec<String> = output
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_owned)
+            .collect();
+        let files = depot_core::project_files_touched(&changed);
+        if files.is_empty() {
+            return Ok(false);
+        }
+        self.record(
+            &event_key(&["project_file_changed", task.as_str(), commit.as_str()]),
+            Fact {
+                at: now(),
+                kind: FactKind::ProjectFileChanged {
+                    task: task.clone(),
+                    commit: commit.clone(),
+                    files,
+                },
+            },
+        )?;
+        Ok(true)
     }
 
     fn record_validation_failure(
@@ -1462,12 +1510,12 @@ where
             }
         };
         if task_record.state == TaskState::Validated {
-            let base = self
-                .store
-                .project_config(&self.project)?
-                .pull_request
-                .base
-                .clone();
+            let base = match crate::project_file::ProjectFile::read_for_base(&worktree) {
+                Ok(file) => file.base_branch,
+                Err(error) => {
+                    return self.record_delivery_failure(&task, &commit, &error.to_string());
+                }
+            };
             match self
                 .delivery
                 .commit_on_base(&task_record, &worktree, &base, &commit)
@@ -1549,14 +1597,20 @@ where
             }
         };
         let config = self.store.project_config(&self.project)?;
-        let base = config.pull_request.base.clone();
-        let described = match self.describe_pull_request(&task_record, &worktree, &commit, &config)
-        {
-            Ok(outcome) => outcome,
+        let file = match crate::project_file::ProjectFile::read_for_base(&worktree) {
+            Ok(file) => file,
             Err(error) => {
                 return self.record_delivery_failure(&task, &commit, &error.to_string());
             }
         };
+        let base = file.base_branch.clone();
+        let described =
+            match self.describe_pull_request(&task_record, &worktree, &commit, &config, &file) {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    return self.record_delivery_failure(&task, &commit, &error.to_string());
+                }
+            };
         match described {
             DescribeOutcome::Output(describe) => {
                 let (title, body) = describe::assemble(Some(describe), &task_record, &commit);
@@ -1601,6 +1655,7 @@ where
         worktree: &Path,
         commit: &CommitId,
         config: &crate::config::ProjectConfig,
+        file: &crate::project_file::ProjectFile,
     ) -> Result<DescribeOutcome> {
         let Some(profile) = config
             .pull_request
@@ -1611,12 +1666,12 @@ where
         else {
             return Ok(DescribeOutcome::OptOut);
         };
-        let first = self.run_describer(task, worktree, config, profile);
+        let first = self.run_describer(task, worktree, config, file, profile);
         if let Ok(output) = first {
             return Ok(DescribeOutcome::Output(output));
         }
         log("describe_retry", task.id.as_str());
-        match self.run_describer(task, worktree, config, profile) {
+        match self.run_describer(task, worktree, config, file, profile) {
             Ok(output) => Ok(DescribeOutcome::Output(output)),
             Err(error) => {
                 let reason = error.to_string();
@@ -1646,11 +1701,12 @@ where
         task: &Task,
         worktree: &Path,
         config: &crate::config::ProjectConfig,
+        file: &crate::project_file::ProjectFile,
         profile: &str,
     ) -> Result<describe::DescribeOutput> {
         let settings = self.store.home().load_settings()?;
         let spec = settings.profile_spec(depot_core::ProfileId::new(profile.to_owned()))?;
-        let base = config.pull_request.base.clone();
+        let base = file.base_branch.clone();
         fetch_base(worktree, &base)?;
         let range = format!("origin/{base}...HEAD");
         let diff = git_output(worktree, &["diff", &range])?;
@@ -1663,7 +1719,7 @@ where
         describer.describe(&describe::DescribeInput {
             title: task.title.clone(),
             diff: describe::diff_section(&diff, &diffstat),
-            style: config.pull_request.describe_style.clone(),
+            style: file.pull_request.describe_style.clone(),
             directory: worktree.to_path_buf(),
             output_path: std::env::temp_dir().join(format!(
                 "depot-describe-{}-{}.md",
@@ -2494,20 +2550,50 @@ where
     }
 
     fn reconcile_evidence(&self) -> Result<()> {
-        let config = self.store.project_config(&self.project)?;
-        let Some(command) = config
-            .evidence
-            .command
-            .as_deref()
-            .map(str::trim)
-            .filter(|command| !command.is_empty())
-        else {
+        let state = self.store.project_state(&self.project)?;
+        let mut pending = false;
+        for task in state.tasks.values() {
+            if task.state != TaskState::PrOpen || depot_core::publication_blocked(&state, &task.id)
+            {
+                continue;
+            }
+            let Some(commit) = task.validated_commit() else {
+                continue;
+            };
+            if task.pull_request().is_none() {
+                continue;
+            }
+            if !self.evidence_recorded(&task.id, commit)? {
+                pending = true;
+                break;
+            }
+        }
+        if !pending {
+            return Ok(());
+        }
+        let Ok(repo_path) = self.repository() else {
             return Ok(());
         };
+        if let Ok(file) = crate::project_file::ProjectFile::read_local(&repo_path)
+            && !file.evidence_configured()
+        {
+            return Ok(());
+        }
+        let file = match crate::project_file::ProjectFile::read_for_base(&repo_path) {
+            Ok(file) => file,
+            Err(error) => {
+                log_project_error(&self.project.slug, &error);
+                return Ok(());
+            }
+        };
+        let evidence = file.evidence.clone();
+        let base = file.base_branch.clone();
+        if !file.evidence_configured() {
+            return Ok(());
+        }
         let Ok(repo) = self.project_repo() else {
             return Ok(());
         };
-        let state = self.store.project_state(&self.project)?;
         for task in state.tasks.values() {
             if task.state != TaskState::PrOpen || depot_core::publication_blocked(&state, &task.id)
             {
@@ -2522,7 +2608,7 @@ where
             if self.evidence_recorded(&task.id, &commit)? {
                 continue;
             }
-            self.capture_evidence(task, &commit, number, &repo, command, &config)?;
+            self.capture_evidence(task, &commit, number, &repo, &evidence, &base)?;
         }
         Ok(())
     }
@@ -2543,11 +2629,12 @@ where
         commit: &CommitId,
         number: u64,
         repo: &RepoSlug,
-        command: &str,
-        config: &crate::config::ProjectConfig,
+        evidence: &crate::config::EvidenceConfig,
+        base: &str,
     ) -> Result<()> {
         let key = event_key(&["evidence", task.id.as_str(), commit.as_str()]);
-        let required = config.evidence.required;
+        let command = evidence.command.as_deref().unwrap_or_default();
+        let required = evidence.required;
         let result: std::result::Result<(), String> = (|| {
             let lease = self.lease_for(task).map_err(|error| error.to_string())?;
             let output = self
@@ -2555,8 +2642,8 @@ where
                 .run(
                     command,
                     &lease.path,
-                    &config.pull_request.base,
-                    Duration::from_secs(config.evidence.timeout_seconds),
+                    base,
+                    Duration::from_secs(evidence.timeout_seconds),
                 )
                 .map_err(|error| error.to_string())?;
             if output.exit_code != 0 {
@@ -2871,7 +2958,7 @@ where
         commit: &CommitId,
     ) -> Result<(CommitId, bool)> {
         let worktree = self.lease_for(task)?.path;
-        let base = self.store.project_config(&self.project)?.pull_request.base;
+        let base = crate::project_file::ProjectFile::read_for_base(&worktree)?.base_branch;
         let fresh = fetch_base(&worktree, &base)?;
         let scratch = ScratchWorktree::add(&worktree, commit)?;
         let mergeable = merge_base(scratch.path(), &base)?.is_none();
@@ -3441,6 +3528,28 @@ mod tests {
                 .expect("ssh remote")
                 .path(),
             "nunoras/depot"
+        );
+    }
+
+    #[test]
+    fn reads_local_path_remotes_on_every_platform() {
+        assert_eq!(
+            repo_slug("/mirrors/acme/widget.git")
+                .expect("unix path")
+                .path(),
+            "acme/widget"
+        );
+        assert_eq!(
+            repo_slug(r"C:\mirrors\acme\widget.git")
+                .expect("windows path")
+                .path(),
+            "acme/widget"
+        );
+        assert_eq!(
+            repo_slug("C:/mirrors/acme/widget.git")
+                .expect("drive path with forward slashes")
+                .path(),
+            "acme/widget"
         );
     }
 }

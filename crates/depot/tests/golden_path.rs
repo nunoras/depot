@@ -2627,6 +2627,37 @@ fn a_stale_conflict_against_an_older_base_never_launches_a_fix_turn() {
 }
 
 #[test]
+fn an_unverifiable_conflict_never_launches_a_fix_turn() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_submits();
+    let commit = golden.head();
+    golden.script_pull_request(&commit);
+    daemon
+        .tick()
+        .expect("the daemon validates, pushes and opens the pull request");
+    assert_eq!(golden.task().state, TaskState::PrOpen);
+
+    golden.free_lease();
+    golden.script_conflicting_pull_request(&commit);
+
+    daemon
+        .tick()
+        .expect("the daemon cannot check the conflict and schedules nothing");
+
+    let settled = golden.task();
+    assert_eq!(settled.state, TaskState::PrOpen);
+    assert_eq!(
+        settled.attempts.len(),
+        1,
+        "an unverifiable conflict never gets a fix turn"
+    );
+    assert!(!golden.history(TASK).contains(&REBASE_SCHEDULED.to_string()));
+}
+
+#[test]
 fn a_retry_of_a_failed_task_runs_a_fresh_attempt_on_the_lease_it_still_holds() {
     let golden = Golden::new(Validation::Failing);
     let daemon = golden.daemon();

@@ -2454,6 +2454,7 @@ where
                             }
                             Err(error) => {
                                 log("mergeability_check_failed", &error.to_string());
+                                observed.mergeable = None;
                             }
                         }
                     }

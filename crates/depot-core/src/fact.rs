@@ -189,6 +189,10 @@ pub enum FactKind {
         task: TaskId,
         commit: CommitId,
     },
+    StaleMergeObserved {
+        task: TaskId,
+        commit: CommitId,
+    },
     PullRequestClosedUnmerged {
         task: TaskId,
     },

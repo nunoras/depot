@@ -740,7 +740,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
 
         FactKind::PullRequestChecksChanged { task, checks } => {
             if let Some(task) = next.tasks.get_mut(task)
-                && task.state == TaskState::PrOpen
+                && task.state.tracks_pull_request()
             {
                 let mut updated = false;
                 for link in task.links.iter_mut() {
@@ -760,10 +760,9 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             }
         }
 
-        FactKind::PullRequestMerged { task, commit } => {
-            let merged_head_mismatch = next.tasks.get(task).is_some_and(|task| {
-                task.state == TaskState::PrOpen && task.validated_commit() != Some(commit)
-            });
+        FactKind::PullRequestMerged { task, commit }
+        | FactKind::StaleMergeObserved { task, commit } => {
+            let tracked = next.tasks.get(task).is_some_and(Task::may_still_land);
             if let Some(task) = next.tasks.get_mut(task) {
                 let cleared_refusal = task.merge_refused.take().is_some();
                 let cleared_conflict = task.conflict_base.take().is_some();
@@ -771,71 +770,24 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                     changed = true;
                 }
             }
-            if merged_head_mismatch {
-                if let Some(task) = next.tasks.get_mut(task) {
-                    task.state = TaskState::Failed;
-                    task.updated_at = fact.at;
-                }
-                changed = true;
-                actions.push(Action::HoldForUser { task: task.clone() });
-            } else if publication_blocked(&next, task) {
-                if next.tasks.contains_key(task) {
-                    changed = true;
-                    actions.push(Action::HoldForUser { task: task.clone() });
-                }
-            } else if next
-                .tasks
-                .get(task)
-                .is_some_and(|task| task.state == TaskState::PrOpen)
-                && let Some(task) = next.tasks.get_mut(task)
-            {
-                let stopped = close_attempt(task, AttemptOutcome::Submitted, fact.at);
-                task.state = TaskState::Landed;
-                task.updated_at = fact.at;
-                if stopped {
-                    actions.push(Action::StopSession {
-                        task: task.id.clone(),
-                    });
-                }
-                let fix_id = task.id.clone();
-                if let Some(lease) = owe_release(task) {
-                    actions.push(Action::ReleaseWorktree {
-                        task: task.id.clone(),
-                        lease,
-                    });
-                }
-                close_rework_originals(&mut next, &fix_id, TaskState::Landed, fact.at);
-                changed = true;
+            if tracked {
+                settle_merged_rework_family(
+                    &mut next,
+                    task,
+                    commit,
+                    fact.at,
+                    &mut actions,
+                    &mut changed,
+                );
             }
         }
 
         FactKind::PullRequestClosedUnmerged { task } => {
-            if let Some(task) = next.tasks.get_mut(task)
-                && !matches!(task.state, TaskState::Cancelled | TaskState::Landed)
-            {
-                let stopped = close_attempt(task, AttemptOutcome::Stopped, fact.at);
-                task.state = TaskState::Cancelled;
-                task.retry = None;
-                task.merge_refused = None;
-                task.conflict_base = None;
-                task.updated_at = fact.at;
-                changed = true;
-                if stopped {
-                    actions.push(Action::StopSession {
-                        task: task.id.clone(),
-                    });
-                }
-                let fix_id = task.id.clone();
-                if let Some(lease) = owe_release(task) {
-                    actions.push(Action::ReleaseWorktree {
-                        task: task.id.clone(),
-                        lease,
-                    });
-                }
-                actions.push(Action::HoldForUser {
-                    task: task.id.clone(),
-                });
-                close_rework_originals(&mut next, &fix_id, TaskState::Cancelled, fact.at);
+            let tracked = next.tasks.get(task).is_some_and(|task| {
+                !matches!(task.state, TaskState::Cancelled | TaskState::Landed)
+            });
+            if tracked {
+                cancel_rework_family(&mut next, task, fact.at, &mut actions, &mut changed);
             }
         }
 
@@ -1271,6 +1223,147 @@ fn relaunch(task: &mut Task, at: Timestamp, actions: &mut Vec<Action>) -> bool {
         profile,
     });
     true
+}
+
+fn settle_merged_rework_family(
+    state: &mut ProjectState,
+    task: &TaskId,
+    commit: &CommitId,
+    at: Timestamp,
+    actions: &mut Vec<Action>,
+    changed: &mut bool,
+) {
+    let family = rework_family(state, task);
+    let owners: Vec<TaskId> = family
+        .iter()
+        .filter(|id| state.tasks.get(id).and_then(Task::validated_commit) == Some(commit))
+        .cloned()
+        .collect();
+    if publication_blocked(state, task) {
+        *changed = true;
+        actions.push(Action::HoldForUser { task: task.clone() });
+        return;
+    }
+    for id in family {
+        let Some(member) = state.tasks.get(&id) else {
+            continue;
+        };
+        if matches!(member.state, TaskState::Landed | TaskState::Cancelled) {
+            continue;
+        }
+        let lands = owners.is_empty()
+            || owners.contains(&id)
+            || owners
+                .iter()
+                .any(|owner| rework_ancestor_of(state, &id, owner));
+        let Some(member) = state.tasks.get_mut(&id) else {
+            continue;
+        };
+        if lands {
+            let stopped = close_attempt(member, AttemptOutcome::Submitted, at);
+            member.state = TaskState::Landed;
+            member.updated_at = at;
+            if stopped {
+                actions.push(Action::StopSession { task: id.clone() });
+            }
+        } else {
+            let stopped = close_attempt(member, AttemptOutcome::Stopped, at);
+            member.state = TaskState::Cancelled;
+            member.retry = None;
+            member.merge_refused = None;
+            member.conflict_base = None;
+            member.updated_at = at;
+            if stopped {
+                actions.push(Action::StopSession { task: id.clone() });
+            }
+        }
+        if let Some(lease) = owe_release(member) {
+            actions.push(Action::ReleaseWorktree {
+                task: id.clone(),
+                lease,
+            });
+        }
+        *changed = true;
+    }
+}
+
+fn cancel_rework_family(
+    state: &mut ProjectState,
+    task: &TaskId,
+    at: Timestamp,
+    actions: &mut Vec<Action>,
+    changed: &mut bool,
+) {
+    for id in rework_family(state, task) {
+        let Some(member) = state.tasks.get(&id) else {
+            continue;
+        };
+        if matches!(member.state, TaskState::Landed | TaskState::Cancelled) {
+            continue;
+        }
+        let Some(member) = state.tasks.get_mut(&id) else {
+            continue;
+        };
+        let stopped = close_attempt(member, AttemptOutcome::Stopped, at);
+        member.state = TaskState::Cancelled;
+        member.retry = None;
+        member.merge_refused = None;
+        member.conflict_base = None;
+        member.updated_at = at;
+        if stopped {
+            actions.push(Action::StopSession { task: id.clone() });
+        }
+        if let Some(lease) = owe_release(member) {
+            actions.push(Action::ReleaseWorktree {
+                task: id.clone(),
+                lease,
+            });
+        }
+        *changed = true;
+    }
+    actions.push(Action::HoldForUser { task: task.clone() });
+}
+
+fn rework_family(state: &ProjectState, task: &TaskId) -> Vec<TaskId> {
+    let mut family = vec![rework_root(state, task)];
+    let mut index = 0;
+    while index < family.len() {
+        let current = family[index].clone();
+        index += 1;
+        for (id, candidate) in &state.tasks {
+            if candidate.rework_of.as_ref() == Some(&current) {
+                family.push(id.clone());
+            }
+        }
+    }
+    family
+}
+
+fn rework_root(state: &ProjectState, task: &TaskId) -> TaskId {
+    let mut current = task.clone();
+    while let Some(parent) = state
+        .tasks
+        .get(&current)
+        .and_then(|candidate| candidate.rework_of.clone())
+    {
+        current = parent;
+    }
+    current
+}
+
+fn rework_ancestor_of(state: &ProjectState, candidate: &TaskId, owner: &TaskId) -> bool {
+    let mut current = owner.clone();
+    while let Some(parent) = state
+        .tasks
+        .get(&current)
+        .and_then(|task| task.rework_of.clone())
+    {
+        if &parent == candidate {
+            return true;
+        }
+        current = parent;
+    }
+    false
 }
 
 fn close_rework_originals(state: &mut ProjectState, fix: &TaskId, end: TaskState, at: Timestamp) {

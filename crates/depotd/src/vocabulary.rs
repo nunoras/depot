@@ -139,6 +139,7 @@ pub enum FactTag {
     TaskLandedOnBase,
     PullRequestChecksChanged,
     PullRequestMerged,
+    StaleMergeObserved,
     PullRequestClosedUnmerged,
     PullRequestMergeRefused,
     PullRequestMergeabilityChanged,
@@ -195,6 +196,7 @@ pub fn fact_tag(kind: &FactKind) -> FactTag {
         FactKind::TaskLandedOnBase { .. } => FactTag::TaskLandedOnBase,
         FactKind::PullRequestChecksChanged { .. } => FactTag::PullRequestChecksChanged,
         FactKind::PullRequestMerged { .. } => FactTag::PullRequestMerged,
+        FactKind::StaleMergeObserved { .. } => FactTag::StaleMergeObserved,
         FactKind::PullRequestClosedUnmerged { .. } => FactTag::PullRequestClosedUnmerged,
         FactKind::PullRequestMergeRefused { .. } => FactTag::PullRequestMergeRefused,
         FactKind::PullRequestMergeabilityChanged { .. } => FactTag::PullRequestMergeabilityChanged,
@@ -252,6 +254,7 @@ pub fn fact_tag_name(tag: FactTag) -> &'static str {
         FactTag::TaskLandedOnBase => "task_landed_on_base",
         FactTag::PullRequestChecksChanged => "pull_request_checks_changed",
         FactTag::PullRequestMerged => "pull_request_merged",
+        FactTag::StaleMergeObserved => "stale_merge_observed",
         FactTag::PullRequestClosedUnmerged => "pull_request_closed_unmerged",
         FactTag::PullRequestMergeRefused => "pull_request_merge_refused",
         FactTag::PullRequestMergeabilityChanged => "pull_request_mergeability_changed",
@@ -309,6 +312,7 @@ pub fn fact_tag_from_name(name: &str) -> Result<FactTag> {
         "task_landed_on_base" => FactTag::TaskLandedOnBase,
         "pull_request_checks_changed" => FactTag::PullRequestChecksChanged,
         "pull_request_merged" => FactTag::PullRequestMerged,
+        "stale_merge_observed" => FactTag::StaleMergeObserved,
         "pull_request_closed_unmerged" => FactTag::PullRequestClosedUnmerged,
         "pull_request_merge_refused" => FactTag::PullRequestMergeRefused,
         "pull_request_mergeability_changed" => FactTag::PullRequestMergeabilityChanged,
@@ -370,6 +374,7 @@ pub fn fact_task(kind: &FactKind) -> Option<TaskId> {
         | FactKind::TaskLandedOnBase { task, .. }
         | FactKind::PullRequestChecksChanged { task, .. }
         | FactKind::PullRequestMerged { task, .. }
+        | FactKind::StaleMergeObserved { task, .. }
         | FactKind::PullRequestMergeRefused { task, .. }
         | FactKind::PullRequestMergeabilityChanged { task, .. }
         | FactKind::PullRequestClosedUnmerged { task }

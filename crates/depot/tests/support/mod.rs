@@ -694,6 +694,15 @@ impl Golden {
         );
     }
 
+    pub fn script_failing_checks(&self, commit: &str) {
+        self.forge.replace_route(
+            "GET",
+            &format!("/repos/{REPOSITORY}/commits/{commit}/check-runs"),
+            200,
+            &check_runs_with("failure"),
+        );
+    }
+
     pub fn script_pull_request_base(&self, commit: &str, base: &str) {
         self.forge.replace_route(
             "GET",
@@ -1101,8 +1110,13 @@ fn quoted(path: &Path) -> String {
 }
 
 fn check_runs() -> String {
-    "{\"total_count\":1,\"check_runs\":[{\"status\":\"completed\",\"conclusion\":\"success\"}]}"
-        .to_string()
+    check_runs_with("success")
+}
+
+fn check_runs_with(conclusion: &str) -> String {
+    format!(
+        "{{\"total_count\":1,\"check_runs\":[{{\"status\":\"completed\",\"conclusion\":\"{conclusion}\"}}]}}"
+    )
 }
 
 fn pull_request(commit: &str, base: &str, state: &str, merged: bool, mergeable: bool) -> String {

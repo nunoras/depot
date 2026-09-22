@@ -1,5 +1,5 @@
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{File, OpenOptions};
 
 use fs2::FileExt;
@@ -818,6 +818,7 @@ where
         self.reconcile_sessions()?;
         self.reconcile_stops()?;
         self.reconcile_leases(true)?;
+        self.reconcile_stale_merges()?;
         self.reconcile_notify()
     }
 
@@ -2449,32 +2450,80 @@ where
             .update_pull_request(task, repo, number, &title, &body)
     }
 
+    fn observe_shared(
+        &self,
+        task: &Task,
+        number: u64,
+        polled: &mut BTreeMap<u64, Option<ObservedPullRequest>>,
+    ) -> Option<ObservedPullRequest> {
+        polled
+            .entry(number)
+            .or_insert_with(|| {
+                self.project_repo()
+                    .and_then(|repo| self.delivery.observe_pull_request(task, &repo))
+                    .unwrap_or_else(|error| {
+                        log("forge_unavailable", &error.to_string());
+                        None
+                    })
+            })
+            .clone()
+    }
+
+    fn reconcile_stale_merges(&self) -> Result<()> {
+        let state = self.store.project_state(&self.project)?;
+        let mut polled: BTreeMap<u64, Option<ObservedPullRequest>> = BTreeMap::new();
+        for task in state.tasks.values() {
+            if task.state != TaskState::Failed || task.acknowledged_at.is_some() {
+                continue;
+            }
+            let Some((number, _, _)) = task.pull_request() else {
+                continue;
+            };
+            let Some(observed) = self.observe_shared(task, number, &mut polled) else {
+                continue;
+            };
+            if observed.state != PrState::Merged {
+                continue;
+            }
+            self.record(
+                &event_key(&[
+                    "stale_merge_observed",
+                    task.id.as_str(),
+                    observed.commit.as_str(),
+                ]),
+                Fact {
+                    at: now(),
+                    kind: FactKind::StaleMergeObserved {
+                        task: task.id.clone(),
+                        commit: observed.commit,
+                    },
+                },
+            )?;
+        }
+        Ok(())
+    }
+
     fn reconcile_forge(&self) -> Result<()> {
         let state = self.store.project_state(&self.project)?;
+        let mut polled: BTreeMap<u64, Option<ObservedPullRequest>> = BTreeMap::new();
+        let mut settled: BTreeSet<u64> = BTreeSet::new();
         let mut observed_open: Vec<(TaskId, u64, ObservedPullRequest)> = Vec::new();
         for task in state.tasks.values() {
-            if task.state != TaskState::PrOpen {
+            if !task.state.tracks_pull_request() {
                 continue;
             }
             let Some((number, _, recorded)) = task.pull_request() else {
                 continue;
             };
-            let observed = match self
-                .project_repo()
-                .and_then(|repo| self.delivery.observe_pull_request(task, &repo))
-            {
-                Ok(observed) => observed,
-                Err(error) => {
-                    log("forge_unavailable", &error.to_string());
-                    continue;
-                }
-            };
-            let Some(mut observed) = observed else {
+            let Some(mut observed) = self.observe_shared(task, number, &mut polled) else {
                 continue;
             };
             let at = now();
             match observed.state {
                 PrState::Merged => {
+                    if !settled.insert(number) {
+                        continue;
+                    }
                     self.record(
                         &event_key(&[
                             "pull_request_merged",
@@ -2491,6 +2540,9 @@ where
                     )?;
                 }
                 PrState::Closed => {
+                    if !settled.insert(number) {
+                        continue;
+                    }
                     self.record(
                         &event_key(&["pull_request_closed_unmerged", task.id.as_str()]),
                         Fact {

@@ -3,8 +3,8 @@ mod dispatch;
 mod support;
 
 use depot_core::{
-    AttemptOutcome, Checks, CommitId, Dependency, ProfileId, SessionId, TaskId, TaskState,
-    Timestamp, ValidationRecord, WorktreeLease,
+    AttemptOutcome, Checks, CommitId, Dependency, Fact, FactKind, ProfileId, SessionId, TaskId,
+    TaskState, Timestamp, ValidationRecord, WorktreeLease,
 };
 use depotd::InstanceLock;
 use depotd::evidence::MANAGED_MARKER;
@@ -258,6 +258,322 @@ fn the_whole_journey_runs_from_proposal_to_a_released_worktree() {
         ]
     );
     assert!(golden.history(TASK).contains(&LIVENESS.to_string()));
+}
+
+#[test]
+fn a_merged_pull_request_lands_a_task_that_is_waiting_on_a_rework() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_submits();
+    let commit = golden.head();
+    golden.script_pull_request(&commit);
+    daemon
+        .tick()
+        .expect("the daemon validates the commit and opens the pull request");
+    assert_eq!(golden.task().state, TaskState::PrOpen);
+
+    assert_eq!(
+        golden.depot_ok(&[
+            "task",
+            "rework",
+            TASK,
+            "--text",
+            "address the review",
+            "--project",
+            SLUG,
+        ]),
+        format!("rework filed against {TASK}\n")
+    );
+    assert_eq!(golden.task().state, TaskState::ReworkPending);
+
+    golden.script_merge(&commit);
+    daemon
+        .tick()
+        .expect("the daemon observes the merge while the rework is pending");
+
+    assert_eq!(
+        golden.task().state,
+        TaskState::Landed,
+        "a merged pull request lands the task whether or not its rework started"
+    );
+    let fix = golden
+        .store
+        .task(&golden.project.id, &TaskId::new(TASK_TWO))
+        .expect("the rework is read")
+        .expect("the rework exists");
+    assert_eq!(
+        fix.state,
+        TaskState::Cancelled,
+        "a rework whose pull request already merged is cancelled"
+    );
+    assert_eq!(
+        calls_to(&golden.treehouse.calls(), "return").len(),
+        1,
+        "the worktree returns to the pool once"
+    );
+}
+
+#[test]
+fn a_landed_task_stops_reporting_the_checks_of_its_merged_pull_request() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_submits();
+    let commit = golden.head();
+    golden.script_pull_request(&commit);
+    golden.script_failing_checks(&commit);
+    daemon
+        .tick()
+        .expect("the daemon validates the commit and opens the pull request");
+
+    let open = golden.status();
+    assert!(open.contains("checks failing"), "{open}");
+
+    golden.script_merge(&commit);
+    daemon.tick().expect("the daemon observes the merge");
+
+    assert_eq!(golden.task().state, TaskState::Landed);
+    let landed = golden.status_history();
+    assert!(
+        !landed.contains("checks failing"),
+        "a landed task never reports the checks of a merged pull request: {landed}"
+    );
+}
+
+#[test]
+fn a_rework_chain_polls_its_shared_pull_request_once_per_tick() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_submits();
+    let commit = golden.head();
+    golden.script_pull_request(&commit);
+    daemon
+        .tick()
+        .expect("the daemon validates the commit and opens the pull request");
+    assert_eq!(golden.task().state, TaskState::PrOpen);
+
+    assert_eq!(
+        golden.depot_ok(&[
+            "task",
+            "rework",
+            TASK,
+            "--text",
+            "address the review",
+            "--project",
+            SLUG,
+        ]),
+        format!("rework filed against {TASK}\n")
+    );
+    let mut fix = golden
+        .store
+        .task(&golden.project.id, &TaskId::new(TASK_TWO))
+        .expect("the rework is read")
+        .expect("the rework exists");
+    assert!(
+        fix.pull_request().is_some(),
+        "the rework inherits the pull request link"
+    );
+    fix.state = TaskState::PrOpen;
+    golden
+        .store
+        .put_task(&fix)
+        .expect("the rework is placed at its pull request");
+
+    let before = check_run_calls(&golden);
+    daemon
+        .tick()
+        .expect("the daemon polls the shared pull request");
+    assert_eq!(
+        check_run_calls(&golden) - before,
+        1,
+        "one pull request is polled once per tick"
+    );
+
+    golden.script_merge(&commit);
+    daemon.tick().expect("the daemon observes the merge");
+
+    assert_eq!(golden.task().state, TaskState::Landed);
+    assert_eq!(
+        golden
+            .events()
+            .into_iter()
+            .filter(|event| event.kind == MERGED)
+            .count(),
+        1,
+        "a merge is journaled once for the whole chain"
+    );
+}
+
+#[test]
+fn a_stale_rework_pending_row_is_settled_by_the_next_poll() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_submits();
+    let commit = golden.head();
+    golden.script_pull_request(&commit);
+    daemon
+        .tick()
+        .expect("the daemon validates the commit and opens the pull request");
+
+    let later = golden.commit_in_lease("later.txt", "a later revision on the same branch");
+    assert_ne!(
+        later, commit,
+        "the merged head is a later commit than the validated one"
+    );
+
+    let mut stale = golden.task();
+    stale.state = TaskState::ReworkPending;
+    golden
+        .store
+        .put_task(&stale)
+        .expect("the row an earlier daemon left behind is stored");
+
+    golden.script_merge(&later);
+    let restarted = golden.daemon();
+    restarted
+        .recover()
+        .expect("the daemon starts against the store");
+    restarted
+        .tick()
+        .expect("the first poll settles the row the earlier daemon left");
+
+    assert_eq!(
+        golden.task().state,
+        TaskState::Landed,
+        "a rework pending row merged at a later head is landed on the next poll"
+    );
+}
+
+#[test]
+fn a_stale_failed_row_is_settled_by_the_next_poll() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_submits();
+    let commit = golden.head();
+    golden.script_pull_request(&commit);
+    daemon
+        .tick()
+        .expect("the daemon validates the commit and opens the pull request");
+
+    let later = golden.commit_in_lease("later.txt", "a later revision on the same branch");
+    assert_ne!(
+        later, commit,
+        "the merged head is a later commit than the validated one"
+    );
+
+    golden
+        .store
+        .apply_fact(
+            &golden.project,
+            &format!("{MERGED}:{TASK}:{later}"),
+            &Fact {
+                at: Timestamp::from_millis(0),
+                kind: FactKind::PullRequestMerged {
+                    task: TaskId::new(TASK),
+                    commit: CommitId::new(later.clone()),
+                },
+            },
+        )
+        .expect("the merge journaled before the row failed is stored");
+
+    let mut stale = golden.task();
+    stale.state = TaskState::Failed;
+    golden
+        .store
+        .put_task(&stale)
+        .expect("the row an earlier daemon left behind is stored");
+
+    golden.script_merge(&later);
+    let restarted = golden.daemon();
+    restarted
+        .recover()
+        .expect("the daemon starts against the store");
+    restarted
+        .tick()
+        .expect("the first poll settles the row the earlier daemon left");
+
+    assert_eq!(
+        golden.task().state,
+        TaskState::Landed,
+        "a failed row merged at a later head is landed on the next poll"
+    );
+}
+
+#[test]
+fn two_failed_rows_sharing_a_pull_request_number_both_settle_on_one_restart() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_submits();
+    let commit = golden.head();
+    golden.script_pull_request(&commit);
+    daemon
+        .tick()
+        .expect("the daemon validates the commit and opens the pull request");
+
+    let later = golden.commit_in_lease("later.txt", "a later revision on the same branch");
+    assert_ne!(
+        later, commit,
+        "the merged head is a later commit than the validated one"
+    );
+
+    let mut first = golden.task();
+    first.state = TaskState::Failed;
+    golden
+        .store
+        .put_task(&first)
+        .expect("the first failed row is stored");
+
+    let mut second = golden.task();
+    second.id = TaskId::new(TASK_TWO);
+    second.state = TaskState::Failed;
+    second.attempts.clear();
+    second.release_pending.clear();
+    golden
+        .store
+        .put_task(&second)
+        .expect("a second failed row on the same pull request is stored");
+
+    golden.script_merge(&later);
+    let restarted = golden.daemon();
+    restarted
+        .recover()
+        .expect("the daemon starts against the store");
+
+    assert_eq!(
+        golden.task().state,
+        TaskState::Landed,
+        "the first failed row lands on the restart"
+    );
+    assert_eq!(
+        golden
+            .store
+            .task(&golden.project.id, &TaskId::new(TASK_TWO))
+            .expect("the second task is read")
+            .expect("the second task exists")
+            .state,
+        TaskState::Landed,
+        "a second failed row that shares the pull request number lands on the same restart"
+    );
+}
+
+fn check_run_calls(golden: &Golden) -> usize {
+    golden
+        .forge
+        .requests()
+        .iter()
+        .filter(|request| request.path.ends_with("/check-runs"))
+        .count()
 }
 
 #[test]
@@ -1922,7 +2238,7 @@ fn a_repeated_hold_for_the_same_lease_applies_no_second_change() {
 }
 
 #[test]
-fn a_merge_of_a_revision_depot_never_validated_is_not_landed() {
+fn a_merge_of_a_revision_depot_never_validated_lands() {
     let golden = Golden::new(Validation::Passing);
     let daemon = golden.daemon();
     golden.propose();
@@ -1941,27 +2257,27 @@ fn a_merge_of_a_revision_depot_never_validated_is_not_landed() {
         .tick()
         .expect("the daemon observes the merge of another revision");
 
-    let held = golden.task();
-    assert_ne!(
-        held.state,
-        TaskState::Landed,
-        "a merge of a revision depot never validated is never recorded as landed"
-    );
-    assert_eq!(held.state, TaskState::Failed);
+    let landed = golden.task();
     assert_eq!(
-        held.validated_commit(),
+        landed.state,
+        TaskState::Landed,
+        "a merged pull request lands the task even when its head is a revision depot never validated"
+    );
+    assert_eq!(
+        landed.validated_commit(),
         Some(&CommitId::new(commit.clone()))
     );
-    assert!(
-        calls_to(&golden.treehouse.calls(), "return").is_empty(),
-        "the unvalidated merge keeps the worktree for review"
+    assert_eq!(
+        calls_to(&golden.treehouse.calls(), "return").len(),
+        1,
+        "landing the task returns its worktree once"
     );
 
     let history = golden.status_history();
-    assert!(history.contains("Failed (1)"), "{history}");
+    assert!(history.contains("Landed (1)"), "{history}");
     let default = golden.status();
     assert!(!default.contains("## Landed"), "{default}");
-    assert!(default.contains("1 failed"), "{default}");
+    assert!(default.contains("1 landed"), "{default}");
     assert_eq!(default, golden.checklist());
 }
 

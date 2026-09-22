@@ -4231,3 +4231,153 @@ fn one_tick_spends_one_rung_of_the_deferral_ladder() {
         "one tick spends one rung, however many paths reach the same deferred turn"
     );
 }
+
+fn origin_repo(base: &std::path::Path, name: &str, origin: &str) -> std::path::PathBuf {
+    let repo = base.join(name);
+    std::fs::create_dir_all(&repo).expect("the repository directory");
+    git::git(&repo, &["init", "--initial-branch=main"]);
+    git::git(&repo, &["remote", "add", "origin", origin]);
+    repo
+}
+
+fn plain_repo(base: &std::path::Path, name: &str) -> std::path::PathBuf {
+    let repo = base.join(name);
+    std::fs::create_dir_all(&repo).expect("the repository directory");
+    git::git(&repo, &["init", "--initial-branch=main"]);
+    repo
+}
+
+fn run_depot(home: &depotd::DepotHome, arguments: &[&str]) -> std::process::Output {
+    std::process::Command::new(env!("CARGO_BIN_EXE_depot"))
+        .args(arguments)
+        .env(depotd::HOME_ENV, home.root())
+        .env_remove(depotd::LEGACY_HOME_ENV)
+        .env_remove("DEPOT_TASK_ID")
+        .env_remove("DEPOT_ATTEMPT_ID")
+        .output()
+        .expect("the depot binary runs")
+}
+
+#[test]
+fn the_three_forms_of_one_origin_register_as_one_project_with_three_clones() {
+    let temp = tempfile::tempdir().expect("a temporary directory");
+    let home = depotd::DepotHome::at(temp.path().join("agni"));
+    home.ensure().expect("the agni home");
+    let base = temp.path().join("repos");
+    let first = origin_repo(&base, "first", "git@github.com:O/R.git");
+    let second = origin_repo(&base, "second", "https://github.com/o/r/");
+    let third = origin_repo(&base, "third", "ssh://git@github.com/o/r");
+
+    for (index, repo) in [&first, &second, &third].into_iter().enumerate() {
+        let output = run_depot(&home, &["project", "add", repo.to_str().expect("utf-8")]);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if index > 0 {
+            assert!(
+                String::from_utf8_lossy(&output.stdout).contains("added clone"),
+                "a second clone must print that it added a clone, got {}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+        }
+    }
+
+    let store = depotd::Store::open(&home).expect("the store opens");
+    let projects = store.projects().expect("the projects are read");
+    assert_eq!(projects.len(), 1, "one origin is one project");
+    assert_eq!(projects[0].id.as_str(), "github.com/o/r");
+    assert_eq!(
+        store
+            .clones_for_project(&projects[0].id)
+            .expect("the clones are read")
+            .len(),
+        3
+    );
+}
+
+#[test]
+fn a_repository_without_an_origin_registers_as_local_only_and_says_so() {
+    let temp = tempfile::tempdir().expect("a temporary directory");
+    let home = depotd::DepotHome::at(temp.path().join("agni"));
+    home.ensure().expect("the agni home");
+    let base = temp.path().join("repos");
+    let repo = plain_repo(&base, "scratch");
+
+    let output = run_depot(&home, &["project", "add", repo.to_str().expect("utf-8")]);
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("local-only"),
+        "a repository without an origin must say it is local-only, got {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    let store = depotd::Store::open(&home).expect("the store opens");
+    let projects = store.projects().expect("the projects are read");
+    assert_eq!(projects.len(), 1);
+    let canonical = std::fs::canonicalize(&repo).expect("the repository canonicalises");
+    assert_eq!(projects[0].id.as_str(), canonical.to_string_lossy());
+    let clone = store
+        .clone_for_project(&projects[0].id)
+        .expect("the clone is read")
+        .expect("a clone is recorded");
+    assert_eq!(clone.origin, None, "a local-only clone has no origin");
+}
+
+#[test]
+fn project_repoint_changes_the_identity_keeps_history_and_refuses_while_a_task_is_in_flight() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    assert_eq!(golden.task().state, TaskState::Running);
+
+    let refused = golden.depot(&[
+        "project",
+        "repoint",
+        SLUG,
+        "--origin",
+        "git@github.com:nunoras/depot.git",
+    ]);
+    assert_eq!(refused.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("in flight"),
+        "a repoint under a running task must be refused, got {}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+
+    golden.depot_ok(&["task", "stop", TASK, "--project", SLUG]);
+    let repointed = golden.depot_ok(&[
+        "project",
+        "repoint",
+        SLUG,
+        "--origin",
+        "git@github.com:nunoras/depot.git",
+    ]);
+    assert!(
+        repointed.contains("github.com/nunoras/depot"),
+        "{repointed}"
+    );
+
+    let store = depotd::Store::open(&golden.home).expect("the store opens");
+    let project = store
+        .project(&depot_core::ProjectId::new("github.com/nunoras/depot"))
+        .expect("the project is read")
+        .expect("the rekeyed project exists");
+    assert_eq!(project.slug, SLUG);
+    assert!(
+        store
+            .task(&project.id, &TaskId::new(TASK))
+            .expect("the task is read")
+            .is_some(),
+        "repointing keeps the task history"
+    );
+}

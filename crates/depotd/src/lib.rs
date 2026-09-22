@@ -16,6 +16,7 @@ pub mod evidence;
 mod factcodec;
 mod home;
 pub mod home_move;
+mod identity;
 mod inbox;
 mod project;
 mod projects;
@@ -61,10 +62,10 @@ pub use home::{
     SETTINGS_FILE_NAME, UI_DIR_NAME, slug_for,
 };
 pub use inbox::{InboxEntry, Need, inbox_entries, render_inbox};
-pub use project::{LocationKind, Project};
+pub use project::{Clone, LocationKind, Project};
 pub use projects::{
     Added, StatusSelection, add_project, needs_daemon, render_projects, render_status,
-    render_status_at, select_project,
+    render_status_at, repoint_project, select_project,
 };
 pub use restart::{
     DAEMON_LOG_FILE_NAME, DAEMON_STOP_FILE_NAME, LaunchSpec, RestartOptions, Restarted,

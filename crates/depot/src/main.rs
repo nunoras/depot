@@ -8,8 +8,8 @@ use depotd::adapters::worktrees::Treehouse;
 use depotd::{
     DepotHome, Error, StatusSelection, TaskRequest, acknowledge_task, add_artifact, add_project,
     add_task, answer_question, approve_tasks, ask_question, migrate_store, read_inbox,
-    redirect_task, release_task, render_projects, render_status, restart_daemon, retry_task,
-    rework_task, stop_task, submit_task, wait_for_task, write_narrative,
+    redirect_task, release_task, render_projects, render_status, repoint_project, restart_daemon,
+    retry_task, rework_task, stop_task, submit_task, wait_for_task, write_narrative,
 };
 
 const USAGE: &str = "\
@@ -17,6 +17,7 @@ depot - coordinate a project's agent work
 
 USAGE
   depot project add <path-or-url>
+  depot project repoint <name> --origin <url>
   depot project list
   depot status [--project <name>] [--all] [--history] [--tui]
   depot daemon restart [--timeout <seconds>]
@@ -159,6 +160,7 @@ fn require_coordinator() -> Result<(), Failure> {
 fn project_command(arguments: &[String]) -> Result<String, Failure> {
     match arguments.first().map(String::as_str) {
         Some("add") => project_add(&arguments[1..]),
+        Some("repoint") => project_repoint(&arguments[1..]),
         Some("list") => project_list(&arguments[1..]),
         Some(other) => Err(Failure::Usage(format!("unknown project command `{other}`"))),
         None => Err(Failure::Usage(
@@ -194,11 +196,38 @@ fn project_add(arguments: &[String]) -> Result<String, Failure> {
     } else {
         out.push_str(&format!("already registered {}\n", added.project.id));
     }
+    if let Some(path) = added
+        .clone_path
+        .as_ref()
+        .filter(|_| added.clone_added && !added.created)
+    {
+        out.push_str(&format!("added clone: {}\n", path.display()));
+    }
+    if added.local_only {
+        out.push_str("local-only: no origin remote, so this project never syncs\n");
+    }
     out.push_str(&format!("home: {}\n", added.home.root().display()));
     if added.ignored_config {
         out.push_str("config: .depot.toml stays machine-local, ignored via .git/info/exclude\n");
     }
     Ok(out)
+}
+
+fn project_repoint(arguments: &[String]) -> Result<String, Failure> {
+    let flags = Flags::parse(arguments, &[])?;
+    flags.reject_unknown(&["origin"])?;
+    let name = flags.positionals().first().ok_or_else(|| {
+        Failure::Usage("`depot project repoint` needs a project name".to_string())
+    })?;
+    if flags.positionals().len() > 1 {
+        return Err(Failure::Usage(
+            "`depot project repoint` takes one project name".to_string(),
+        ));
+    }
+    let origin = flags.required("origin")?;
+    let home = DepotHome::resolve()?;
+    let project = repoint_project(&home, Some(name), origin)?;
+    Ok(format!("repointed {} to {}\n", project.slug, project.id))
 }
 
 fn task_command(arguments: &[String]) -> Result<String, Failure> {

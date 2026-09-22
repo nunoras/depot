@@ -24,7 +24,7 @@ use crate::error::{Error, Result};
 use crate::evidence::{self, EvidenceArtifact, EvidenceRunner, ResolvedArtifact, ShellEvidence};
 use crate::factcodec::payload_field;
 use crate::home::DepotHome;
-use crate::project::{LocationKind, Project};
+use crate::project::Project;
 use crate::store::{EventOutcome, RecordedEvent, Store, event_key};
 use crate::vocabulary::{FactTag, checks_name, fact_tag, fact_tag_name};
 
@@ -2800,12 +2800,12 @@ where
     }
 
     fn repository(&self) -> Result<std::path::PathBuf> {
-        match self.project.kind {
-            LocationKind::Path => Ok(self.project.id.as_str().into()),
-            LocationKind::Url => Err(Error::Project(
-                "a URL project has no local repository to run".to_string(),
-            )),
-        }
+        self.store.project_path(&self.project)?.ok_or_else(|| {
+            Error::Project(format!(
+                "project `{}` has no local clone to run",
+                self.project.slug
+            ))
+        })
     }
 
     fn project_repo(&self) -> Result<RepoSlug> {

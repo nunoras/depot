@@ -564,3 +564,148 @@ fn an_empty_legacy_database_is_discarded_when_agni_holds_records() {
             .is_some()
     );
 }
+
+fn git(directory: &std::path::Path, arguments: &[&str]) {
+    let output = std::process::Command::new("git")
+        .args([
+            "-c",
+            "user.name=depot",
+            "-c",
+            "user.email=depot@example.test",
+            "-c",
+            "commit.gpgsign=false",
+        ])
+        .args(arguments)
+        .current_dir(directory)
+        .output()
+        .expect("git runs");
+    assert!(
+        output.status.success(),
+        "git {arguments:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn two_clones_of_one_origin(
+    base: &std::path::Path,
+) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+    let origin = base.join("origin.git");
+    std::fs::create_dir_all(base).expect("the base directory");
+    git(
+        base,
+        &[
+            "init",
+            "--bare",
+            "--initial-branch=main",
+            origin.to_str().expect("utf-8 origin"),
+        ],
+    );
+    let first = base.join("first");
+    let second = base.join("second");
+    for repo in [&first, &second] {
+        std::fs::create_dir_all(repo).expect("the clone directory");
+        git(repo, &["init", "--initial-branch=main"]);
+        git(
+            repo,
+            &[
+                "remote",
+                "add",
+                "origin",
+                origin.to_str().expect("utf-8 origin"),
+            ],
+        );
+    }
+    (origin, first, second)
+}
+
+fn seed_two_path_projects(
+    home: &DepotHome,
+    first: &std::path::Path,
+    second: &std::path::Path,
+    first_state: &str,
+    second_state: &str,
+) {
+    std::fs::create_dir_all(home.root()).expect("the home directory");
+    let connection = Connection::open(home.database_path()).expect("the database");
+    connection
+        .execute_batch(include_str!("fixtures/schema-v18.sql"))
+        .expect("v18 schema");
+    connection
+        .execute_batch(&format!(
+            "INSERT INTO projects (id, kind, slug, created_at) VALUES ('{first}', 'path', 'first', 1700000000000);
+             INSERT INTO projects (id, kind, slug, created_at) VALUES ('{second}', 'path', 'second', 1700000000000);
+             INSERT INTO tasks (project_id, id, title, intent, role, state, created_at, updated_at)
+                 VALUES ('{first}', 't-1', 'first task', 'one', 'build', '{first_state}', 1700000000000, 1700000000000);
+             INSERT INTO tasks (project_id, id, title, intent, role, state, created_at, updated_at)
+                 VALUES ('{second}', 't-1', 'second task', 'two', 'build', '{second_state}', 1700000000000, 1700000000000);",
+            first = first.to_string_lossy(),
+            second = second.to_string_lossy(),
+        ))
+        .expect("the two path projects");
+    drop(connection);
+}
+
+#[test]
+fn the_migration_merges_two_paths_with_one_origin_and_keeps_both_sets_of_tasks() {
+    let fixture = support::fixture();
+    let base = fixture.temp.path().join("repos");
+    let (origin, first, second) = two_clones_of_one_origin(&base);
+    seed_two_path_projects(&fixture.home, &first, &second, "validated", "landed");
+
+    let store = Store::open_migrating(&fixture.home).expect("the store migrates");
+
+    let projects = store.projects().expect("projects are read");
+    assert_eq!(projects.len(), 1, "one origin is one project");
+    let expected = std::fs::canonicalize(&origin).expect("the origin canonicalises");
+    assert_eq!(projects[0].id.as_str(), expected.to_string_lossy());
+    let tasks = store.tasks(&projects[0].id).expect("tasks are read");
+    assert_eq!(tasks.len(), 2, "both sets of tasks survive");
+    assert_eq!(
+        tasks
+            .get(&TaskId::new("t-1"))
+            .expect("the first task")
+            .title,
+        "first task"
+    );
+    assert_eq!(
+        tasks
+            .get(&TaskId::new("t-2"))
+            .expect("the second task")
+            .title,
+        "second task"
+    );
+    assert_eq!(
+        store
+            .clones_for_project(&projects[0].id)
+            .expect("clones are read")
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn the_migration_refuses_to_merge_two_paths_with_one_origin_when_both_have_tasks_in_flight() {
+    let fixture = support::fixture();
+    let base = fixture.temp.path().join("repos");
+    let (_origin, first, second) = two_clones_of_one_origin(&base);
+    seed_two_path_projects(&fixture.home, &first, &second, "running", "running");
+
+    let error = match Store::open_migrating(&fixture.home) {
+        Ok(_) => panic!("two in-flight projects are never merged silently"),
+        Err(error) => error,
+    };
+    let message = error.to_string();
+
+    assert!(
+        message.contains("first"),
+        "the refusal names the first, got {message}"
+    );
+    assert!(
+        message.contains("second"),
+        "the refusal names the second, got {message}"
+    );
+    assert!(
+        message.contains("in flight"),
+        "the refusal says why, got {message}"
+    );
+}

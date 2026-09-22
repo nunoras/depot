@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use depot_core::{TaskId, TaskState};
-use depotd::{DepotHome, ProfileSettings, Settings, Store, add_project};
+use depotd::{DepotHome, HOME_ENV, ProfileSettings, Settings, Store, add_project};
 use tempfile::TempDir;
 
 #[path = "../../depotd/tests/support/fake_program.rs"]
@@ -70,7 +70,7 @@ impl Cli {
     fn run_from(&self, arguments: &[&str], directory: &Path) -> Output {
         Command::new(BIN)
             .args(arguments)
-            .env("DEPOT_HOME", &self.home)
+            .env(HOME_ENV, &self.home)
             .current_dir(directory)
             .output()
             .expect("the depot binary runs")
@@ -85,7 +85,7 @@ impl Cli {
     ) -> Output {
         Command::new(BIN)
             .args(arguments)
-            .env("DEPOT_HOME", &self.home)
+            .env(HOME_ENV, &self.home)
             .env("DEPOT_TASK_ID", task)
             .env("DEPOT_ATTEMPT_ID", attempt)
             .env("PATH", with_program(&self.bin))
@@ -1394,5 +1394,65 @@ fn an_explicit_migrate_refuses_while_a_daemon_holds_the_instance_lock() {
     assert_eq!(
         stored, fixture_version,
         "the refused migrate left the schema alone"
+    );
+}
+
+fn run_with_user_home(user_home: &Path, arguments: &[&str]) -> Output {
+    Command::new(BIN)
+        .args(arguments)
+        .env_remove("AGNI_HOME")
+        .env_remove("DEPOT_HOME")
+        .env("HOME", user_home)
+        .current_dir(user_home)
+        .output()
+        .expect("the depot binary runs")
+}
+
+#[test]
+fn a_fresh_machine_gets_an_agni_home_and_nothing_under_depot() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let user_home = temp.path();
+
+    let listed = run_with_user_home(user_home, &["project", "list"]);
+
+    assert_eq!(listed.status.code(), Some(0), "stderr: {}", stderr(&listed));
+    let home = user_home.join(".agni");
+    assert!(home.join("agni.db").is_file(), "the database is agni.db");
+    for directory in ["secrets", "projects", "ui", "run"] {
+        assert!(home.join(directory).is_dir(), "{directory} is missing");
+    }
+    assert!(
+        !user_home.join(".depot").exists(),
+        "a fresh machine must write nothing under .depot"
+    );
+}
+
+#[test]
+fn a_client_refuses_an_unmoved_depot_home_and_names_the_move() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let user_home = temp.path();
+    std::fs::create_dir_all(user_home.join(".depot")).expect("the old home");
+
+    let refused = run_with_user_home(user_home, &["status", "--all"]);
+
+    assert_eq!(
+        refused.status.code(),
+        Some(1),
+        "stdout: {}",
+        stdout(&refused)
+    );
+    assert!(
+        stderr(&refused).contains("depot store migrate"),
+        "the refusal names the command, stderr: {}",
+        stderr(&refused)
+    );
+    assert!(
+        stderr(&refused).contains(".depot") && stderr(&refused).contains(".agni"),
+        "the refusal names both homes, stderr: {}",
+        stderr(&refused)
+    );
+    assert!(
+        !user_home.join(".agni").exists(),
+        "a refused client leaves no agni home behind"
     );
 }

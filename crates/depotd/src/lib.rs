@@ -15,6 +15,7 @@ mod error;
 pub mod evidence;
 mod factcodec;
 mod home;
+pub mod home_move;
 mod inbox;
 mod project;
 mod projects;
@@ -54,8 +55,10 @@ pub use error::{Error, Result};
 pub use evidence::{EvidenceArtifact, EvidenceRunner, ResolvedArtifact, ShellEvidence};
 pub use home::{
     ARCHIVE_DIR_NAME, ARTIFACTS_DIR_NAME, CHECKLIST_FILE_NAME, CONTEXT_DOCUMENT_FILE_NAME,
-    DATABASE_FILE_NAME, DOCUMENTS_DIR_NAME, DepotHome, HOME_ENV, MEDIA_DIR_NAME, PROJECTS_DIR_NAME,
-    ProjectHome, SCRATCH_DIR_NAME, SETTINGS_FILE_NAME, slug_for,
+    DATABASE_FILE_NAME, DOCUMENTS_DIR_NAME, DepotHome, HOME_DIR_NAME, HOME_ENV,
+    LEGACY_DATABASE_FILE_NAME, LEGACY_HOME_DIR_NAME, MEDIA_DIR_NAME, PROJECTS_DIR_NAME,
+    ProjectHome, RUN_DIR_NAME, SCRATCH_DIR_NAME, SECRETS_DIR_NAME, SETTINGS_FILE_NAME, UI_DIR_NAME,
+    slug_for,
 };
 pub use inbox::{InboxEntry, Need, inbox_entries, render_inbox};
 pub use project::{LocationKind, Project};

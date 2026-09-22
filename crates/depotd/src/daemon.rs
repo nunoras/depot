@@ -114,7 +114,7 @@ impl InstanceLock {
 
     pub fn acquire(home: &DepotHome) -> Result<Self> {
         home.ensure()?;
-        let path = home.root().join(DAEMON_LOCK_FILE_NAME);
+        let path = home.run_path(DAEMON_LOCK_FILE_NAME);
         let file = OpenOptions::new()
             .write(true)
             .create(true)
@@ -129,7 +129,7 @@ impl InstanceLock {
         })?;
         Ok(Self {
             _file: file,
-            scope_path: home.root().join(DAEMON_SCOPE_FILE_NAME),
+            scope_path: home.run_path(DAEMON_SCOPE_FILE_NAME),
         })
     }
 }
@@ -155,7 +155,7 @@ fn lock_held_message(home: &DepotHome, path: &Path, scope: Option<&DaemonScope>)
 }
 
 pub fn daemon_scope(home: &DepotHome) -> Option<DaemonScope> {
-    let bytes = std::fs::read(home.root().join(DAEMON_SCOPE_FILE_NAME)).ok()?;
+    let bytes = std::fs::read(home.run_path(DAEMON_SCOPE_FILE_NAME)).ok()?;
     serde_json::from_slice(&bytes).ok()
 }
 

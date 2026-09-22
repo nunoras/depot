@@ -58,11 +58,11 @@ NOTES
   `task wait` blocks until the task is pr_open, landed, failed, cancelled or waiting_on_question,
   then prints where it stands. Without --timeout it waits forever; it never reads the inbox.
   `--content -` reads a document from standard input.
-  `artifact add` copies the file into <depot home>/artifacts and runs the [artifacts] publish
-  command from <depot home>/config.toml with DEPOT_ARTIFACT_PATH set; it prints the staged path
-  and the one URL that command returned.
+  `artifact add` copies the file into the agni home's artifacts directory and runs the
+  [artifacts] publish command from its config.toml with DEPOT_ARTIFACT_PATH set; it prints the
+  staged path and the one URL that command returned.
   `daemon restart` stops the running daemon by pid and starts the installed depotd again with the
-  same project scope, appending its log to <depot home>/depotd.log.
+  same project scope, appending its log to <agni home>/run/depotd.log.
   Landed, failed and cancelled tasks are history; `--history` shows them.
   `task redirect` refuses when the worker's current turn has ended unless `--queue` is passed;
   the daemon delivers a queued or redirected direction when the worker's next turn starts.
@@ -662,15 +662,25 @@ fn store_migrate(arguments: &[String]) -> Result<String, Failure> {
     let flags = Flags::parse(arguments, &[])?;
     flags.reject_unknown(&[])?;
     flags.reject_positionals()?;
-    let home = DepotHome::resolve()?;
+    let home = DepotHome::resolve_for_migrate()?;
     let migration = migrate_store(&home)?;
-    if migration.from == migration.to {
-        return Ok(format!("store is already at schema {}\n", migration.to));
+    let mut out = String::new();
+    if let Some(moved) = &migration.moved_from {
+        out.push_str(&format!(
+            "moved the home from {} to {}\n",
+            moved.display(),
+            home.root().display()
+        ));
     }
-    Ok(format!(
+    if migration.from == migration.to {
+        out.push_str(&format!("store is already at schema {}\n", migration.to));
+        return Ok(out);
+    }
+    out.push_str(&format!(
         "migrated the store from schema {} to schema {}\n",
         migration.from, migration.to
-    ))
+    ));
+    Ok(out)
 }
 
 struct Flags {

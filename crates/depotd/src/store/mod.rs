@@ -265,20 +265,23 @@ impl Store {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Migration {
     pub from: i64,
     pub to: i64,
+    pub moved_from: Option<std::path::PathBuf>,
 }
 
 pub fn migrate_store(home: &DepotHome) -> Result<Migration> {
     let _lock = crate::daemon::InstanceLock::acquire(home)?;
+    let moved_from = crate::home_move::move_legacy_home(home)?;
     let store = Store::connect(home)?;
     let from = migrations::current(store.connection())?;
     migrations::migrate(store.connection())?;
     Ok(Migration {
         from,
         to: SCHEMA_VERSION,
+        moved_from,
     })
 }
 

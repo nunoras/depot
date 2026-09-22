@@ -25,8 +25,8 @@ use depotd::adapters::forge::GitHub;
 use depotd::adapters::sessions::{Boxr, Sessions};
 use depotd::adapters::worktrees::Treehouse;
 use depotd::{
-    Daemon, DepotHome, ForgeDelivery, HOME_ENV, InstanceLock, OnEventSettings, ProfileSettings,
-    Project, RecordedEvent, Settings, ShellValidation, Store,
+    DAEMON_SCOPE_FILE_NAME, Daemon, DepotHome, ForgeDelivery, HOME_ENV, InstanceLock,
+    OnEventSettings, ProfileSettings, Project, RecordedEvent, Settings, ShellValidation, Store,
 };
 use depotd::{EventHook, NoEventHook, ShellEventHook};
 use fake_forge::FakeForge;
@@ -926,7 +926,7 @@ pub fn settings() -> Settings {
 }
 
 fn hold_daemon_coverage(home: &DepotHome) {
-    let path = home.root().join(depotd::DAEMON_SCOPE_FILE_NAME);
+    let path = home.run_path(DAEMON_SCOPE_FILE_NAME);
     let mut scope: depotd::DaemonScope =
         serde_json::from_slice(&std::fs::read(&path).expect("the daemon scope record"))
             .expect("the daemon scope record parses");

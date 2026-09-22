@@ -1,7 +1,10 @@
 mod support;
 
 use depot_core::{ProjectId, TaskId};
-use depotd::{SCHEMA_VERSION, Store, migrate_store};
+use depotd::{
+    DepotHome, HOME_DIR_NAME, LEGACY_HOME_DIR_NAME, SCHEMA_VERSION, Store, migrate_store,
+};
+use fs2::FileExt;
 use rusqlite::Connection;
 
 #[test]
@@ -268,4 +271,114 @@ fn an_explicit_migrate_of_a_current_store_is_a_no_op() {
 
     assert_eq!(migration.from, SCHEMA_VERSION);
     assert_eq!(migration.to, SCHEMA_VERSION);
+    assert_eq!(migration.moved_from, None);
+}
+
+fn a_legacy_home() -> (tempfile::TempDir, std::path::PathBuf, DepotHome) {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let legacy = temp.path().join(LEGACY_HOME_DIR_NAME);
+    let home = DepotHome::at(temp.path().join(HOME_DIR_NAME));
+    std::fs::create_dir_all(legacy.join("projects").join("example")).expect("legacy project store");
+    let connection = Connection::open(legacy.join("depot.db")).expect("legacy database");
+    connection
+        .execute_batch(include_str!("fixtures/schema-v18.sql"))
+        .expect("v18 schema");
+    connection
+        .execute_batch(
+            "INSERT INTO projects (id, kind, slug, created_at) VALUES ('/work/example', 'path', 'example', 1700000000000);
+             INSERT INTO tasks (project_id, id, title, intent, role, state, created_at, updated_at)
+                 VALUES ('/work/example', 't-1', 'Wire the store', 'persist the records', 'build', 'validated', 1700000000000, 1700000000000);
+             INSERT INTO events (project_id, key, at, kind, payload)
+                 VALUES ('/work/example', 't-1:task_proposed', 1700000000000, 'task_proposed', '{}');
+             PRAGMA user_version = 18;",
+        )
+        .expect("legacy rows");
+    drop(connection);
+    std::fs::write(
+        legacy.join("projects").join("example").join("checklist.md"),
+        "kept\n",
+    )
+    .expect("legacy checklist");
+    std::fs::write(legacy.join("github-token"), "legacy-token\n").expect("legacy token");
+    std::fs::write(legacy.join("typesafe-key"), "legacy-key\n").expect("legacy key");
+    (temp, legacy, home)
+}
+
+#[test]
+fn a_legacy_depot_home_moves_into_agni_keeping_every_row() {
+    let (_temp, legacy, home) = a_legacy_home();
+
+    let migration = migrate_store(&home).expect("the legacy home moves");
+
+    assert_eq!(migration.moved_from.as_deref(), Some(legacy.as_path()));
+    assert_eq!(migration.to, SCHEMA_VERSION);
+    assert!(!legacy.exists(), "the old home is gone once it has moved");
+    assert!(home.database_path().is_file(), "agni.db holds the records");
+    assert!(home.secrets_dir().join("github-token").is_file());
+    assert!(home.secrets_dir().join("typesafe-key").is_file());
+    assert!(home.project_home("example").checklist_path().is_file());
+
+    let store = Store::open(&home).expect("the moved store opens");
+    let project = store
+        .project(&ProjectId::new("/work/example"))
+        .expect("projects are read")
+        .expect("the project survived the move");
+    let task = store
+        .task(&project.id, &TaskId::new("t-1"))
+        .expect("tasks are read")
+        .expect("the task survived the move");
+    assert_eq!(task.title, "Wire the store");
+    assert_eq!(store.events(&project.id).expect("events").len(), 1);
+}
+
+#[test]
+fn a_move_interrupted_after_the_database_finishes_on_the_next_run() {
+    let (_temp, legacy, home) = a_legacy_home();
+    std::fs::create_dir_all(home.root()).expect("the partially moved home");
+    std::fs::rename(legacy.join("depot.db"), home.database_path()).expect("the database moved");
+
+    let migration = migrate_store(&home).expect("the interrupted move finishes");
+
+    assert_eq!(migration.moved_from.as_deref(), Some(legacy.as_path()));
+    assert!(!legacy.exists(), "the old home is gone once it has moved");
+    assert!(home.secrets_dir().join("github-token").is_file());
+    assert!(home.project_home("example").checklist_path().is_file());
+    let store = Store::open(&home).expect("the moved store opens");
+    assert!(
+        store
+            .project(&ProjectId::new("/work/example"))
+            .expect("projects are read")
+            .is_some()
+    );
+
+    let again = migrate_store(&home).expect("a rerun is a no-op");
+    assert_eq!(again.moved_from, None);
+    assert_eq!(again.to, SCHEMA_VERSION);
+}
+
+#[test]
+fn a_move_refuses_while_a_daemon_holds_the_legacy_lock_and_names_its_pid() {
+    let (_temp, legacy, home) = a_legacy_home();
+    std::fs::write(
+        legacy.join("depotd.scope.json"),
+        r#"{"pid":4242,"started_at_millis":1,"projects":[],"heartbeat_millis":1}"#,
+    )
+    .expect("the legacy scope record");
+    let lock = std::fs::File::create(legacy.join("depotd.lock")).expect("the legacy lock");
+    lock.lock_exclusive()
+        .expect("the legacy daemon holds the lock");
+
+    let error = migrate_store(&home).expect_err("a live legacy daemon must refuse the move");
+    let message = error.to_string();
+
+    assert!(
+        message.contains("4242"),
+        "the refusal names the pid, got {message}"
+    );
+    assert!(
+        message.contains("depot store migrate"),
+        "the refusal names the command, got {message}"
+    );
+    assert!(legacy.join("depot.db").is_file(), "nothing moved");
+    assert!(!home.database_path().exists(), "nothing moved into agni");
 }

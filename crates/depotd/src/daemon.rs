@@ -322,11 +322,11 @@ impl<F: Forge> Delivery for ForgeDelivery<F> {
             )));
         }
         let branch = delivery_branch(worktree, task)?;
-        let mut args = vec!["push".to_owned(), "origin".to_owned()];
-        if task.role == Role::Fix {
-            args.push("--force-with-lease".to_owned());
-        }
-        args.push(format!("HEAD:refs/heads/{branch}"));
+        let args = [
+            "push".to_owned(),
+            "origin".to_owned(),
+            format!("HEAD:refs/heads/{branch}"),
+        ];
         let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
         git_output(worktree, &arg_refs)?;
         Ok(())

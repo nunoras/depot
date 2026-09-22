@@ -2096,7 +2096,7 @@ fn a_pull_request_branch_that_lags_the_validated_commit_is_pushed_forward() {
 }
 
 #[test]
-fn a_fix_role_push_overwrites_a_force_pushed_remote_branch() {
+fn a_fix_role_push_never_overwrites_a_force_pushed_remote_branch() {
     let golden = Golden::new(Validation::Passing);
     golden.map_role("fix", Some(PROFILE));
     let daemon = golden.daemon();
@@ -2152,17 +2152,23 @@ fn a_fix_role_push_overwrites_a_force_pushed_remote_branch() {
 
     daemon
         .tick()
-        .expect("the fix-role push overwrites the force-pushed remote branch");
+        .expect("a rejected fix-role push is recorded, not fatal");
 
-    assert_eq!(golden.task().state, TaskState::PrOpen);
-    assert_eq!(
+    let failed = golden.task();
+    assert_eq!(failed.state, TaskState::Failed);
+    assert_eq!(failed.branch_head, Some(CommitId::new(commit.clone())));
+    assert!(
+        golden.history(TASK).contains(&PUSH_FAILED.to_string()),
+        "the rejection is on the journal"
+    );
+    assert_ne!(
         git::git(
             &golden.origin,
             &["rev-parse", &format!("refs/heads/{fix_branch}")]
         )
         .trim(),
         reworked,
-        "the branch lands on the commit depot validated"
+        "a fix-role push never replaces the branch at the forge"
     );
 }
 

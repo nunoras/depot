@@ -34,7 +34,7 @@ Preconditions:
   `depot status` shows the attempt and session.
 - **Submit.** After the worker runs `depot submit`, the journal has `worker_submitted`, `validation_started` and `validation_finished`, and `git -C <throwaway>/remote.git branch` lists the pushed branch.
 - **Stop.** `BOXR_HOME=<throwaway>/boxr boxr stop <session>` if it is still running, then SIGTERM the `depotd` pid.
-- **Proof.** The journal from `sqlite3 -readonly <home>/depot.db`, `boxr show <session>`, and the pushed branch on the bare remote.
+- **Proof.** The journal from `sqlite3 -readonly <home>/agni.db`, `boxr show <session>`, and the pushed branch on the bare remote.
 
 ## Gotchas
 

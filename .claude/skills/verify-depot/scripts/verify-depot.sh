@@ -4,6 +4,7 @@ set -euo pipefail
 skill_dir="$(cd "$(dirname "$0")/.." && pwd)"
 repo_root="$(cd "$skill_dir/../../.." && pwd)"
 evidence_root="$HOME/.depot-verify"
+real_agni_home="$HOME/.agni"
 real_depot_home="$HOME/.depot"
 features="project-add task-lifecycle status-tui doc-write daemon"
 
@@ -33,6 +34,9 @@ inside() {
 guard_environment() {
   if [ -n "${DEPOT_TASK_ID:-}" ] || [ -n "${DEPOT_ATTEMPT_ID:-}" ]; then
     refuse "DEPOT_TASK_ID or DEPOT_ATTEMPT_ID is set; this is a depot worker context"
+  fi
+  if [ -n "${AGNI_HOME:-}" ]; then
+    refuse "AGNI_HOME is already set to $AGNI_HOME; run this from a shell without an agni home"
   fi
   if [ -n "${DEPOT_HOME:-}" ]; then
     refuse "DEPOT_HOME is already set to $DEPOT_HOME; run this from a shell without a depot home"
@@ -94,19 +98,22 @@ daemon_pids=""
 tmux_socket=""
 command_count=0
 
+inside "$throwaway" "$real_agni_home" && refuse "the throwaway $throwaway lands inside $real_agni_home"
+inside "$evidence_root" "$real_agni_home" && refuse "the evidence root $evidence_root lands inside $real_agni_home"
 inside "$throwaway" "$real_depot_home" && refuse "the throwaway $throwaway lands inside $real_depot_home"
 inside "$evidence_root" "$real_depot_home" && refuse "the evidence root $evidence_root lands inside $real_depot_home"
 inside "$throwaway" "$HOME/.treehouse" && refuse "the throwaway $throwaway lands inside ~/.treehouse"
 
-export DEPOT_HOME="$throwaway/home"
+export AGNI_HOME="$throwaway/home"
 export BOXR_HOME="$throwaway/boxr"
 export TREEHOUSE_ROOT="$throwaway/pool"
 export GH_CONFIG_DIR="$throwaway/gh"
 export GIT_TERMINAL_PROMPT=0
 unset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN TREEHOUSE_LEASE_HOLDER
 
-inside "$DEPOT_HOME" "$real_depot_home" && refuse "DEPOT_HOME would be $DEPOT_HOME"
-[ "$(resolved "$DEPOT_HOME")" != "$(resolved "$real_depot_home")" ] || refuse "DEPOT_HOME resolves to the real home"
+inside "$AGNI_HOME" "$real_agni_home" && refuse "AGNI_HOME would be $AGNI_HOME"
+[ "$(resolved "$AGNI_HOME")" != "$(resolved "$real_agni_home")" ] || refuse "AGNI_HOME resolves to the real home"
+inside "$AGNI_HOME" "$real_depot_home" && refuse "AGNI_HOME would be $AGNI_HOME"
 
 note() {
   if [ -f "$meta" ]; then
@@ -199,8 +206,8 @@ expect_out() { grep -qE -- "$1" "$last.out" || fail "stdout of $(cat "$last.cmd"
 expect_err() { grep -qE -- "$1" "$last.err" || fail "stderr of $(cat "$last.cmd") lacks /$1/; read $last.err"; }
 expect_no_out() { ! grep -qE -- "$1" "$last.out" || fail "stdout of $(cat "$last.cmd") has /$1/; read $last.out"; }
 
-events() { sqlite3 -readonly -separator ' | ' "$DEPOT_HOME/depot.db" 'select id, kind, coalesce(task_id, ""), key from events order by id'; }
-task_states() { sqlite3 -readonly -separator ' ' "$DEPOT_HOME/depot.db" 'select id, state from tasks order by id'; }
+events() { sqlite3 -readonly -separator ' | ' "$AGNI_HOME/agni.db" 'select id, kind, coalesce(task_id, ""), key from events order by id'; }
+task_states() { sqlite3 -readonly -separator ' ' "$AGNI_HOME/agni.db" 'select id, state from tasks order by id'; }
 
 step=doctor
 say "verify: building depot and depotd from $repo_root"
@@ -234,7 +241,7 @@ git_dirty="$(git -C "$repo_root" status --porcelain -- crates Cargo.toml Cargo.l
   printf 'boxr: %s (%s)\n' "$(command -v boxr)" "$boxr_version"
   printf 'treehouse: %s\n' "$(command -v treehouse)"
   printf 'throwaway: %s\n' "$throwaway"
-  printf 'DEPOT_HOME: %s\n' "$DEPOT_HOME"
+  printf 'AGNI_HOME: %s\n' "$AGNI_HOME"
   printf 'BOXR_HOME: %s\n' "$BOXR_HOME"
   printf 'TREEHOUSE_ROOT: %s\n' "$TREEHOUSE_ROOT"
   printf 'GH_CONFIG_DIR: %s\n' "$GH_CONFIG_DIR"
@@ -268,9 +275,9 @@ step=fixture
 remote="$throwaway/remote.git"
 project="$throwaway/verify-demo"
 slug=verify-demo
-store="$DEPOT_HOME/projects/$slug"
-mkdir -p "$DEPOT_HOME"
-cat >"$DEPOT_HOME/config.toml" <<'EOF'
+store="$AGNI_HOME/projects/$slug"
+mkdir -p "$AGNI_HOME"
+cat >"$AGNI_HOME/config.toml" <<'EOF'
 concurrency = 1
 poll_interval_seconds = 1
 
@@ -342,7 +349,7 @@ drive_project_add() {
   run_in "$unmapped" project-add-unmapped depot project add "$unmapped"
   expect_exit 1
   expect_err 'role `build` maps to profile `missing`'
-  [ ! -e "$DEPOT_HOME/projects/verify-unmapped" ] || fail "a refused add left a store behind"
+  [ ! -e "$AGNI_HOME/projects/verify-unmapped" ] || fail "a refused add left a store behind"
 
   cp "$store/checklist.md" "$run_dir/checklist.md"
   cp "$project/.git/info/exclude" "$run_dir/git-info-exclude.txt"
@@ -438,7 +445,7 @@ drive_status_tui() {
   tmux_socket="depot-verify-$$"
   note tmuxSocket "$tmux_socket"
   tmux -L "$tmux_socket" -f /dev/null new-session -d -s verify -x 140 -y 40 -c "$project" \
-    "env DEPOT_HOME='$DEPOT_HOME' BOXR_HOME='$BOXR_HOME' PATH='$PATH' depot status --tui" ||
+    "env AGNI_HOME='$AGNI_HOME' BOXR_HOME='$BOXR_HOME' PATH='$PATH' depot status --tui" ||
     fail "tmux could not start the TUI session"
   wait_for_pane 'q quit' "$run_dir/tui-live.txt"
   grep -q 'Held for approval' "$run_dir/tui-live.txt" || fail "the live TUI does not list the held task; read $run_dir/tui-live.txt"
@@ -490,8 +497,8 @@ verify-depot wrote this."
   cp -R "$store/docs" "$run_dir/docs"
 }
 
-lock_pid() { sed -n 's/.*"pid":\([0-9]*\).*/\1/p' "$DEPOT_HOME/depotd.lock" 2>/dev/null; }
-lock_heartbeat() { sed -n 's/.*"heartbeat_millis":\([0-9]*\).*/\1/p' "$DEPOT_HOME/depotd.lock" 2>/dev/null; }
+lock_pid() { sed -n 's/.*"pid":\([0-9]*\).*/\1/p' "$AGNI_HOME/run/depotd.scope.json" 2>/dev/null; }
+lock_heartbeat() { sed -n 's/.*"heartbeat_millis":\([0-9]*\).*/\1/p' "$AGNI_HOME/run/depotd.scope.json" 2>/dev/null; }
 
 start_daemon() {
   local log="$1" pid waited=0
@@ -504,7 +511,7 @@ start_daemon() {
     sleep 0.1
     waited=$((waited + 1))
   done
-  [ "$(lock_pid)" = "$pid" ] || fail "depotd $pid never recorded itself in depotd.lock; read $log"
+  [ "$(lock_pid)" = "$pid" ] || fail "depotd $pid never recorded itself in run/depotd.scope.json; read $log"
   started_pid="$pid"
 }
 
@@ -521,12 +528,12 @@ drive_daemon() {
   expect_exit 1
   expect_err 'no GitHub credential'
 
-  printf 'verify-depot-placeholder-not-a-token\n' >"$DEPOT_HOME/github-token"
-  chmod 600 "$DEPOT_HOME/github-token"
+  printf 'verify-depot-placeholder-not-a-token\n' >"$AGNI_HOME/secrets/github-token"
+  chmod 600 "$AGNI_HOME/secrets/github-token"
 
   start_daemon "$run_dir/depotd-1.log"
   local first="$started_pid" beat_one beat_two
-  cp "$DEPOT_HOME/depotd.lock" "$run_dir/depotd-lock-1.json"
+  cp "$AGNI_HOME/run/depotd.scope.json" "$run_dir/depotd-lock-1.json"
   grep -q "\"projects\":\[\"$project\"\]" "$run_dir/depotd-lock-1.json" || fail "the lock record does not scope the fixture project"
   beat_one="$(lock_heartbeat)"
   sleep 2.5
@@ -545,7 +552,9 @@ drive_daemon() {
   stop_daemon "$first"
   kill -0 "$first" 2>/dev/null && fail "depotd $first survived SIGTERM"
   grep -q "daemon_restarted:$first:" "$run_dir/depotd-1.log" || fail "depotd $first did not journal its restart; read $run_dir/depotd-1.log"
-  grep -q '"polled:' "$run_dir/depotd-1.log" || fail "depotd $first never ticked; read $run_dir/depotd-1.log"
+  local polled
+  polled="$(sqlite3 -readonly "$AGNI_HOME/agni.db" "select count(*) from events where kind = 'polled'")"
+  [ "$polled" -gt 0 ] || fail "depotd $first never ticked; read $run_dir/depotd-1.log"
 
   start_daemon "$run_dir/depotd-2.log"
   local second="$started_pid"

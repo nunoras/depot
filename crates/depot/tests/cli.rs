@@ -1456,3 +1456,72 @@ fn a_client_refuses_an_unmoved_depot_home_and_names_the_move() {
         "a refused client leaves no agni home behind"
     );
 }
+
+#[test]
+fn an_explicit_migrate_moves_a_populated_depot_home_into_agni() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let user_home = temp.path();
+    let legacy = user_home.join(".depot");
+    std::fs::create_dir_all(legacy.join("projects").join("example")).expect("legacy project store");
+    let connection = rusqlite::Connection::open(legacy.join("depot.db")).expect("legacy database");
+    connection
+        .execute_batch(include_str!("../../depotd/tests/fixtures/schema-v1.sql"))
+        .expect("v1 schema");
+    connection
+        .execute_batch(
+            "INSERT INTO projects (id, kind, slug, created_at) VALUES ('/work/example', 'path', 'example', 1700000000000);
+             INSERT INTO tasks (project_id, id, title, intent, role, state, base_dependency, branch_head, retry_profile, retry_not_before, created_at, updated_at)
+                 VALUES ('/work/example', 't-1', 'Wire the store', 'persist the records', 'build', 'validated', NULL, NULL, NULL, NULL, 1700000000000, 1700000000000);
+             INSERT INTO events (project_id, key, at, kind, payload) VALUES ('/work/example', 't-1:task_proposed', 1700000000000, 'task_proposed', '{}');",
+        )
+        .expect("legacy rows");
+    drop(connection);
+    std::fs::write(
+        legacy.join("projects").join("example").join("checklist.md"),
+        "kept\n",
+    )
+    .expect("legacy checklist");
+
+    let migrated = run_with_user_home(user_home, &["store", "migrate"]);
+
+    assert_eq!(
+        migrated.status.code(),
+        Some(0),
+        "stderr: {}",
+        stderr(&migrated)
+    );
+    assert!(
+        stdout(&migrated).contains("moved the home from"),
+        "stdout: {}",
+        stdout(&migrated)
+    );
+    assert!(!legacy.exists(), "the old home is gone once it has moved");
+    let home = DepotHome::at(user_home.join(".agni"));
+    assert!(home.database_path().is_file(), "agni.db holds the records");
+    assert!(
+        home.project_home("example").checklist_path().is_file(),
+        "the project store moved with the home"
+    );
+
+    let store = Store::open(&home).expect("the moved store opens");
+    let project = store
+        .project(&depot_core::ProjectId::new("/work/example"))
+        .expect("projects are read")
+        .expect("the project survived the move");
+    assert!(
+        store
+            .task(&project.id, &TaskId::new("t-1"))
+            .expect("tasks are read")
+            .is_some(),
+        "the task survived the move"
+    );
+    assert_eq!(store.events(&project.id).expect("events").len(), 1);
+
+    let rerun = run_with_user_home(user_home, &["store", "migrate"]);
+    assert_eq!(rerun.status.code(), Some(0), "stderr: {}", stderr(&rerun));
+    assert!(
+        stdout(&rerun).contains("already at schema"),
+        "a rerun is a no-op, stdout: {}",
+        stdout(&rerun)
+    );
+}

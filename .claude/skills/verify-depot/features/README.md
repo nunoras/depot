@@ -8,8 +8,8 @@ Read this index, then use the matching feature file as the recipe.
 - Run from the repo root of a depot checkout that builds with `cargo build`.
 - Run `.claude/skills/verify-depot/scripts/verify-depot.sh doctor` first.
   It must print `result: ok`.
-- The shell must not set `DEPOT_HOME`, `DEPOT_TASK_ID` or `DEPOT_ATTEMPT_ID`.
-- The driver owns the throwaway state: `DEPOT_HOME`, `BOXR_HOME`, `TREEHOUSE_ROOT` and `GH_CONFIG_DIR` all point into `${TMPDIR:-/tmp}/depot-verify.XXXXXX`.
+- The shell must not set `AGNI_HOME`, `DEPOT_HOME`, `DEPOT_TASK_ID` or `DEPOT_ATTEMPT_ID`.
+- The driver owns the throwaway state: `AGNI_HOME`, `BOXR_HOME`, `TREEHOUSE_ROOT` and `GH_CONFIG_DIR` all point into `${TMPDIR:-/tmp}/depot-verify.XXXXXX`.
 - The fixture is `<throwaway>/verify-demo` (slug `verify-demo`) with `origin` at `<throwaway>/remote.git`, one profile `verify-haiku`, and `build` and `fix` mapped to it.
 - Never drive a depot home or a `depotd` this run did not create.
 

@@ -200,7 +200,9 @@ fn render_task(
         out.push_str(&format!("  - failure: {}\n", one_line(reason)));
     }
 
-    if let Some(deferral) = &task.turn_deferral {
+    if task.state == TaskState::Running
+        && let Some(deferral) = &task.turn_deferral
+    {
         let times = if deferral.count == 1 { "time" } else { "times" };
         out.push_str(&format!(
             "  - worker turn deferred {} {}: {}\n",

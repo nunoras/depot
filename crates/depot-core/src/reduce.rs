@@ -425,6 +425,9 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                     attempt.last_seen_at = Some(fact.at);
                     changed = true;
                 }
+                if task.turn_deferral.take().is_some() {
+                    changed = true;
+                }
                 task.updated_at = fact.at;
             }
         }
@@ -477,6 +480,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                 if let Some(task) = next.tasks.get_mut(task) {
                     close_attempt(task, AttemptOutcome::Submitted, fact.at);
                     task.state = TaskState::Validating;
+                    task.turn_deferral = None;
                     task.updated_at = fact.at;
                 }
                 changed = true;
@@ -522,6 +526,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                         duration: *duration,
                         output_tail: output_tail.clone(),
                     });
+                    task.turn_deferral = None;
                     task.updated_at = fact.at;
                     if *exit_code == 0 {
                         task.state = if already_open {
@@ -609,6 +614,9 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                             });
                         }
                         attempt.worktree = Some(lease.clone());
+                    }
+                    if task.turn_deferral.take().is_some() {
+                        changed = true;
                     }
                     task.updated_at = fact.at;
                     attached = true;

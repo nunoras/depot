@@ -1298,10 +1298,13 @@ fn rule_10_restart_reconciliation_prefers_unknown_over_a_guess() {
         .when(
             "t1",
             TaskState::Validating,
-            vec![Action::RunValidation {
-                task: task_id("t1"),
-                commit: commit("c1"),
-            }],
+            vec![
+                Action::RunValidation {
+                    task: task_id("t1"),
+                    commit: commit("c1"),
+                },
+                Action::RenderChecklist,
+            ],
         )
         .checking(|state| subject(state, "t1").turn_deferral.is_none()),
         case(

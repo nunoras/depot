@@ -17,6 +17,7 @@ use support::{
 const PROPOSED: &str = "task_proposed";
 const APPROVED: &str = "task_approved";
 const ACQUIRED: &str = "worktree_acquired";
+const BASELINED: &str = "worktree_baselined";
 const ACQUIRE_REQUESTED: &str = "worktree_acquire_requested";
 const LAUNCH_REQUESTED: &str = "worker_turn_launch_requested";
 const TURN_STARTED: &str = "worker_turn_started";
@@ -247,6 +248,7 @@ fn the_whole_journey_runs_from_proposal_to_a_released_worktree() {
             PROPOSED,
             APPROVED,
             ACQUIRED,
+            BASELINED,
             TURN_STARTED,
             SUBMITTED,
             VALIDATED,
@@ -723,6 +725,7 @@ fn a_worker_question_is_relayed_answered_and_the_worker_resumes_with_the_answer(
             PROPOSED,
             APPROVED,
             ACQUIRED,
+            BASELINED,
             TURN_STARTED,
             ASKED,
             ANSWERED,
@@ -840,6 +843,7 @@ fn a_settled_question_reaches_a_dead_session_through_a_fresh_turn() {
             PROPOSED,
             APPROVED,
             ACQUIRED,
+            BASELINED,
             TURN_STARTED,
             ASKED,
             ANSWERED,
@@ -1075,6 +1079,7 @@ fn a_failed_validation_opens_no_pull_request_and_keeps_the_branch() {
             PROPOSED,
             APPROVED,
             ACQUIRED,
+            BASELINED,
             TURN_STARTED,
             SUBMITTED,
             VALIDATED
@@ -3084,11 +3089,13 @@ fn a_retry_of_a_failed_task_runs_a_fresh_attempt_on_the_lease_it_still_holds() {
             PROPOSED,
             APPROVED,
             ACQUIRED,
+            BASELINED,
             TURN_STARTED,
             SUBMITTED,
             VALIDATED,
             "task_retried",
             ACQUIRED,
+            BASELINED,
             TURN_STARTED,
             SUBMITTED,
             VALIDATED,
@@ -3358,7 +3365,7 @@ fn a_project_describes_against_the_fetched_base_without_a_local_base_branch() {
 }
 
 #[test]
-fn a_commit_already_on_the_base_branch_lands_without_a_pull_request() {
+fn a_commit_pushed_to_the_base_after_submitting_lands_without_a_pull_request() {
     let golden = Golden::new(Validation::Passing);
     let daemon = golden.daemon();
     golden.propose();
@@ -3427,6 +3434,172 @@ fn a_commit_the_base_does_not_contain_is_pushed_and_opens_a_pull_request() {
 }
 
 #[test]
+fn a_worker_that_commits_nothing_fails_instead_of_landing() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+
+    let submitted = golden.worker_submits();
+    assert_eq!(
+        submitted.status.code(),
+        Some(0),
+        "the worker script failed: {}",
+        support::stderr(&submitted)
+    );
+
+    daemon
+        .tick()
+        .expect("the daemon sees the empty submission and holds the task");
+
+    let failed = golden.task();
+    assert_eq!(failed.state, TaskState::Failed);
+    assert_eq!(
+        failed.failure.as_deref(),
+        Some("the worker committed nothing")
+    );
+    assert!(
+        golden
+            .history(TASK)
+            .contains(&"worker_committed_nothing".to_string()),
+        "the empty submission is on the journal: {:?}",
+        golden.history(TASK)
+    );
+    assert!(
+        !golden.history(TASK).contains(&VALIDATED.to_string()),
+        "nothing was validated: {:?}",
+        golden.history(TASK)
+    );
+    assert!(
+        !golden.history(TASK).contains(&PUSHED.to_string()),
+        "nothing was pushed: {:?}",
+        golden.history(TASK)
+    );
+    assert_eq!(golden.pull_requests_opened(), 0);
+    assert!(
+        calls_to(&golden.treehouse.calls(), "return").is_empty(),
+        "the worktree is kept for review"
+    );
+    let checklist = golden.status_history();
+    assert!(
+        checklist.contains("failure: the worker committed nothing"),
+        "{checklist}"
+    );
+}
+
+#[test]
+fn a_worker_that_fast_forwards_its_lease_and_commits_nothing_fails_instead_of_landing() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+
+    support::commit_file(
+        &golden.repo,
+        "base.txt",
+        "the base moves on\n",
+        "the base moves on",
+    );
+    git::git(&golden.repo, &["push", "origin", "HEAD:main"]);
+
+    let submitted = golden.worker_fast_forwards_and_submits();
+    assert_eq!(
+        submitted.status.code(),
+        Some(0),
+        "the worker script failed: {}",
+        support::stderr(&submitted)
+    );
+
+    daemon
+        .tick()
+        .expect("the daemon sees nothing over the fetched base and holds the task");
+
+    let failed = golden.task();
+    assert_eq!(failed.state, TaskState::Failed);
+    assert_eq!(
+        failed.failure.as_deref(),
+        Some(
+            "the submitted commit is already on the base branch and this attempt adds nothing over it"
+        )
+    );
+    assert!(
+        golden
+            .history(TASK)
+            .contains(&"worker_committed_nothing".to_string()),
+        "the empty submission is on the journal: {:?}",
+        golden.history(TASK)
+    );
+    assert!(
+        !golden.history(TASK).contains(&VALIDATED.to_string()),
+        "nothing was validated: {:?}",
+        golden.history(TASK)
+    );
+    assert!(
+        !golden.history(TASK).contains(&PUSHED.to_string()),
+        "nothing was pushed: {:?}",
+        golden.history(TASK)
+    );
+    assert_eq!(golden.pull_requests_opened(), 0);
+}
+
+#[test]
+fn a_worker_that_pushes_to_the_base_before_submitting_fails_instead_of_landing() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+
+    golden.commit_in_lease("change.txt", "the work\n");
+    git::git(&golden.lease, &["push", "origin", "HEAD:main"]);
+
+    let submitted = golden.worker_submits();
+    assert_eq!(
+        submitted.status.code(),
+        Some(0),
+        "the worker script failed: {}",
+        support::stderr(&submitted)
+    );
+
+    daemon
+        .tick()
+        .expect("the daemon sees the hand-pushed commit on the base and holds the task");
+
+    let failed = golden.task();
+    assert_eq!(failed.state, TaskState::Failed);
+    assert_eq!(
+        failed.failure.as_deref(),
+        Some(
+            "the submitted commit is already on the base branch and this attempt adds nothing over it"
+        )
+    );
+    assert!(
+        golden
+            .history(TASK)
+            .contains(&"worker_committed_nothing".to_string()),
+        "the hand-pushed submission is on the journal: {:?}",
+        golden.history(TASK)
+    );
+    assert!(
+        !golden.history(TASK).contains(&VALIDATED.to_string()),
+        "nothing was validated: {:?}",
+        golden.history(TASK)
+    );
+    assert!(
+        !golden
+            .history(TASK)
+            .contains(&"task_landed_on_base".to_string()),
+        "a hand-pushed commit does not land: {:?}",
+        golden.history(TASK)
+    );
+    assert!(
+        !golden.history(TASK).contains(&PUSHED.to_string()),
+        "nothing was pushed: {:?}",
+        golden.history(TASK)
+    );
+    assert_eq!(golden.pull_requests_opened(), 0);
+}
+
+#[test]
 fn a_base_that_cannot_be_read_holds_the_task_instead_of_landing_it() {
     let golden = Golden::new(Validation::Passing);
     let daemon = golden.daemon();
@@ -3473,6 +3646,47 @@ fn a_base_that_cannot_be_read_holds_the_task_instead_of_landing_it() {
 
     let inbox = golden.depot_ok(&["inbox", "--project", SLUG]);
     assert!(inbox.contains("the validation could not run"), "{inbox}");
+}
+
+#[test]
+fn a_lease_that_cannot_be_read_holds_the_task_instead_of_landing_it() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_submits();
+    std::fs::remove_dir_all(&golden.lease).expect("the lease is gone before the tick");
+
+    daemon
+        .tick()
+        .expect("a lease that cannot be read is recorded, not fatal");
+
+    let held = golden.task();
+    assert_eq!(held.state, TaskState::Failed);
+    assert!(
+        golden
+            .history(TASK)
+            .contains(&"validation_failed".to_string()),
+        "the unreadable lease is on the journal: {:?}",
+        golden.history(TASK)
+    );
+    assert!(
+        !golden
+            .history(TASK)
+            .contains(&"task_landed_on_base".to_string()),
+        "a lease that could not be read never lands the task"
+    );
+    assert!(
+        !golden.history(TASK).contains(&PUSHED.to_string()),
+        "a lease that could not be read never pushes the branch"
+    );
+    assert_eq!(golden.pull_requests_opened(), 0);
+
+    let inbox = golden.depot_ok(&["inbox", "--project", SLUG]);
+    assert!(
+        inbox.contains("merge-base --is-ancestor exited 128"),
+        "the unreadable lease is named as the cause: {inbox}"
+    );
 }
 
 #[test]

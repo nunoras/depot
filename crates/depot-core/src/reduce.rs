@@ -468,7 +468,7 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
             }
         }
 
-        FactKind::WorkerSubmitted { task, commit } => {
+        FactKind::WorkerSubmitted { task, commit, .. } => {
             let can_submit = next.tasks.get(task).is_some_and(|task| {
                 task.state == TaskState::Running
                     && task
@@ -487,6 +487,23 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                 actions.push(Action::RunValidation {
                     task: task.clone(),
                     commit: commit.clone(),
+                });
+            }
+        }
+
+        FactKind::WorkerCommittedNothing { task, reason, .. } => {
+            let accepting = next
+                .tasks
+                .get(task)
+                .is_some_and(|task| task.state == TaskState::Validating);
+            if accepting && let Some(task) = next.tasks.get_mut(task) {
+                task.state = TaskState::Failed;
+                task.retry = None;
+                task.failure = Some(reason.clone());
+                task.updated_at = fact.at;
+                changed = true;
+                actions.push(Action::HoldForUser {
+                    task: task.id.clone(),
                 });
             }
         }
@@ -672,6 +689,8 @@ pub fn reduce(state: &ProjectState, fact: &Fact) -> (ProjectState, Vec<Action>) 
                 }
             }
         }
+
+        FactKind::WorktreeBaselined { .. } => {}
 
         FactKind::BranchPushed { task, commit } => {
             if let Some(task) = next.tasks.get_mut(task)

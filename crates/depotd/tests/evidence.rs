@@ -261,6 +261,7 @@ fn drive_to_pr_open(fixture: &Fixture, commit: &str) {
             FactKind::WorkerSubmitted {
                 task: TaskId::new("t-1"),
                 commit: depot_core::CommitId::new(commit),
+                base: None,
             },
         ),
         (

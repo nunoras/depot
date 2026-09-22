@@ -70,6 +70,7 @@ fn a_store_written_by_an_older_schema_migrates_when_the_daemon_opens() {
         kind: depot_core::FactKind::WorkerSubmitted {
             task: TaskId::new("t-1"),
             commit: depot_core::CommitId::new("abc1234"),
+            base: None,
         },
     };
     store

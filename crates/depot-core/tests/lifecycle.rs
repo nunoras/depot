@@ -1396,6 +1396,8 @@ fn rule_11_a_landed_task_releases_its_worktree_and_renders() {
                 2_000,
                 FactKind::PullRequestClosedUnmerged {
                     task: task_id("t1"),
+                    number: 42,
+                    commit: commit("c1"),
                 },
             )],
         )
@@ -3057,6 +3059,8 @@ fn a_refused_auto_merge_is_noted_on_the_task_and_forgotten_once_the_pull_request
                 4_000,
                 FactKind::PullRequestClosedUnmerged {
                     task: task_id("t1"),
+                    number: 42,
+                    commit: commit("c1"),
                 },
             )],
         )
@@ -3609,6 +3613,8 @@ fn pull_request_closed_unmerged_stops_a_live_session() {
                 1_000,
                 FactKind::PullRequestClosedUnmerged {
                     task: task_id("t1"),
+                    number: 42,
+                    commit: commit("c1"),
                 },
             )],
         )
@@ -3655,6 +3661,8 @@ fn pull_request_closed_unmerged_stops_a_live_session() {
                 2_000,
                 FactKind::PullRequestClosedUnmerged {
                     task: task_id("t1"),
+                    number: 42,
+                    commit: commit("c1"),
                 },
             )],
         )
@@ -5226,6 +5234,86 @@ fn rule_22_a_worker_that_committed_nothing_fails_the_task() {
             vec![fact(4_000, baselined("t1", "c1"))],
         )
         .when("t1", TaskState::Running, vec![]),
+    ]);
+}
+
+#[test]
+fn rule_23_a_closed_pull_request_only_cancels_the_revision_it_still_tracks() {
+    run(vec![
+        case(
+            "a close at the branch head cancels the task",
+            state(vec![pr_open("t1", "c1", 42)]),
+            vec![fact(
+                1_000,
+                FactKind::PullRequestClosedUnmerged {
+                    task: task_id("t1"),
+                    number: 42,
+                    commit: commit("c1"),
+                },
+            )],
+        )
+        .when(
+            "t1",
+            TaskState::Cancelled,
+            vec![hold("t1"), Action::RenderChecklist],
+        ),
+        case(
+            "a close the branch moved past republishes instead of cancelling",
+            state(vec![pr_open("t1", "c2", 42)]),
+            vec![fact(
+                2_000,
+                FactKind::PullRequestClosedUnmerged {
+                    task: task_id("t1"),
+                    number: 42,
+                    commit: commit("c1"),
+                },
+            )],
+        )
+        .when(
+            "t1",
+            TaskState::Validated,
+            vec![open_pull_request("t1", "c2"), Action::RenderChecklist],
+        )
+        .checking(|state| {
+            subject(state, "t1").pull_request().is_none()
+                && subject(state, "t1").validated_commit() == Some(&commit("c2"))
+        }),
+        case(
+            "a close of a superseded pull request leaves the task alone",
+            state(vec![pr_open("t1", "c2", 43)]),
+            vec![fact(
+                3_000,
+                FactKind::PullRequestClosedUnmerged {
+                    task: task_id("t1"),
+                    number: 42,
+                    commit: commit("c1"),
+                },
+            )],
+        )
+        .when("t1", TaskState::PrOpen, vec![])
+        .checking(|state| {
+            subject(state, "t1")
+                .pull_request()
+                .map(|(number, _, _)| number)
+                == Some(43)
+        }),
+        case(
+            "a new pull request supersedes the one a rework inherited",
+            state(vec![pr_open("t1", "c2", 42)]),
+            vec![fact(
+                4_000,
+                FactKind::PullRequestOpened {
+                    task: task_id("t1"),
+                    number: 43,
+                    url: "https://example.com/43".to_owned(),
+                },
+            )],
+        )
+        .when("t1", TaskState::PrOpen, vec![Action::RenderChecklist])
+        .checking(|state| {
+            subject(state, "t1").pull_request()
+                == Some((43, "https://example.com/43", Checks::Unknown))
+        }),
     ]);
 }
 

@@ -1904,6 +1904,105 @@ fn a_pull_request_closed_unmerged_holds_the_task_and_returns_the_worktree() {
 }
 
 #[test]
+fn a_pull_request_closed_after_its_branch_moved_on_is_replaced_not_cancelled() {
+    let golden = Golden::new(Validation::Passing);
+    let daemon = golden.daemon();
+    golden.propose();
+    daemon.tick().expect("the daemon launches the worker");
+    golden.worker_commits_and_submits();
+    let first = golden.head();
+    golden.script_pull_request(&first);
+    daemon
+        .tick()
+        .expect("the daemon validates and opens the first pull request");
+    assert_eq!(golden.task().state, TaskState::PrOpen);
+
+    golden.depot_ok(&[
+        "task",
+        "rework",
+        TASK,
+        "--text",
+        "open a fresh branch and a new pull request",
+        "--project",
+        SLUG,
+    ]);
+    daemon.tick().expect("the daemon launches the fix");
+
+    let reworked = golden.commit_in_lease("rework.txt", "the rework\n");
+    let submitted = golden.worker_submits_for(TASK_TWO);
+    assert!(
+        submitted.status.success(),
+        "the fix submits: {}",
+        support::stderr(&submitted)
+    );
+    daemon
+        .tick()
+        .expect("the daemon validates the fix and pushes its branch");
+
+    let fix = golden
+        .store
+        .task(&golden.project.id, &TaskId::new(TASK_TWO))
+        .expect("the fix is read")
+        .expect("the fix exists");
+    assert_eq!(fix.state, TaskState::PrOpen);
+    assert_eq!(fix.branch_head, Some(CommitId::new(reworked.clone())));
+    assert_eq!(
+        fix.pull_request().map(|(number, _, _)| number),
+        Some(1),
+        "the fix inherits the pull request the rework replaced"
+    );
+
+    golden.script_close_unmerged(&first);
+    golden.script_replacement_pull_request(2, &reworked);
+    daemon
+        .tick()
+        .expect("the daemon observes the old pull request closed");
+
+    let replaced = golden
+        .store
+        .task(&golden.project.id, &TaskId::new(TASK_TWO))
+        .expect("the fix is read")
+        .expect("the fix exists");
+    assert_eq!(
+        replaced.state,
+        TaskState::PrOpen,
+        "a close of a pull request the branch moved past never cancels live work"
+    );
+    assert_eq!(
+        replaced.pull_request().map(|(number, _, _)| number),
+        Some(2),
+        "the replacement pull request is the one depot follows"
+    );
+    assert_eq!(
+        golden
+            .store
+            .task(&golden.project.id, &TaskId::new(TASK))
+            .expect("the original is read")
+            .expect("the original exists")
+            .state,
+        TaskState::ReworkPending,
+        "the original stays held for the fix rather than cancelled"
+    );
+
+    golden.script_replacement_merged(2, &reworked);
+    daemon
+        .tick()
+        .expect("the daemon follows the replacement to a merge");
+
+    assert_eq!(
+        golden
+            .store
+            .task(&golden.project.id, &TaskId::new(TASK_TWO))
+            .expect("the fix is read")
+            .expect("the fix exists")
+            .state,
+        TaskState::Landed,
+        "the replacement pull request lands the task it tracks"
+    );
+    assert_eq!(golden.task().state, TaskState::Landed);
+}
+
+#[test]
 fn stopping_a_running_task_returns_its_worktree_once() {
     let golden = Golden::new(Validation::Passing);
     let daemon = golden.daemon();

@@ -28,7 +28,14 @@ pub trait Describer {
 }
 
 pub fn parse(text: &str) -> Option<DescribeOutput> {
-    let (title, body) = text.trim().split_once('\n')?;
+    let text = text.trim();
+    if text.starts_with('#') {
+        return Some(DescribeOutput {
+            title: String::new(),
+            body: text.to_owned(),
+        });
+    }
+    let (title, body) = text.split_once('\n')?;
     let title = title.trim();
     let body = body.trim();
     if title.is_empty() || body.is_empty() {
@@ -64,10 +71,15 @@ pub fn assemble(
 ) -> (String, String) {
     let validation = validation_section(task, commit);
     match describe {
-        Some(output) => (
-            output.title,
-            format!("{}\n\n{}\n", output.body.trim_end(), validation),
-        ),
+        Some(output) => {
+            let DescribeOutput { title, body } = output;
+            let title = if title.is_empty() {
+                task.title.clone()
+            } else {
+                title
+            };
+            (title, format!("{}\n\n{}\n", body.trim_end(), validation))
+        }
         None => (task.title.clone(), format!("{validation}\n")),
     }
 }
@@ -98,12 +110,35 @@ pub fn prompt(style: &str, title: &str, diff: &str, output_path: &Path) -> Strin
         "{preface}You are writing the description of a pull request for its reviewers. \
          The one-line summary of the change is: {title}\n\
          \n\
-         Write a reviewer-facing description: the one-line title on the first line, \
-         then a `## Why` section of one or two sentences, a `## What changed` section of \
-         tight bullets drawn only from the diff, and a `## How to review` section.\n\
+         Write exactly these four sections, in this order, with nothing before the first:\n\
          \n\
-         Never include URLs, internal tool names, verify commands, or any mention of a \
-         sketch or mockup. No emoji, no em dashes, plain sentences, under about 180 words.\n\
+         # Summary\n\
+         Two or three sentences: the problem and what the change does about it.\n\
+         \n\
+         # What Changed\n\
+         Tight bullets drawn only from the diff, grouped by area, naming files or functions.\n\
+         \n\
+         # How to test\n\
+         The concrete steps or commands a reviewer runs to see the change work, and what they \
+         should see. Tests added by the diff count; name them.\n\
+         \n\
+         # Risk / Blast radius\n\
+         What else the change could break beyond the diff: callers, migrations, data, config, \
+         user-visible behaviour. Say what was checked and what was not. \
+         The section ends with one line exactly `safe to merge: n/5`, where n is a digit from \
+         1 (risky) to 5 (safe).\n\
+         \n\
+         Write in plain, direct prose: short declarative sentences, the codebase's own names, \
+         no emoji, no em dashes. No mannered prose: no rhetorical framing, no flourishes, no \
+         \"not X but Y\" turns, no scene-setting, and no restating what was just said.\n\
+         \n\
+         NEVER INCLUDE YOURSELF AS A CO-AUTHOR. \
+         No agent or model is ever a co-author: no Co-Authored-By lines, no \"Generated with\" \
+         footers, no attribution of any kind.\n\
+         \n\
+         Never include URLs, internal tool names, or any mention of a sketch or mockup.\n\
+         \n\
+         depot appends a `## Validation` section after your description, so do not write one.\n\
          \n\
          Write the finished description, and nothing else, to the file {}\n\
          \n\
@@ -215,6 +250,29 @@ mod tests {
     }
 
     #[test]
+    fn output_opening_with_a_heading_is_the_whole_body_without_a_title() {
+        let text = "# Summary\n\nThe problem.\n\n# What Changed\n\n- A bullet.";
+        let output = parse(text).expect("parsed");
+        assert_eq!(output.title, "");
+        assert_eq!(output.body, text);
+    }
+
+    #[test]
+    fn a_body_without_a_title_line_is_titled_after_the_task() {
+        let described = super::DescribeOutput {
+            title: String::new(),
+            body: "# Summary\n\nReviewers need a real description.".to_owned(),
+        };
+        let (title, body) = assemble(Some(described), &task(), &CommitId::new("abc123"));
+        assert_eq!(title, "PR body from a describe step");
+        assert!(body.starts_with("# Summary"));
+        assert_eq!(
+            body,
+            "# Summary\n\nReviewers need a real description.\n\n## Validation\n\n`cargo test` at `abc123` exited 0\n"
+        );
+    }
+
+    #[test]
     fn blank_or_single_line_output_is_refused() {
         assert!(parse("").is_none());
         assert!(parse("only a title").is_none());
@@ -271,6 +329,94 @@ mod tests {
             !text.contains("/technical-writing"),
             "the default prompt names no skill: {text}"
         );
+    }
+
+    #[test]
+    fn the_prompt_asks_for_the_four_headings_in_order_with_nothing_before_the_first() {
+        let text = prompt(
+            "",
+            "The title",
+            "the diff",
+            std::path::Path::new("/tmp/out.md"),
+        );
+        let headings = [
+            "# Summary",
+            "# What Changed",
+            "# How to test",
+            "# Risk / Blast radius",
+        ];
+        let mut cursor = 0;
+        for heading in headings {
+            let found = text[cursor..]
+                .find(heading)
+                .unwrap_or_else(|| panic!("missing heading {heading}: {text}"));
+            cursor += found + heading.len();
+        }
+        assert!(text.contains("with nothing before the first"), "{text}");
+    }
+
+    #[test]
+    fn the_prompt_requires_a_safe_to_merge_score_line() {
+        let text = prompt(
+            "",
+            "The title",
+            "the diff",
+            std::path::Path::new("/tmp/out.md"),
+        );
+        assert!(text.contains("`safe to merge: n/5`"), "{text}");
+        assert!(text.contains("1 (risky)"), "{text}");
+        assert!(text.contains("5 (safe)"), "{text}");
+    }
+
+    #[test]
+    fn the_prompt_bans_co_author_attribution_in_capitals() {
+        let text = prompt(
+            "",
+            "The title",
+            "the diff",
+            std::path::Path::new("/tmp/out.md"),
+        );
+        assert!(
+            text.contains("NEVER INCLUDE YOURSELF AS A CO-AUTHOR"),
+            "{text}"
+        );
+        assert!(text.contains("Co-Authored-By"), "{text}");
+        assert!(text.contains("Generated with"), "{text}");
+        assert!(text.contains("no attribution of any kind"), "{text}");
+    }
+
+    #[test]
+    fn the_prompt_says_depot_appends_validation_so_the_describer_writes_none() {
+        let text = prompt(
+            "",
+            "The title",
+            "the diff",
+            std::path::Path::new("/tmp/out.md"),
+        );
+        assert!(
+            text.contains("depot appends a `## Validation` section"),
+            "{text}"
+        );
+        assert!(text.contains("so do not write one"), "{text}");
+    }
+
+    #[test]
+    fn the_prompt_drops_the_title_line_the_command_ban_and_the_word_limit_and_keeps_the_rest() {
+        let text = prompt(
+            "",
+            "The title",
+            "the diff",
+            std::path::Path::new("/tmp/out.md"),
+        );
+        assert!(!text.contains("one-line title"), "{text}");
+        assert!(!text.contains("How to review"), "{text}");
+        assert!(!text.contains("verify commands"), "{text}");
+        assert!(!text.contains("180 words"), "{text}");
+        assert!(
+            text.contains("Never include URLs, internal tool names"),
+            "{text}"
+        );
+        assert!(text.contains("sketch or mockup"), "{text}");
     }
 
     #[test]

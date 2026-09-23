@@ -1,12 +1,14 @@
 # depot
 
 The language depot uses for a project's agent work.
+Terms shared across agni, depot and boxr (Home, Preference, Machine fact, Secret, Runner, Runner readiness, Session record) are defined in agni's glossary: https://github.com/nunoras/agni/blob/main/CONTEXT.md
 
 ## Work
 
 **Project**:
-One repository whose agent work depot coordinates.
-A single depot home holds many projects, and no project's records leak into another's.
+One repository whose agent work depot coordinates, identified by its origin (host, owner and name), so the same repository is one project on every machine.
+A repository with no origin is a local-only project whose preferences never leave the machine.
+A single home holds many projects, and no project's records leak into another's.
 _Avoid_: workspace, repo
 
 **Task**:
@@ -58,6 +60,22 @@ The `depot project repoint <name> --origin <url>` command that follows a renamed
 It is refused while a task is in flight, and it refuses a clone whose git remote still says the old origin.
 _Avoid_: rename, migrate
 
+## Configuration
+
+**Project file**:
+What describes the repository itself, such as its gate and base branch, committed with the code it describes.
+_Avoid_: project config, dotfile
+
+**Automation**:
+A trigger the repository describes, a schedule or a forge event, that files a task when it fires.
+It is committed with the repository; a notification aimed at the user is a preference, not an automation.
+_Avoid_: subscription, cron job, hook
+
+**Profile**:
+A named choice of harness and model that a role resolves to.
+A profile whose harness a machine lacks is unavailable there, not removed.
+_Avoid_: agent, model config
+
 ## State
 
 **Fact**:
@@ -74,7 +92,7 @@ The step from a project state and a fact to the next project state and the actio
 _Avoid_: transition function, handler
 
 **Validation record**:
-The result of running a project's validation command at one exact commit: the command, the commit, the exit code, the duration and the output tail.
+The result of running a project's validation command at one exact commit: the command, the commit, the runner it ran on, the exit code, the duration and the output tail.
 A pass is bound to that commit alone, so a moved branch invalidates it.
 _Avoid_: test run, check result
 

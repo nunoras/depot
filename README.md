@@ -124,6 +124,10 @@ describe_profile = "my-describer"
 describe_style = "Write in the house voice: plain sentences, no emoji."
 ```
 
+With `describe_profile` set, the describe step writes the pull request description as exactly four sections: `# Summary`, `# What Changed`, `# How to test`, and `# Risk / Blast radius`.
+The `# Risk / Blast radius` section ends with a `safe to merge: n/5` line, where 1 is risky and 5 is safe.
+depot appends its own `## Validation` section after the description.
+
 6. Start the daemon:
 
 ```

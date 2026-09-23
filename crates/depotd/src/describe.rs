@@ -28,7 +28,14 @@ pub trait Describer {
 }
 
 pub fn parse(text: &str) -> Option<DescribeOutput> {
-    let (title, body) = text.trim().split_once('\n')?;
+    let text = text.trim();
+    if text.starts_with('#') {
+        return Some(DescribeOutput {
+            title: String::new(),
+            body: text.to_owned(),
+        });
+    }
+    let (title, body) = text.split_once('\n')?;
     let title = title.trim();
     let body = body.trim();
     if title.is_empty() || body.is_empty() {
@@ -64,10 +71,15 @@ pub fn assemble(
 ) -> (String, String) {
     let validation = validation_section(task, commit);
     match describe {
-        Some(output) => (
-            output.title,
-            format!("{}\n\n{}\n", output.body.trim_end(), validation),
-        ),
+        Some(output) => {
+            let DescribeOutput { title, body } = output;
+            let title = if title.is_empty() {
+                task.title.clone()
+            } else {
+                title
+            };
+            (title, format!("{}\n\n{}\n", body.trim_end(), validation))
+        }
         None => (task.title.clone(), format!("{validation}\n")),
     }
 }
@@ -212,6 +224,29 @@ mod tests {
         let output = parse("Title line\n\nBody text.").expect("parsed");
         assert_eq!(output.title, "Title line");
         assert_eq!(output.body, "Body text.");
+    }
+
+    #[test]
+    fn output_opening_with_a_heading_is_the_whole_body_without_a_title() {
+        let text = "# Summary\n\nThe problem.\n\n# What Changed\n\n- A bullet.";
+        let output = parse(text).expect("parsed");
+        assert_eq!(output.title, "");
+        assert_eq!(output.body, text);
+    }
+
+    #[test]
+    fn a_body_without_a_title_line_is_titled_after_the_task() {
+        let described = super::DescribeOutput {
+            title: String::new(),
+            body: "# Summary\n\nReviewers need a real description.".to_owned(),
+        };
+        let (title, body) = assemble(Some(described), &task(), &CommitId::new("abc123"));
+        assert_eq!(title, "PR body from a describe step");
+        assert!(body.starts_with("# Summary"));
+        assert_eq!(
+            body,
+            "# Summary\n\nReviewers need a real description.\n\n## Validation\n\n`cargo test` at `abc123` exited 0\n"
+        );
     }
 
     #[test]
